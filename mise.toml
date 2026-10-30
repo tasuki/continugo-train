@@ -1,0 +1,25 @@
+[tools]
+rust = "1.99.1"
+python = "3.13.5"
+
+[tasks.setup]
+description = "Fetch Rust dependencies and create the Python environment"
+run = ["cargo fetch", "python -m venv .venv"]
+
+[tasks.test]
+description = "Test shared rules, analysis, and training infrastructure"
+run = ["cargo test --locked --workspace --manifest-path ../continugo/backend/Cargo.toml", "cargo test --locked"]
+
+[tasks.check]
+run = ["cargo fmt --check", "cargo clippy --locked --all-targets -- -D warnings"]
+
+[tasks.format]
+run = "cargo fmt"
+
+[tasks.selfplay]
+description = "Generate baseline MCTS games (arguments are forwarded)"
+run = "cargo run --locked --release --"
+
+[tasks.smoke]
+description = "Short pipeline check; output games may be truncated"
+run = "cargo run --locked --release -- --games 2 --sizes 9,19 --max-moves 12 --simulations 16"
