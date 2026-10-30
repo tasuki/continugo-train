@@ -29,8 +29,10 @@ pub struct MoveProfile {
     pub proposals: u64,
     pub legal: u64,
     pub rejected_eyes: u64,
-    /// Whole Action::apply, including geometry, groups/liberties/captures,
-    /// cloning, and construction of illegal-move errors.
+    /// Once-per-position group and liberty-witness preparation.
+    pub rules_preparation: Stage,
+    /// Candidate move application, including geometry, affected groups/liberties,
+    /// captures, cloning, and construction of illegal-move errors.
     pub rules: Stage,
     /// Subtotals of rules.seconds, classified by the returned move result.
     pub legal_rules_seconds: f64,
@@ -58,6 +60,7 @@ pub struct GameProfile {
 impl GameProfile {
     pub fn summary(&self) -> String {
         let rules: f64 = self.moves.iter().map(|m| m.rules.seconds).sum();
+        let preparation: f64 = self.moves.iter().map(|m| m.rules_preparation.seconds).sum();
         let eyes: f64 = self.moves.iter().map(|m| m.eyes.seconds).sum();
         let capture_check: f64 = self.moves.iter().map(|m| m.capture_check.seconds).sum();
         let updates: f64 = self
@@ -67,6 +70,7 @@ impl GameProfile {
             .sum();
         let other = (self.selfplay_seconds
             - rules
+            - preparation
             - eyes
             - capture_check
             - updates
@@ -82,6 +86,7 @@ impl GameProfile {
             "profile: {proposals} proposals, {legal} legal, {eye_calls} eye checks, {rejected} eye rejections"
         )];
         for (name, seconds) in [
+            ("rules preparation", preparation),
             ("rules / move application", rules),
             ("small-eye detection", eyes),
             ("capture bookkeeping", capture_check),

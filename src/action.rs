@@ -1,7 +1,7 @@
 use crate::profile::MoveProfile;
 use continugo_analysis::{GeometricAvailability, SmallEyeAnalysis};
 pub use continugo_rules::{Action, COORDINATE_ACTIONS};
-use continugo_rules::{Game, Play};
+use continugo_rules::{Game, Play, PreparedGame};
 use rand::Rng;
 use serde::Serializer;
 use std::time::Instant;
@@ -85,10 +85,10 @@ impl Proposals {
     }
 
     /// Failure means the bounded MCTS budget was spent, NOT no legal move.
-    pub fn legal(&mut self, game: &Game, attempts: usize) -> Option<(Action, Game)> {
+    pub fn legal(&mut self, game: &PreparedGame, attempts: usize) -> Option<(Action, Game)> {
         for _ in 0..attempts {
             let action = self.next()?;
-            if let Ok(next) = action.apply(game) {
+            if let Ok(next) = game.play(action.spot().expect("coordinate proposal")) {
                 return Some((action, next));
             }
         }
@@ -122,6 +122,11 @@ fn select_random_move<const PROFILE: bool>(
     profile: &mut MoveProfile,
     eyes: &mut SmallEyeAnalysis<'_>,
 ) -> Option<(Action, Game)> {
+    let started = PROFILE.then(Instant::now);
+    let prepared = game.prepare();
+    if let Some(started) = started {
+        profile.rules_preparation.record(started);
+    }
     let enemy = game.on_move().other();
     let enemy_count = game
         .position()
@@ -131,7 +136,7 @@ fn select_random_move<const PROFILE: bool>(
         .count();
     for action in candidates {
         let started = PROFILE.then(Instant::now);
-        let result = action.apply(game);
+        let result = prepared.play(action.spot().expect("coordinate proposal"));
         if let Some(started) = started {
             profile.proposals += 1;
             let seconds = profile.rules.record(started);
@@ -377,6 +382,48 @@ mod tests {
         println!("optimized:\n{}", profile.summary());
         #[cfg(feature = "reference-rules")]
         println!("exhaustive reference:\n{}", reference.summary());
+    }
+
+    #[test]
+    #[ignore = "explicit release benchmark; set CONTINUGO_BENCH_SGF"]
+    fn benchmark_prepared_rules() {
+        let game = benchmark_game();
+        let available = GeometricAvailability::new(game.position());
+        let started = Instant::now();
+        let prepared = game.position().prepare();
+        let preparation = started.elapsed().as_secs_f64();
+        let mut queries = 0;
+        let mut ordinary_seconds = 0.0;
+        let mut prepared_seconds = 0.0;
+        for color in [Color::Black, Color::White] {
+            let stones: Vec<_> = available
+                .coordinates()
+                .iter()
+                .map(|action| Stone {
+                    color,
+                    spot: action.spot().unwrap(),
+                })
+                .collect();
+            let started = Instant::now();
+            let ordinary: Vec<_> = stones
+                .iter()
+                .map(|&stone| game.position().play(stone))
+                .collect();
+            ordinary_seconds += started.elapsed().as_secs_f64();
+            let started = Instant::now();
+            let cached: Vec<_> = stones.iter().map(|&stone| prepared.play(stone)).collect();
+            prepared_seconds += started.elapsed().as_secs_f64();
+            for ((stone, ordinary), cached) in stones.iter().zip(ordinary).zip(cached) {
+                assert_eq!(ordinary, cached, "{stone:?}");
+                queries += 1;
+            }
+        }
+        println!(
+            "size={}, ply={}, stones={}, queries={queries}, preparation={preparation:.6}s, ordinary={ordinary_seconds:.6}s, prepared={prepared_seconds:.6}s",
+            game.board().size(),
+            game.record().len() + 1,
+            game.position().stones().len()
+        );
     }
 
     #[test]

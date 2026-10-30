@@ -1,7 +1,8 @@
 use crate::action::{Action, Proposals};
-use continugo_rules::{Color, Game, territory};
+use continugo_rules::{Color, Game, PreparedGame, territory};
 use rand::Rng;
 use serde::Serialize;
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SearchConfig {
@@ -80,6 +81,7 @@ struct Node {
     // Always from this node's side-to-move perspective, not its parent's.
     value_sum: f64,
     proposals: Proposals,
+    prepared: OnceLock<PreparedGame>,
     children: Vec<Edge>,
 }
 
@@ -90,6 +92,7 @@ impl Node {
             visits: 0,
             value_sum: 0.0,
             proposals: Proposals::new(rng),
+            prepared: OnceLock::new(),
             children: Vec::new(),
         }
     }
@@ -128,7 +131,10 @@ impl Node {
             * f64::from(self.visits).powf(config.widening_exponent))
         .ceil() as usize;
         if self.children.len() - 1 < placement_limit
-            && let Some((action, game)) = self.proposals.legal(&self.game, config.proposal_attempts)
+            && let Some((action, game)) = self.proposals.legal(
+                self.prepared.get_or_init(|| self.game.prepare()),
+                config.proposal_attempts,
+            )
         {
             // At most one new coordinate per simulation. Rejected coordinates
             // consume proposal work, but never become actions in the tree.

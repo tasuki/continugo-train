@@ -376,6 +376,7 @@ mod tests {
         assert_eq!(profile.moves.len(), timed.metadata.policies.len());
         assert!(profile.seconds >= profile.selfplay_seconds);
         for m in &profile.moves {
+            assert_eq!(m.rules_preparation.calls, 1);
             assert_eq!(m.rules.calls, m.proposals);
             assert_eq!(m.capture_check.calls, m.legal);
             assert!(m.rejected_eyes <= m.eyes.calls);
@@ -387,7 +388,8 @@ mod tests {
             }
             assert!(
                 m.seconds
-                    >= m.rules.seconds
+                    >= m.rules_preparation.seconds
+                        + m.rules.seconds
                         + m.capture_check.seconds
                         + m.eyes.seconds
                         + m.availability_update.seconds

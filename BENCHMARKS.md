@@ -256,6 +256,77 @@ the first pass. The `reference-eyes` feature only compiles the old detector for
 tests/benchmarks, not a different production policy. Logs are in
 `runs/eye-benchmarks`; the whole-game record and profile are in `runs/eyes-full13`.
 
+## Per-position groups and exact liberty witnesses
+
+The shared rules now expose `Position::prepare` and `Game::prepare`. They build
+same-color connected groups once and retain up to two separated, exact liberty
+coordinates per group. A witness not overlapped by the candidate proves that
+its group still has a liberty. If both witnesses are blocked, the validator
+rechecks the group with the existing exact scanline search. These are existence
+witnesses, not approximate liberty counts or tactical heuristics.
+
+Enemy groups are captured simultaneously before checking the new friendly
+merged group and other friendly groups. Original stone order, captures, suicide,
+strict touching boundaries, and board bounds are preserved. `Position::play`
+remains the uncached differential baseline. Prepared positions borrow their
+immutable source; prepared games own a snapshot, preventing stale analysis.
+Random self-play prepares once per turn. MCTS prepares lazily once per expanded
+node and reuses that snapshot across progressive-widening proposals; its policy,
+RNG consumption, pass handling, and lack of eye avoidance are unchanged.
+
+### Fixed-position differential checks
+
+Every geometrically available coordinate was checked for **both colors** against
+the uncached validator, comparing full resulting positions, including stone order:
+
+| Position before turn | Queries | Uncached | Prepared | Preparation |
+|---|---:|---:|---:|---:|
+| Size 9, turn 80, 51 stones | 18,614 | 3.4681 s | 0.09094 s | 0.000289 s |
+| Size 13, turn 199, 110 stones | 17,340 | 2.3647 s | 0.09834 s | 0.000276 s |
+| Size 19, turn 409, 241 stones | 10,558 | 4.5403 s | 0.07461 s | 0.000850 s |
+
+All **46,512** candidate results matched. Scan timings exclude comparison checks;
+preparation is reported separately. Ordinary tests additionally cover both colors
+across sizes 1/2/3/9/13/19/500, exact touching, source immutability, game history and
+completion, capture/suicide fixtures, and dense setup positions with simultaneous
+captures, connections, and pre-existing dead groups.
+
+### Controlled whole-game comparison
+
+Same machine and release configuration as above, one worker, same indexed sampler
+and seeds. All games completed naturally; generation times include preparation,
+profiling, scoring and SGF serialization, but exclude compilation and file output.
+
+| Size / seed | Moves | Before | Prepared | Speedup | All preparation | Candidate rules |
+|---|---:|---:|---:|---:|---:|---:|
+| 9 / 0 | 81 | 3.626 s | 0.161 s | 22.5× | 0.0122 s | 0.0963 s |
+| 13 / 1 | 202 | 2.703 s | 0.270 s | 10.0× | 0.0499 s | 0.1326 s |
+| 19 / 2 | 432 | 13.316 s | 0.570 s | 23.4× | 0.2263 s | 0.1908 s |
+
+Decoded moves, player names, scored results, and every turn's proposal, legality,
+eye-rejection and stage-call counts match. Profiled SGFs differ in timings and the
+new preparation counters, so whole-file bytes are not compared. These are individual
+diagnostic runs, not multi-seed averages or MCTS throughput measurements.
+Preparation is now a significant cost (39.7% of the size-19 game); the optimization
+is not free for positions requiring very few candidate checks.
+
+Keeping just one witness left the size-9 game at about 2.6 s: many candidates
+blocked that witness even when the group had another surviving liberty. Retaining
+a second separated witness reduced unnecessary exact rechecks without changing
+any candidate results.
+
+To reproduce a fixed-position comparison (defaults to before the first pass):
+
+```sh
+CONTINUGO_BENCH_SGF=runs/reuse-before/game-000002-size13-seed1.sgf \\
+  mise exec -- cargo test --locked --release action::tests::benchmark_prepared_rules -- --ignored --nocapture
+```
+
+Set `CONTINUGO_BENCH_PLY` to select another turn. No reference feature is needed:
+the current uncached scanline validator is the comparison baseline. Whole-game
+profiles are in `runs/reuse-before` and `runs/reuse-two-witnesses`; differential
+logs are in `runs/reuse-benchmarks`.
+
 ## Profile the current implementation
 
 ```sh

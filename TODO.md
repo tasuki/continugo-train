@@ -63,12 +63,10 @@ If evaluating all million coordinates per position proves too expensive, investi
 
 ## Implementation priorities
 
-1. Optimize shared-rule move validation: prepare connected groups and exact liberty witnesses once per position, reuse them across candidates, and recheck affected groups. Preserve capture/suicide semantics; compare results against the current validator and benchmark identical games.
-2. Establish a working random self-play and MCTS pipeline using the existing Rust rules.
-3. Implement and benchmark the initial PyTorch policy/value network.
-4. Integrate exact rule-derived features and ONNX inference.
-5. Build the iterative neural self-play training loop.
-6. Evaluate playing strength across board sizes and scale the network as justified.
-7. Move stable reusable components into the main ContinuGo repository.
+1. Implement and benchmark the initial PyTorch policy/value network.
+2. Integrate exact rule-derived features and ONNX inference.
+3. Build the iterative neural self-play training loop.
+4. Evaluate playing strength across board sizes and scale the network as justified.
+5. Move stable reusable components into the main ContinuGo repository.
 
 **Guiding principle:** Keep the initial implementation simple and performant. Reuse KataGo's proven training methods, while concentrating original engineering effort on ContinuGo's unusual action space, exact geometric rules, and efficient neural policy representation.
