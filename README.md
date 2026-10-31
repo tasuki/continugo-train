@@ -27,5 +27,6 @@ mise run model-bench -- --device cuda
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
 
-See [python/README.md](python/README.md) for the network and synthetic benchmarks,
-[TODO.md](TODO.md) for the plan, and [BENCHMARKS.md](BENCHMARKS.md) for measurements.
+See [FEATURES.md](FEATURES.md) for real Rust inputs and SGF loading,
+[python/README.md](python/README.md) for the network, [TODO.md](TODO.md) for the plan,
+and [BENCHMARKS.md](BENCHMARKS.md) for measurements.

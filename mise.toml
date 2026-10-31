@@ -6,6 +6,7 @@ python = "3.13.5"
 description = "Fetch Rust dependencies and install the Python environment"
 run = [
   "cargo fetch",
+  "cargo build --locked --release --bin features",
   "python -m venv .venv",
   '.venv/bin/python -m pip install torch==2.7.1 --index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu118}"',
   ".venv/bin/python -m pip install -e '.[dev]'",
@@ -16,6 +17,7 @@ description = "Test shared rules, analysis, and training infrastructure"
 run = [
   "cargo test --locked --workspace --manifest-path ../continugo/backend/Cargo.toml",
   "cargo test --locked",
+  "cargo build --locked --release --bin features",
   ".venv/bin/python -m unittest discover -s tests -p 'test_*.py'",
 ]
 
@@ -23,12 +25,20 @@ run = [
 run = [
   "cargo fmt --check",
   "cargo clippy --locked --all-targets -- -D warnings",
-  ".venv/bin/ruff check python tests/test_network.py",
-  ".venv/bin/ruff format --check python tests/test_network.py",
+  ".venv/bin/ruff check python tests",
+  ".venv/bin/ruff format --check python tests",
 ]
 
 [tasks.format]
-run = ["cargo fmt", ".venv/bin/ruff format python tests/test_network.py"]
+run = ["cargo fmt", ".venv/bin/ruff format python tests"]
+
+[tasks.build-features]
+description = "Build the authoritative Rust-to-PyTorch feature bridge"
+run = "cargo build --locked --release --bin features"
+
+[tasks.features]
+description = "Extract real position tensors from SGF (binary stdout by default)"
+run = "cargo run --locked --release --bin features --"
 
 [tasks.model-bench]
 description = "Benchmark synthetic coarse/dense inference and training (FP32)"

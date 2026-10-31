@@ -19,7 +19,7 @@ Train a single **ResNet with policy and value heads**, supporting the discrete s
 
 **Coarse ResNet:**
 - Scale the input resolution with stone diameter, keeping local stone formations at approximately the same scale.
-- Input planes include friendly/enemy stone positions, group sizes, group liberty statistics, recent moves, and directional distances to board borders.
+- Input planes include friendly/enemy stone positions, group sizes, group liberty area matching the UI highlight (in stone-disc units), exact one-move capturability by the opposing color on the unchanged board, and directional distances to board borders. Do not include move-history planes or exactly-one-integer-liberty flags, and do not treat area as a handcrafted moves-to-capture estimate.
 - Start small, perhaps **32 channels and 4–6 residual blocks**, with configurable architecture.
 - Increase network capacity as training progresses, guided by playing strength relative to computational cost.
 
@@ -63,11 +63,10 @@ If evaluating all million coordinates per position proves too expensive, investi
 
 ## Implementation priorities
 
-1. Implement real Rust feature extraction and SGF replay/loading for training, using the authoritative shared rules.
-2. Build offline PyTorch training from saved SGFs: MCTS visit-count policy targets, completed-game outcome targets, and saved checkpoints. Do not require ONNX for this stage.
-3. Export trained models to ONNX and integrate native inference into Rust MCTS.
-4. Build the iterative neural self-play training loop.
-5. Evaluate playing strength across board sizes and scale the network as justified.
-6. Move stable reusable components into the main ContinuGo repository.
+1. Build offline PyTorch training from saved SGFs: efficient resolution-bucketed data loading, MCTS visit-count policy targets, completed-game outcome targets, validation split by game, and schema-versioned resumable checkpoints. Use the real Rust feature bridge; do not require ONNX for this stage.
+2. Export trained models to ONNX and integrate native inference into Rust MCTS.
+3. Build the iterative neural self-play training loop.
+4. Evaluate playing strength across board sizes and scale the network as justified.
+5. Move stable reusable components into the main ContinuGo repository.
 
 **Guiding principle:** Keep the initial implementation simple and performant. Reuse KataGo's proven training methods, while concentrating original engineering effort on ContinuGo's unusual action space, exact geometric rules, and efficient neural policy representation.

@@ -22,15 +22,21 @@ interpolated, so neighboring coordinates can retain different tactical scores.
 - Legality: `[batch, candidates]` bool, from the authoritative Rust validator.
 - Output: raw logits `[batch, candidates+1]` (pass last), and values `[batch]`.
 
-The initial 16 input planes and 12 exact feature columns are **configurable
-placeholder widths, not an implemented feature schema**. Rust extraction of
-stone/group/liberty/history/border features and exact per-candidate features is
-next. Python neither guesses legality nor implements any rules. The random
-bootstrap's eye filter must NOT enter neural policy legality or MCTS.
+Defaults match Rust schema 4: **12 float32 coarse planes and 10 float32 exact feature columns**.
+The two added group planes flag exact one-move capturability by the opposing color
+on the unchanged board, not forced capture after replies.
+Group liberty area uses the UI's swept-region geometry, normalized by stone-disc
+area without clipping. There are no history planes, capped liberty-coordinate
+counts, or exactly-one-liberty flags. Area is computed per existing group, not
+for every hypothetical move. See [FEATURES.md](../FEATURES.md) for channel definitions,
+normalization, SGF replay, and `continugo_train.features.load_position`. Python
+neither guesses legality nor implements any rules. The random bootstrap's eye
+filter does NOT enter neural policy legality or MCTS.
 
 Full evaluation supplies `torch.arange(1_000_000)`; output columns then match the
 shared Rust action IDs, including pass at 1,000,000. Candidate subsets use the
-same scoring kernel, but softmax over a subset is only a **conditional** policy.
+same scoring kernel; a subset's softmax is **conditional** unless it contains
+every legal placement.
 Illegal coordinates get `-inf`; pass remains finite, even with no legal placement.
 Inference uses chunks of 65,536 coordinates by default. Chunking bounds temporary
 inference activations; autograd still retains all chunks during training.
@@ -39,12 +45,15 @@ inference activations; autograd still retains all chunks during training.
 all supplied legal logits plus pass) and value MSE, with equal initial weights.
 Zero-count target padding is allowed; positive counts on illegal moves are rejected.
 Outcome labels must come from completed games and be flipped to the pre-move
-player's perspective. This stage does **not** load SGF, train a real self-play model,
-export ONNX, or replace the Rust baseline evaluator yet.
+player's perspective. Real SGFs can now be replayed/validated in Rust and loaded
+as tensors, including sparse visits and outcome labels. A full offline training
+CLI, ONNX export, and replacement of the Rust baseline evaluator are still next.
 
-Checkpoints can store `dataclasses.asdict(model.config)` and `model.state_dict()`
-in a single `torch.save` file, restoring with `NetworkConfig(**saved["config"])` and
-`load_state_dict`; the tests cover configuration and BatchNorm-state round trips.
+Checkpoints can store the feature schema version, `dataclasses.asdict(model.config)`
+and `model.state_dict()` in a single `torch.save` file, restoring with
+`NetworkConfig(**saved["config"])` and `load_state_dict`; the tests cover configuration
+and BatchNorm-state round trips. Reject mismatched feature schemas when training
+checkpoints are loaded.
 
 ## Synthetic benchmarks
 

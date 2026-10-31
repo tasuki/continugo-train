@@ -1,4 +1,6 @@
-# ContinuGo training benchmarks — 2026-10-30
+# ContinuGo training benchmarks
+
+Initial self-play and network measurements: 2026-10-30.
 
 The first whole-game table describes the **original full-coordinate sampler**,
 before the incremental coverage-count index. Switching to the free-list sampler
@@ -318,7 +320,7 @@ any candidate results.
 To reproduce a fixed-position comparison (defaults to before the first pass):
 
 ```sh
-CONTINUGO_BENCH_SGF=runs/reuse-before/game-000002-size13-seed1.sgf \\
+CONTINUGO_BENCH_SGF=runs/reuse-before/game-000002-size13-seed1.sgf \
   mise exec -- cargo test --locked --release action::tests::benchmark_prepared_rules -- --ignored --nocapture
 ```
 
@@ -356,9 +358,10 @@ diameters 110/76/52. Policy chunks contain at most 65,536 coordinates, with
 These are **synthetic FP32 eager** measurements, not neural self-play or trained
 playing strength. Inputs/features are random, with a synthetic approximately 90%
 legal mask; no Python rules or feature extraction is substituted for Rust. Both
-inputs and sparse visit/outcome targets are preallocated on-device. The actual
-Rust feature schema, SGF training ingestion, ONNX export and neural MCTS integration
-remain to be implemented.
+inputs and sparse visit/outcome targets are preallocated on-device. Real Rust
+features and SGF loading were added afterward and are measured below; these older
+synthetic timings still exclude extraction and transfer. ONNX and neural MCTS
+integration remain future work.
 
 PyTorch **2.7.1+cu118**, Python 3.13.5, seed 0, 6 CPU threads, two warmup calls per
 stage followed by the **median of five** timed calls. GPU: GTX 1080 (8 GiB), driver
@@ -418,3 +421,185 @@ mise run model-bench -- --channels 64 --blocks 6 --policy-hidden 32
 
 Raw logs: `runs/network/cuda.txt` and `runs/network/cpu.txt`. See
 [python/README.md](python/README.md) for the input contract and benchmark options.
+
+## Real Rust feature extraction — 2026-10-31
+
+These measurements describe schema 1 (16 planes / 12 move fields). Schema 2
+subsequently removed all four history planes and the exactly-one-liberty flags
+(10 planes / 11 fields); it was not separately rebenchmarked here. Schema 3
+implements UI-style area; its measurements are below. See FEATURES.md.
+
+Version-1 inputs contained real stone/group/liberty/history/border planes and
+exact move legality, connections, captures, resulting group size and capped exact
+liberties. Rule facts use the shared validator and shared integer liberty search;
+normalization/rasterization remain experimental code in `continugo-train`. Schema,
+label semantics and the binary bridge are documented in [FEATURES.md](FEATURES.md).
+
+The following are sequential, single-position diagnostics from the same three
+completed random SGFs (sizes 9/13/19, seeds 0/1/2), using the i5-8400 and Rust release
+build, one thread. Every extraction computes **all million coordinate rows**.
+`ply` counts moves already played; these are pre-move positions. Export writes the
+roughly 53 MB tensor packet to `/dev/null`; it does not measure disk persistence
+or Python decoding. Process startup and action-ID vector construction are also
+outside these stages. Source SGFs are replayed to completion to validate scored RE,
+so replay time is nearly independent of the requested ply.
+
+| Size | Ply | Legal placements | Replay | Coarse + preparation | Exact rows | Binary output |
+|---|---:|---:|---:|---:|---:|---:|
+| 9 | 0 | 793,881 | 0.00620 s | 0.00004 s | 0.16522 s | 0.02975 s |
+| 9 | 40 | 19,444 | 0.00612 s | 0.00020 s | 0.29121 s | 0.03120 s |
+| 9 | 79 | 3,140 | 0.00656 s | 0.00059 s | 0.45788 s | 0.03102 s |
+| 13 | 0 | 855,625 | 0.02433 s | 0.00005 s | 0.17635 s | 0.03142 s |
+| 13 | 100 | 6,127 | 0.02376 s | 0.00085 s | 0.30787 s | 0.03178 s |
+| 13 | 198 | 6,285 | 0.02353 s | 0.00062 s | 0.23624 s | 0.03184 s |
+| 19 | 0 | 900,601 | 0.12643 s | 0.00009 s | 0.17890 s | 0.02951 s |
+| 19 | 200 | 12,028 | 0.12516 s | 0.00131 s | 0.26380 s | 0.02884 s |
+| 19 | 408 | 3,903 | 0.12365 s | 0.00146 s | 0.52424 s | 0.02949 s |
+
+Legality is not the random bot's acceptability filter: these late positions can
+have thousands of legal moves even when random self-play must pass because all
+such placements fill excluded small eyes. Tests explicitly preserve that distinction.
+
+One complete size-13 ply-198 sample loaded through the Python subprocess bridge
+in **0.361 s**, including full replay, extraction, binary transport and decoding
+(a separate single run, not the sum of table medians). It fed the default network
+on the GTX 1080 and produced the expected `[1, 1_000_001]` logits with finite pass.
+The initial one-request-per-position bridge is not a batched data-loader service;
+feature extraction/transport now costs much more than the approximately 7 ms
+GPU inference measured above. Efficient offline loading is the next priority.
+
+A separate real-data GPU smoke test used a naturally completed **9-move MCTS SGF**
+(size 9, seed 41, 8 simulations). Its actual root policy had total visit mass 8 and
+7 positive actions. Three default-network SGD updates (initialization seed 0,
+lr 0.01, momentum 0.9) produced finite gradients and losses **14.486 → 13.590 →
+13.140**. This proves the real SGF → Rust features → PyTorch loss path works;
+it is not a strength evaluation or a trained model release.
+
+The existing three seeded random games remain **byte-for-byte identical** after
+the shared liberty API refactor. Tests also cover exact capped liberty counts
+against an exhaustive one-liberty enclosure, resulting-group analysis against
+normal validation, touching/capture/suicide distinctions, side-to-move/history
+alignment, RE/target validation, terminal/truncated samples, corrupt binary data,
+and a full million-coordinate real-feature training step.
+
+```sh
+mise run build-features
+# Diagnostic tensor output; creates no alternate game record.
+mkdir -p runs
+mise run features -- --sgf runs/random-new/game-000002-size13-seed1.sgf \
+  --ply 198 --output runs/position.cfeat
+```
+
+Raw diagnostics: `runs/features/timing.txt`, `runs/features/training-smoke.txt`,
+`runs/features/selfplay.txt`; the MCTS source SGF is under `runs/feature-mcts`.
+
+## UI-style liberty area — schema 3
+
+The group feature is now the **union area of the UI's stone-radius swept liberty
+spans**, divided by physical stone-disc area, without capping or clipping. Exact
+integer centers come from the shared rule scanlines; only continuous area
+integration is numerical. No history, exactly-one-liberty flags or capped liberty
+counts remain in the network input. A single isolated center has exactly one
+stone-disc of highlighted area, not a negligible coordinate-count fraction.
+
+Area is calculated once per existing group, not for every hypothetical move. The
+old resulting-liberty-count column was removed instead of replacing it with a
+million expensive area calculations. Thus schema 3 has **10 coarse planes and
+10 move fields**, 79,523 parameters with the default 32-channel / 4-block network.
+A child position gets its own fresh group areas when extracted. Captures,
+connections, legality and resulting group sizes remain exact per-move features.
+
+Sequential release diagnostics on the same SGFs/CPU as above, one thread, all
+million coordinate rows (individual runs, not statistical speedup estimates):
+
+| Size | Ply | Legal placements | Coarse + preparation, including area | Exact rows |
+|---|---:|---:|---:|---:|
+| 9 | 0 | 793,881 | 0.00004 s | 0.11288 s |
+| 9 | 40 | 19,444 | 0.00604 s | 0.14778 s |
+| 9 | 79 | 3,140 | 0.00140 s | 0.08800 s |
+| 13 | 0 | 855,625 | 0.00008 s | 0.11929 s |
+| 13 | 100 | 6,127 | 0.00474 s | 0.21907 s |
+| 13 | 198 | 6,285 | 0.00206 s | 0.08539 s |
+| 19 | 0 | 900,601 | 0.00009 s | 0.12269 s |
+| 19 | 200 | 12,028 | 0.01243 s | 0.18354 s |
+| 19 | 408 | 3,903 | 0.00445 s | 0.12136 s |
+
+Exact-row extraction is cheaper than schema 1 because it no longer searches
+resulting-group liberties per candidate. Replay is still about 0.006/0.024/0.125 s
+for the three complete source games; output is about 0.025–0.027 s for a roughly
+45 MB packet to `/dev/null`. Kernel timings exclude replay, transport, Python
+loading and inference. The largest populated coarse/preparation stage above was
+12.4 ms, so area computation is not the main full-domain cost here.
+
+### Area accuracy checks
+
+Union lengths are integrated with midpoint slices no higher than one board unit
+or r/32, aligned with integer capsule activation boundaries. Single capsules use
+the analytic area directly. Tests check overlapping/disjoint disk unions, long
+capsules, an isolated touching center, translation, and refinement at half the
+slice height. Center spans are independently checked pointwise against the exact
+shared geometry on boards 3/9/13/19, including borders and exact touching.
+
+A separate half-step audit over the six populated positions above covered **131
+groups**. Largest coarse/fine difference: **0.003086 stone-disc units**; largest
+relative difference: **0.0283%**. These are observed convergence differences, not a
+certified worst-case error bound or a claim of exact continuous integration.
+Exact legal/capture decisions do not depend on numerical area.
+
+The real SGF → features → default-network CUDA loss/backward smoke test also
+passes on a nonempty MCTS position (schema 3, group area reaching 9.79 stone-discs),
+with finite gradients. This checks wiring, not game strength. Source SGFs stay
+compatible; old derived feature packets/checkpoints must be discarded or migrated.
+
+```sh
+CONTINUGO_BENCH_SGF=runs/random-new/game-000003-size19-seed2.sgf CONTINUGO_BENCH_PLY=409 mise exec -- cargo test --locked --release liberty_area::tests::audit_record_areas -- --ignored --nocapture
+```
+
+The audit's `CONTINUGO_BENCH_PLY` is a **one-based turn**, following the older
+benchmark helpers; the feature CLI's `--ply` is zero-based. Raw logs are in
+`runs/area/timing.txt` and `runs/area/accuracy.txt`.
+
+## Exact one-move-capturable planes — schema 4
+
+Two float32 0/1 planes now mark friendly/enemy groups with a verified legal
+opposing placement that captures the whole group on the unchanged position.
+The attacker is the group's opposite color, irrespective of the actual turn;
+this is a threat flag, not a forced-capture or capture-depth prediction. Values
+are painted on group stones. There are **12 coarse planes / 10 move fields**
+(default network: 80,099 parameters). Source SGFs are unchanged; derived packets
+and checkpoints from earlier feature schemas are incompatible.
+
+The query reuses exact liberty spans already needed for area. Wide-spread
+liberties reject via bounds. For each remaining y, intersect strict exclusion
+constraints for span endpoints, subtract occupied geometric intervals, then
+validate candidates with the shared prepared capture/suicide rules. This is an
+exhaustive exact filter, not a sampled candidate budget or an area threshold.
+Nothing is added to the per-million-coordinate feature loop.
+
+One-thread release diagnostics on the same nine positions as schema 3:
+
+| Size | Ply | Coarse + preparation, including flags | Exact rows |
+|---|---:|---:|---:|
+| 9 | 0 | 0.00005 s | 0.11279 s |
+| 9 | 40 | 0.00585 s | 0.14927 s |
+| 9 | 79 | 0.00144 s | 0.08873 s |
+| 13 | 0 | 0.00007 s | 0.11926 s |
+| 13 | 100 | 0.00581 s | 0.21670 s |
+| 13 | 198 | 0.00223 s | 0.08765 s |
+| 19 | 0 | 0.00013 s | 0.12184 s |
+| 19 | 200 | 0.01457 s | 0.18666 s |
+| 19 | 408 | 0.00448 s | 0.11955 s |
+
+Legal-coordinate counts match schema 3. Output remains about 0.025–0.027 s to
+`/dev/null` for roughly 45 MB. These are individual diagnostics, not paired
+averages isolating flag overhead; the largest coarse/preparation stage is now
+14.6 ms. Full-domain exact-row extraction still dominates this CPU path.
+
+Tests independently compare the candidate filter against exhaustive pointwise
+geometry (including strict touching), and capturability against exhaustive legal
+placements in dense mixed-color setups. They cover corner captures despite many
+liberties, protected separated pockets, whole-group removal, both colors, turn
+changes, float32 0/1 encoding and painting on group stones. Normal search/self-play
+receives no handcrafted value bonus or policy filter from these features.
+
+Raw diagnostics: `runs/capture-flags/timing.txt`.

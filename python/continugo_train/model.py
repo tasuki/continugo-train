@@ -7,12 +7,12 @@ Inputs are side-to-move-relative Rust features, not images of inferred legality:
   legal:        [B, N] bool, authoritative legality, NOT the bootstrap eye filter
 
 Full policy evaluation supplies IDs 0..999999 in order. Subsets use the very same
-scorer, but their softmax is conditional on that subset, not a full-board prior.
+scorer; their softmax is conditional unless every legal placement is included.
 Output columns follow the supplied IDs, with pass appended at column N. Values
 are expected outcomes in [-1,1] from the current player's perspective.
 
-Feature counts are configurable placeholders; the Rust feature schema and ONNX
-integration are the next stage. This module does not implement any game rules.
+Defaults match the versioned real Rust feature schema in FEATURES.md. Alternate
+feature widths remain configurable for experiments. No game rules live here.
 """
 
 import math
@@ -22,14 +22,16 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from .features import COARSE_PLANES, MOVE_FEATURES
+
 COORD_RANGE = 1000
 COORDINATE_ACTIONS = COORD_RANGE**2
 
 
 @dataclass(frozen=True)
 class NetworkConfig:
-    input_planes: int = 16
-    move_features: int = 12
+    input_planes: int = len(COARSE_PLANES)
+    move_features: int = len(MOVE_FEATURES)
     channels: int = 32
     blocks: int = 4
     policy_hidden: int = 16
