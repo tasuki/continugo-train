@@ -1,4 +1,4 @@
-# Random self-play timing — 2026-10-30
+# ContinuGo training benchmarks — 2026-10-30
 
 The first whole-game table describes the **original full-coordinate sampler**,
 before the incremental coverage-count index. Switching to the free-list sampler
@@ -344,3 +344,77 @@ not whole-file bytes, when comparing runs with different profiling annotations.
 Raw reports for this measurement are in `runs/timing-profile` and
 `runs/timing-baseline`. As with everything under `runs/`, those are temporary
 artifacts; this document retains the results if they are deleted.
+
+## Initial PyTorch policy/value network
+
+Default architecture: **81,283 parameters**, 32 channels, 4 residual blocks,
+16 coarse input planes, 12 exact-feature input columns, 16-wide shared policy
+scorer, 32-wide pooled value head. Coarse grids are 38/54/78 for Rust stone
+diameters 110/76/52. Policy chunks contain at most 65,536 coordinates, with
+**all 1,000,000 coordinates plus pass** scored per position.
+
+These are **synthetic FP32 eager** measurements, not neural self-play or trained
+playing strength. Inputs/features are random, with a synthetic approximately 90%
+legal mask; no Python rules or feature extraction is substituted for Rust. Both
+inputs and sparse visit/outcome targets are preallocated on-device. The actual
+Rust feature schema, SGF training ingestion, ONNX export and neural MCTS integration
+remain to be implemented.
+
+PyTorch **2.7.1+cu118**, Python 3.13.5, seed 0, 6 CPU threads, two warmup calls per
+stage followed by the **median of five** timed calls. GPU: GTX 1080 (8 GiB), driver
+550.163.01. CPU: same i5-8400 as above. CPU and GPU runs were sequential. Timings
+include Python dispatch; CUDA is synchronized at timing boundaries. Training uses
+forward/backward and SGD (lr 0.01, momentum 0.9, weight decay 1e-4). The coarse-only
+step uses a synthetic squared-output objective; the full step uses visit-count
+cross-entropy plus outcome MSE. Times are **milliseconds per batch**.
+
+### GTX 1080
+
+| Size / grid / batch | Coarse infer | Dense policy infer | Full infer | Coarse step | Full step | Full-step peak MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| 9 / 38 / 1 | 0.901 | 6.759 | 7.848 | 3.694 | 23.641 | 160.6 |
+| 9 / 38 / 4 | 0.875 | 29.579 | 30.551 | 3.673 | 85.972 | 971.3 |
+| 13 / 54 / 1 | 0.921 | 6.390 | 7.288 | 3.727 | 21.616 | 164.3 |
+| 13 / 54 / 4 | 0.916 | 29.639 | 30.696 | 4.178 | 86.737 | 986.6 |
+| 19 / 78 / 1 | 0.918 | 6.354 | 7.305 | 3.993 | 20.953 | 171.9 |
+| 19 / 78 / 4 | 1.488 | 29.587 | 31.091 | 6.064 | 82.534 | 1015.1 |
+
+Peak memory is total live PyTorch allocation, including inputs, gradients and
+optimizer state; it excludes reserved allocator memory, CUDA context and desktop
+processes. Batch-one full inference peaked at 80.6–89.5 MiB. Chunking bounds
+inference intermediates, but autograd retains all chunks until backward.
+
+### i5-8400 CPU, six threads
+
+| Size / grid / batch | Coarse infer | Dense policy infer | Full infer | Coarse step | Full step |
+|---|---:|---:|---:|---:|---:|
+| 9 / 38 / 1 | 1.784 | 153.891 | 154.964 | 6.771 | 272.562 |
+| 9 / 38 / 4 | 3.102 | 300.192 | 297.495 | 13.846 | 741.158 |
+| 13 / 54 / 1 | 2.340 | 100.842 | 100.369 | 9.664 | 274.579 |
+| 13 / 54 / 4 | 5.849 | 286.445 | 294.391 | 25.781 | 743.998 |
+| 19 / 78 / 1 | 3.140 | 98.672 | 103.042 | 15.219 | 278.858 |
+| 19 / 78 / 4 | 14.527 | 288.343 | 306.536 | 57.583 | 782.695 |
+
+The cheap dense head still dominates inference; increasing the coarse ResNet is
+not the immediate throughput bottleneck. Full GPU inference delivers about
+127–137 positions/s, while full training delivers about 42–48 positions/s. Batching
+four positions did not improve dense GPU throughput here. CPU timings are noisier;
+these five-call medians are diagnostics, not broad statistical comparisons.
+
+Tests cover million-coordinate output, resolution changes using one model,
+legality/pass masking, exact neighboring-coordinate distinctions, interpolation
+axes/endpoints, chunked versus unchunked logits/gradients, sparse versus dense
+cross-entropy, zero-count illegal padding, checkpoint round trips, and a tiny
+fixed batch whose training loss falls from 3.07 to 0.41 in 200 updates. That last
+check verifies learnability/wiring, not game strength.
+
+Reproduce or compare architectures:
+
+```sh
+mise run model-bench -- --device cuda
+mise run model-bench -- --device cpu
+mise run model-bench -- --channels 64 --blocks 6 --policy-hidden 32
+```
+
+Raw logs: `runs/network/cuda.txt` and `runs/network/cpu.txt`. See
+[python/README.md](python/README.md) for the input contract and benchmark options.

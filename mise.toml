@@ -3,18 +3,36 @@ rust = "1.99.1"
 python = "3.13.5"
 
 [tasks.setup]
-description = "Fetch Rust dependencies and create the Python environment"
-run = ["cargo fetch", "python -m venv .venv"]
+description = "Fetch Rust dependencies and install the Python environment"
+run = [
+  "cargo fetch",
+  "python -m venv .venv",
+  '.venv/bin/python -m pip install torch==2.7.1 --index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu118}"',
+  ".venv/bin/python -m pip install -e '.[dev]'",
+]
 
 [tasks.test]
 description = "Test shared rules, analysis, and training infrastructure"
-run = ["cargo test --locked --workspace --manifest-path ../continugo/backend/Cargo.toml", "cargo test --locked"]
+run = [
+  "cargo test --locked --workspace --manifest-path ../continugo/backend/Cargo.toml",
+  "cargo test --locked",
+  ".venv/bin/python -m unittest discover -s tests -p 'test_*.py'",
+]
 
 [tasks.check]
-run = ["cargo fmt --check", "cargo clippy --locked --all-targets -- -D warnings"]
+run = [
+  "cargo fmt --check",
+  "cargo clippy --locked --all-targets -- -D warnings",
+  ".venv/bin/ruff check python tests/test_network.py",
+  ".venv/bin/ruff format --check python tests/test_network.py",
+]
 
 [tasks.format]
-run = "cargo fmt"
+run = ["cargo fmt", ".venv/bin/ruff format python tests/test_network.py"]
+
+[tasks.model-bench]
+description = "Benchmark synthetic coarse/dense inference and training (FP32)"
+run = ".venv/bin/python -m continugo_train.benchmark"
 
 [tasks.selfplay]
 description = "Generate baseline MCTS games (arguments are forwarded)"

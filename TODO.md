@@ -63,10 +63,11 @@ If evaluating all million coordinates per position proves too expensive, investi
 
 ## Implementation priorities
 
-1. Implement and benchmark the initial PyTorch policy/value network.
-2. Integrate exact rule-derived features and ONNX inference.
-3. Build the iterative neural self-play training loop.
-4. Evaluate playing strength across board sizes and scale the network as justified.
-5. Move stable reusable components into the main ContinuGo repository.
+1. Implement real Rust feature extraction and SGF replay/loading for training, using the authoritative shared rules.
+2. Build offline PyTorch training from saved SGFs: MCTS visit-count policy targets, completed-game outcome targets, and saved checkpoints. Do not require ONNX for this stage.
+3. Export trained models to ONNX and integrate native inference into Rust MCTS.
+4. Build the iterative neural self-play training loop.
+5. Evaluate playing strength across board sizes and scale the network as justified.
+6. Move stable reusable components into the main ContinuGo repository.
 
 **Guiding principle:** Keep the initial implementation simple and performant. Reuse KataGo's proven training methods, while concentrating original engineering effort on ContinuGo's unusual action space, exact geometric rules, and efficient neural policy representation.

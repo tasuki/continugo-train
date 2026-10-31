@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "continugo-train"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["torch==2.7.1", "numpy>=2.1,<3"]
+
+[project.optional-dependencies]
+dev = ["ruff==0.17.3"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.ruff]
+src = ["python"]
+line-length = 100
+target-version = "py311"
