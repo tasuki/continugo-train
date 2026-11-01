@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from . import archive, gate
+from . import archive, gate, ratings
 from .data import inspect_corpus, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
@@ -33,7 +33,7 @@ from .runtime import inference_environment
 from .sampling import DEFAULT_SIZE_WEIGHTS, weighted_sizes
 from .train import Options, atomic_checkpoint, checkpoint_splits, feature_spec
 
-VERSION = 3
+VERSION = 4
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -74,6 +74,9 @@ class LoopConfig:
     feature_binary: str = str(ROOT / "target/release/features")
     ort_library: str | None = None
     arena_binary: str = str(ROOT / "target/release/arena")
+    rating_binary: str = str(ROOT / "target/release/rating")
+    reference_games: int = 10
+    reference_max_moves: int = 2048
     gate_games: int = 20
     gate_simulations: int = 32
     gate_max_moves: int = 512
@@ -82,10 +85,14 @@ class LoopConfig:
 
     def validate(self):
         weighted_sizes(self.sizes, self.size_weights)
-        if not 0 <= self.gate_games < 2**32 or self.gate_games % 2:
+        if any(
+            not 0 <= count < 2**32 or count % 2 for count in [self.gate_games, self.reference_games]
+        ):
             raise ValueError(
-                "gate-games must be an even nonnegative native u32 count (0 disables gating)"
+                "gate-games/reference-games must be even nonnegative native u32 counts (0 disables)"
             )
+        if self.reference_max_moves <= 0:
+            raise ValueError("reference-max-moves must be positive")
         if (
             not 0 < self.gate_simulations < 2**32
             or self.gate_max_moves <= 0
@@ -401,13 +408,19 @@ class LoopRunner:
                 self.check(iteration["checkpoint"])
             if iteration["model"]:
                 self.check_model(iteration["model"])
-            if iteration["gate"]:
-                for record in iteration["gate"]["games"]:
-                    if record:
-                        self.check(record)
+            for key in ["gate", "reference"]:
+                if iteration.get(key):
+                    for record in iteration[key]["games"]:
+                        if record:
+                            self.check(record)
             for key in ["training_archive", "accepted_archive"]:
                 if iteration[key]:
                     archive.verify_bundle(iteration[key])
+        initial_reference = self.state.get("initial_reference")
+        if initial_reference and initial_reference.get("reference"):
+            for record in initial_reference["reference"]["games"]:
+                if record:
+                    self.check(record)
         for key in ["initial_training_archive", "initial_archive"]:
             if self.state[key]:
                 archive.verify_bundle(self.state[key])
@@ -418,8 +431,13 @@ class LoopRunner:
         source = Path(checkpoint.get("source", self.check(checkpoint)))
         candidates += [str(path) for path in (source.parent / "replay").glob("*.sgf")]
         evaluation = []
-        if iteration and iteration["gate"]:
-            evaluation = [str(self.check(r)) for r in iteration["gate"]["games"] if r]
+        if iteration:
+            evaluation = [
+                str(self.check(r))
+                for key in ["gate", "reference"]
+                for r in (iteration.get(key) or {}).get("games", [])
+                if r
+            ]
         reference = archive.publish(
             self.config.model_store,
             kind,
@@ -434,6 +452,10 @@ class LoopRunner:
                 "next_seed": self.config.seed
                 + (iteration["number"] if iteration else 0) * self.config.games_per_iteration,
                 "gate": iteration["gate"]["report"] if iteration and iteration["gate"] else None,
+                "reference": (iteration.get("reference") or {}).get("report")
+                if iteration
+                else None,
+                "rating_protocol": self.state["rating_protocol"],
             },
         )
         self.log(f"RECOVERY {kind}: {reference['directory']}")
@@ -804,6 +826,24 @@ class LoopRunner:
         iteration["checkpoint"] = self.record(snapshots[-1])
         self.save()
 
+    def rate_evaluation(self, job, key, checkpoints):
+        match = job[key]
+        if not match["games"] or match.get("rating_event"):
+            return
+        result = ratings.ingest(
+            self.config.model_store,
+            self.state["rating_protocol"],
+            [self.check(record) for record in match["games"]],
+            checkpoints=[self.check(record) for record in checkpoints],
+            kind=key,
+            decision=match["report"].get("decision"),
+            rating_binary=self.config.rating_binary,
+            feature_binary=self.config.feature_binary,
+        )
+        match["rating_event"] = result
+        self.save()
+        self.log(f"RATINGS {key}: {result}")
+
     def run(self):
         self.verify_committed()
         if self.state["initial_model"] is None:
@@ -823,6 +863,18 @@ class LoopRunner:
                 model=self.state["initial_model"],
             )
             self.save()
+        ratings.refresh(self.config.model_store)
+        if self.state.get("initial_reference") is None:
+            self.state["initial_reference"] = {
+                "number": 1,
+                "initial": True,
+                "model": self.state["initial_model"],
+                "reference": None,
+            }
+            self.save()
+        initial = self.state["initial_reference"]
+        gate.evaluate(self, initial, reference=True)
+        self.rate_evaluation(initial, "reference", [self.state["initial_accepted_checkpoint"]])
         if self.state["accepted"] is None:
             self.state["accepted"] = {
                 "checkpoint": self.state["initial_accepted_checkpoint"],
@@ -872,7 +924,12 @@ class LoopRunner:
                 )
                 self.save()
             report = gate.evaluate(self, iteration)
+            self.rate_evaluation(
+                iteration, "gate", [iteration["checkpoint"], self.state["accepted"]["checkpoint"]]
+            )
             if report["decision"] == "accepted":
+                gate.evaluate(self, iteration, reference=True)
+                self.rate_evaluation(iteration, "reference", [iteration["checkpoint"]])
                 if iteration["accepted_archive"] is None:
                     iteration["accepted_archive"] = self.recovery(
                         iteration["checkpoint"],
@@ -965,7 +1022,7 @@ def run_loop(args):
                 or state.get("root") != str(root)
             ):
                 raise ValueError(
-                    "incompatible/relocated loop checkpoint; older loops are preserved but must be forked from their latest training checkpoint into a new v3 loop"
+                    "incompatible/relocated loop checkpoint; older loops are preserved but must be forked from their latest training checkpoint into a new v4 loop"
                 )
             for field in fields(LoopConfig):
                 value = getattr(args, field.name)
@@ -992,6 +1049,7 @@ def run_loop(args):
                 "feature_binary",
                 "ort_library",
                 "arena_binary",
+                "rating_binary",
                 "model_store",
             ]:
                 if name in supplied:
@@ -1082,14 +1140,25 @@ def run_loop(args):
         target = state["target_iterations"]
         if (
             target <= 0
-            or config.seed + target * max(config.games_per_iteration, config.gate_games // 2)
+            or config.seed
+            + target
+            * max(config.games_per_iteration, config.gate_games // 2, config.reference_games // 2)
             > 2**64
         ):
             raise ValueError("positive iteration target and nonoverflowing u64 game seeds required")
         if not Path(config.selfplay_binary).is_file():
             raise ValueError("self-play binary missing; build release binaries first")
-        if config.gate_games and not Path(config.arena_binary).is_file():
-            raise ValueError("arena binary missing; build release binaries first")
+        if config.gate_games or config.reference_games:
+            if not Path(config.arena_binary).is_file() or not Path(config.rating_binary).is_file():
+                raise ValueError("arena/rating binary missing; build release binaries first")
+            current_protocol = ratings.protocol(config)
+        else:
+            current_protocol = None
+        if args.resume and state.get("rating_protocol") != current_protocol:
+            raise ValueError(
+                "evaluation/rating executable changed; fork a new loop instead of mixing protocols"
+            )
+        state["rating_protocol"] = current_protocol
         feature_binary(config.feature_binary)
         torch.set_num_threads(config.threads)
         runner = LoopRunner(root, state, lock_fd)

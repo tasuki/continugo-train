@@ -85,26 +85,87 @@ ordinals put the candidate on black. Each pair advances the seed once.
 The standalone binary writes records and raw outcome totals; it does not move
 models or update any accepted pointer by itself.
 
-## Ratings: shared foundation, integration pending
+## Baseline-anchored static Glicko
 
-`../continugo/backend/rating` provides dependency-free **static Glicko** math,
-following the original Glicko update with no elapsed-time, inactivity or active
-process-noise inflation. Empty evidence leaves a bot unchanged; zero RD denotes
-a fixed reference. The reference prior is centered at 100, but a prior is **not**
-a measured rating. RD is a rating deviation, not a 95% confidence interval.
+The reference is the existing **direct random-but-not-eye-filling bot**, versioned
+as `random-no-eye-fill-v1`, fixed at **100 with zero RD**. Its turns use the same
+random policy and narrow eye filter as random diagnostics, not MCTS. Only neural
+turns have search-policy targets. Both colors are exercised; reference matches
+use maximum-visit neural play and the same `--gate-simulations` budget per move.
 
-The native `rating` binary is a stateless JSON stdin/stdout adapter: a request has
-`players` (`id`, `rating`, `deviation`) and completed `games` (`black`, `white`,
-`score` as black's win points). It updates all players simultaneously from their
-pre-match states. Unknown outcomes must be omitted, not converted to draws. The
-adapter does not validate SGFs, deduplicate evidence, persist history, or publish
-ratings. Its library tests cover the published Glicko example and no inflation;
-CLI tests cover simultaneous updates, fixed references and invalid evidence.
+The loop plays `--reference-games 10` (4/4/2 by board size) for the initial accepted
+network and each newly accepted candidate. `--reference-max-moves 2048` allows
+longer natural completion than the default gate cap; zero reference games disables
+calibration, not gating. These can be expensive: use zero explicitly for plumbing
+runs. Reference results **do not affect promotion**. Gate matches, including rejected
+and inconclusive candidates, also contribute completed outcomes to ratings.
+All evaluation records stay out of training replay and the training data counter.
 
-**Not implemented yet:** matches against the random-but-not-eye-filling reference,
-the persistent accepted-network rating table, and loop ingestion of match evidence.
-The existing arena still takes two neural networks. No network has been assigned
-a baseline-calibrated rating by this code. See [open work](todo.md).
+`../continugo/backend/rating` supplies the original Glicko update with **no time
+decay, inactivity inflation, or active volatility/process-noise inflation**.
+The native `rating` adapter applies a completed batch simultaneously from pre-batch
+opponent ratings. Nothing changes just because a bot gets older. Draws contribute
+half-points; truncations and self-matches do not update skill. A new network has
+a broad RD=350 prior centered on its calibrated training parent when available,
+otherwise 100. That prior is **not** a measured strength: untested networks and
+networks without completed evidence connecting them to the reference show
+**unrated**, with blank rating/RD cells. RD is not a 95% confidence interval.
+
+Pools separate different simulation/search settings, board mixes, move caps, and
+native evaluation/rating executable fingerprints. The arena stamps its fingerprint
+in each SGF root comment. A running loop freezes these fingerprints and refuses
+to resume after an executable change; fork a new loop instead. Equal simulations
+are not equal wall-clock compute across architectures. A rating is relative to
+this reference/protocol, not a human rank or an external strength scale.
+
+### Two CSVs, no database or rating JSON files
+
+Inside the durable model store:
+
+```text
+ratings/
+  networks.csv   all archived/evaluated networks, one row per network/pool
+  matches.csv    one row per processed SGF, batch history and post-batch ratings
+  games/*.sgf    authoritative immutable match evidence (store-owned hardlinks)
+  .lock
+```
+
+`networks.csv` contains readable names, full IDs, parent IDs, progress counters,
+`accepted` (1/0), acceptance dates/bundle paths, status, rating, deviation, `rating ± RD`,
+and completed W/D/L/truncation counts. **Filter `accepted=1` for all accepted networks**;
+rejected candidates remain in the same table. The reference has `accepted=0`.
+Numbers may be negative for bots weaker than the 100 reference.
+
+`matches.csv` records raw SGF hashes, players, actual results (blank means unknown),
+board size, protocol columns, audit dates, batch IDs and each player's **post-batch**
+rating/RD/anchor state. Snapshots repeat across a batch's rows, not per-game updates.
+It indexes evidence/history, not moves or training targets: SGFs remain the game
+records. One `(pool, SGF hash)` is counted at most once, even across overlapping
+imports or a crash after the CSV commit but before supervisor acknowledgement.
+
+A writer lock serializes updates. CSVs are fsynced and atomically replaced, not
+appended in place. Metadata is saved before committing match rows. On restart or
+refresh, current numeric ratings/counts are rebuilt from **committed match rows**,
+repairing an ahead/behind network-table cache without replaying the math or
+inflating uncertainty. Keep both CSVs; a missing match ledger is an error,
+not permission to reset ratings. Back up the whole store and quiesce writers while
+copying the two CSVs. Do not edit rating snapshots or processed hashes by hand.
+
+```sh
+mise run ratings
+mise run ratings -- --accepted-only
+# Additional arena SGFs must match the chosen existing pool's full protocol:
+mise run ratings -- --pool FULL_POOL_ID --ingest runs/arena-001 --checkpoints PATH/TO/CANDIDATE/checkpoint.pt
+# Standalone neural-vs-reference matches (ingest separately to update the table):
+mise run arena -- --candidate PATH/TO/NETWORK --reference-random --games 10 --simulations 32 --max-moves 2048 --output runs/reference-001
+```
+
+The stateless Rust adapter uses JSON **only as stdin/stdout IPC**, not persistent
+rating storage or SGF sidecars. Python validates/replays SGFs through Rust, pins
+players/search/budgets, retains store-owned evidence, and manages the two CSVs.
+Completed-only ratings can be biased if truncation censors particular boards or
+outcomes. Inspect per-size reports and truncation counts; a small RD does not
+account for that bias or prove improvement. The budgets still need calibration.
 
 ## Limits
 

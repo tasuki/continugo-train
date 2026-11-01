@@ -103,7 +103,7 @@ def find_bundle(parent, kind, checksum):
     return matches[0] if matches else None
 
 
-def publish(
+def _publish(
     store, kind, checkpoint, *, model=None, context=None, game_candidates=(), evaluation=()
 ):
     """Return a pinned bundle reference. Existing bundles are verified, not rewritten."""
@@ -136,6 +136,10 @@ def publish(
                 "accepted/YYYYMMDD-HHMMSS-SEQ-NAME-ID/ contains accepted encoder.onnx + policy.onnx, plus a full "
                 "checkpoint.pt and replay/ snapshot for recovery. training/ uses the same UTC-dated names and preserves "
                 "every completed training candidate, even when rejected or inconclusive.\n\n"
+                "ratings/networks.csv lists all networks (filter accepted=1); "
+                "ratings/matches.csv retains processed SGF hashes and rating history. "
+                "ratings/games/ retains authoritative SGF evidence. "
+                "Ratings are distinct from the acceptance gate.\n\n"
                 "LATEST-ACCEPTED and LATEST-TRAINING are convenience pointers to the most "
                 "recently selected bundle in each category. They can differ intentionally.\n\n"
                 "ONNX alone is inference-only. Read each bundle's README.md for training "
@@ -161,8 +165,8 @@ def publish(
             return reference
         created = utc_now()
         saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        name = network_name(saved)
-        destination = bundle_directory(parent, checksum, created, name)
+        label = network_name(saved)
+        destination = bundle_directory(parent, checksum, created, label)
         fallbacks = {digest(path): Path(path) for path in game_candidates}
         files = []
         blobs = store / "sgf-blobs"
@@ -183,24 +187,7 @@ def publish(
                 record(target)
 
             def sgf(source, expected, relative):
-                source = Path(source)
-                if not source.is_file() or digest(source) != expected:
-                    raise ValueError(f"recovery SGF missing/changed: {source}")
-                blob = blobs / f"{expected}.sgf"
-                if blob.exists():
-                    if blob.is_symlink() or digest(blob) != expected:
-                        raise ValueError(f"recovery SGF blob corrupted: {blob}")
-                else:
-                    descriptor, name = tempfile.mkstemp(prefix=".sgf-", dir=blobs)
-                    os.close(descriptor)
-                    try:
-                        shutil.copyfile(source, name)
-                        if digest(name) != expected:
-                            raise ValueError("SGF changed while archiving")
-                        seal_file(Path(name))
-                        os.rename(name, blob)
-                    finally:
-                        Path(name).unlink(missing_ok=True)
+                blob = _sgf_blob(blobs, source, expected)
                 target = stage / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.link(blob, target)
@@ -233,7 +220,7 @@ def publish(
             readme.write_text(
                 "# Immutable model recovery bundle\n\n"
                 f"Published (UTC): {created.isoformat()}\n\n"
-                f"Kind: {kind}\nNetwork: {name}\nCheckpoint SHA-256: {checksum}\n\n"
+                f"Kind: {kind}\nNetwork: {label}\nCheckpoint SHA-256: {checksum}\n\n"
                 f"Cumulative progress: {checkpoint_progress(saved)}\n\n"
                 f"Epoch: {saved['epoch']}; local optimizer step: {saved['global_step']}\n\n"
                 f"Loop target mix: {(context or {}).get('config', {}).get('size_weights', 'see checkpoint')}\n\n"
@@ -260,7 +247,7 @@ def publish(
                     "version": 1,
                     "kind": kind,
                     "checkpoint_sha256": checksum,
-                    "network_name": name,
+                    "network_name": label,
                     "progress": checkpoint_progress(saved),
                     "created_at": created.isoformat(),
                     "files": files,
@@ -282,3 +269,60 @@ def publish(
         verify_bundle(reference)
         latest_pointer(store, kind, destination)
         return reference
+
+
+def _sgf_blob(blobs, source, expected):
+    """Caller holds the archive lock. Never link disposable run-owned files."""
+    source = Path(source)
+    if not source.is_file() or digest(source) != expected:
+        raise ValueError(f"recovery SGF missing/changed: {source}")
+    blob = blobs / f"{expected}.sgf"
+    if blob.exists():
+        if blob.is_symlink() or digest(blob) != expected:
+            raise ValueError(f"recovery SGF blob corrupted: {blob}")
+    else:
+        descriptor, name = tempfile.mkstemp(prefix=".sgf-", dir=blobs)
+        os.close(descriptor)
+        try:
+            shutil.copyfile(source, name)
+            if digest(name) != expected:
+                raise ValueError("SGF changed while archiving")
+            seal_file(Path(name))
+            os.rename(name, blob)
+        finally:
+            Path(name).unlink(missing_ok=True)
+    return blob
+
+
+def retain_evidence(store, records, destination):
+    """Write-once, self-contained rating SGFs sharing only store-owned inodes."""
+    store, destination = Path(store), Path(destination)
+    if not (store / "STORE.pt").is_file():
+        raise ValueError("rating evidence needs an initialized model store")
+    blobs = store / "sgf-blobs"
+    with (store / ".archive.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        blobs.mkdir(exist_ok=True)
+        destination.mkdir(parents=True, exist_ok=True)
+        for source, expected in records:
+            blob = _sgf_blob(blobs, source, expected)
+            target = destination / blob.name
+            if target.exists():
+                if target.is_symlink() or digest(target) != expected:
+                    raise ValueError(f"rating SGF missing/changed: {target}")
+            else:
+                os.link(blob, target)
+        sync_directory(destination)
+        sync_directory(blobs)
+
+
+def publish(store, kind, checkpoint, **kwargs):
+    reference = _publish(store, kind, checkpoint, **kwargs)
+    from .ratings import register_accepted, register_checkpoint
+
+    # Release the archive lock before taking the rating-ledger lock.
+    if kind == "accepted":
+        register_accepted(store, reference)
+    else:
+        register_checkpoint(store, Path(reference["directory"]) / "checkpoint.pt")
+    return reference

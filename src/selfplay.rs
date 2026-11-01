@@ -6,6 +6,10 @@
 
 pub mod parallel;
 
+/// Bump when the direct random policy changes. Binary fingerprints additionally
+/// isolate ratings across rules, search, RNG and inference implementation changes.
+pub const REFERENCE_ID: &str = "random-no-eye-fill-v1";
+
 use crate::{
     action::random_move,
     inference::Evaluator,
@@ -56,6 +60,7 @@ pub struct GameMetadata {
     pub profile: Option<GameProfile>,
     pub model: Option<String>,
     pub opponent: Option<String>,
+    pub evaluation: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +74,8 @@ struct GameComment<'a> {
     profile: Option<&'a GameProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     opponent: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluation: Option<&'a str>,
 }
 
 impl GameMetadata {
@@ -79,6 +86,7 @@ impl GameMetadata {
             model: self.model.as_deref(),
             profile: self.profile.as_ref(),
             opponent: self.opponent.as_deref(),
+            evaluation: self.evaluation.as_deref(),
         }
     }
 }
@@ -97,8 +105,24 @@ pub struct GameRecord {
     pub metadata: GameMetadata,
 }
 
+impl GameRecord {
+    pub fn annotate_evaluation(&mut self, binary_id: &str) -> Result<(), String> {
+        self.metadata.evaluation = Some(binary_id.into());
+        let mut record = sgf::decode_record(&self.sgf)?;
+        let comment = record
+            .root
+            .iter_mut()
+            .find(|(name, _)| name == "C")
+            .ok_or("generated game has no root comment")?;
+        comment.1 =
+            vec![serde_json::to_string(&self.metadata.comment()).map_err(|e| e.to_string())?];
+        self.sgf = sgf::encode_record(&record)?;
+        Ok(())
+    }
+}
+
 pub fn generate(board: Board, config: &SelfplayConfig, seed: u64) -> Result<GameRecord, String> {
-    generate_inner::<false>(board, config, seed, None, None)
+    generate_inner::<false>(board, config, seed, None, None, None)
 }
 
 pub fn generate_profiled(
@@ -109,7 +133,7 @@ pub fn generate_profiled(
     if !matches!(config.engine, Engine::Random) {
         return Err("Detailed profiling currently supports --engine random only".into());
     }
-    generate_inner::<true>(board, config, seed, None, None)
+    generate_inner::<true>(board, config, seed, None, None, None)
 }
 
 pub fn generate_neural(
@@ -121,7 +145,7 @@ pub fn generate_neural(
     if !matches!(config.engine, Engine::Neural) {
         return Err("neural evaluator requires neural engine".into());
     }
-    generate_inner::<false>(board, config, seed, Some(evaluator), None)
+    generate_inner::<false>(board, config, seed, Some(evaluator), None, None)
 }
 
 /// Color-specific frozen networks, same search budget/rules. Evaluation chooses
@@ -136,7 +160,34 @@ pub fn generate_match(
     if !matches!(config.engine, Engine::Neural) {
         return Err("matches require the neural engine".into());
     }
-    generate_inner::<false>(board, config, seed, Some(black), Some(white))
+    generate_inner::<false>(board, config, seed, Some(black), Some(white), None)
+}
+
+/// Neural maximum-visit play versus the unmodified direct random eye-avoiding
+/// policy. Random moves have no fabricated MCTS targets.
+pub fn generate_reference_match(
+    board: Board,
+    config: &SelfplayConfig,
+    seed: u64,
+    evaluator: &mut dyn Evaluator,
+    candidate_black: bool,
+) -> Result<GameRecord, String> {
+    if !matches!(config.engine, Engine::Neural) {
+        return Err("reference matches require the neural engine".into());
+    }
+    let reference_color = if candidate_black {
+        Color::White
+    } else {
+        Color::Black
+    };
+    generate_inner::<false>(
+        board,
+        config,
+        seed,
+        Some(evaluator),
+        None,
+        Some(reference_color),
+    )
 }
 
 fn generate_inner<const PROFILE: bool>(
@@ -145,22 +196,42 @@ fn generate_inner<const PROFILE: bool>(
     seed: u64,
     mut evaluator: Option<&mut dyn Evaluator>,
     mut opponent: Option<&mut dyn Evaluator>,
+    reference_color: Option<Color>,
 ) -> Result<GameRecord, String> {
     config.validate()?;
     if matches!(config.engine, Engine::Neural) && evaluator.is_none() {
         return Err("neural engine requires a loaded model".into());
     }
-    let model = evaluator.as_ref().map(|e| e.model_id().to_owned());
-    let opponent_id = opponent.as_ref().map(|e| e.model_id().to_owned());
-    let name = evaluator.as_ref().map(|e| e.network_name().to_owned());
-    let opponent_name = opponent.as_ref().map(|e| e.network_name().to_owned());
-    let evaluation_game = opponent.is_some();
+    let mut model = evaluator.as_ref().map(|e| e.model_id().to_owned());
+    let mut opponent_id = opponent.as_ref().map(|e| e.model_id().to_owned());
+    let player = match config.engine {
+        Engine::Random => "random".to_owned(),
+        Engine::Mcts => "mcts".to_owned(),
+        Engine::Neural => format!("neural-{}", evaluator.as_ref().unwrap().network_name()),
+    };
+    let mut players = [
+        player.clone(),
+        opponent
+            .as_ref()
+            .map_or(player, |e| format!("neural-{}", e.network_name())),
+    ];
+    if let Some(color) = reference_color {
+        if color == Color::Black {
+            opponent_id = model.take();
+            model = Some(REFERENCE_ID.into());
+            players[0] = REFERENCE_ID.into();
+        } else {
+            opponent_id = Some(REFERENCE_ID.into());
+            players[1] = REFERENCE_ID.into();
+        }
+    }
+    let evaluation_game = opponent.is_some() || reference_color.is_some();
     let started = PROFILE.then(Instant::now);
     let mut profile = GameProfile::default();
     let mut rng = StdRng::seed_from_u64(seed);
     let mut game = Game::new(board);
     let index_started = PROFILE.then(Instant::now);
-    let mut availability = matches!(config.engine, Engine::Random)
+    let mut availability = (matches!(config.engine, Engine::Random) || reference_color.is_some())
         .then(|| GeometricAvailability::new(game.position()));
     if let Some(started) = index_started {
         profile.availability_init_seconds = started.elapsed().as_secs_f64();
@@ -176,46 +247,50 @@ fn generate_inner<const PROFILE: bool>(
                 .map_or(0, |index| index.coordinates().len()),
             ..MoveProfile::default()
         };
-        let (next, policy) = match config.engine {
-            Engine::Random => {
-                let candidate = random_move::<PROFILE>(
-                    &game,
-                    availability.as_ref().expect("random engine index"),
-                    &mut rng,
-                    &mut move_profile,
-                );
-                let next = match candidate {
-                    Some((_, next)) => next,
-                    None => game.pass()?,
-                };
-                (next, None)
-            }
-            Engine::Mcts => {
-                let result = search(&game, &config.search, &mut rng)?;
-                (result.sample(&mut rng).apply(&game)?, Some(result.policy))
-            }
-            Engine::Neural => {
-                let result = search_neural(
-                    &game,
-                    &config.search,
-                    if evaluation_game && game.on_move() == Color::White {
-                        opponent.as_deref_mut().expect("opposing evaluator")
+        let random_turn =
+            matches!(config.engine, Engine::Random) || reference_color == Some(game.on_move());
+        let (next, policy) = if random_turn {
+            let candidate = random_move::<PROFILE>(
+                &game,
+                availability.as_ref().expect("random engine index"),
+                &mut rng,
+                &mut move_profile,
+            );
+            let next = match candidate {
+                Some((_, next)) => next,
+                None => game.pass()?,
+            };
+            (next, None)
+        } else {
+            match config.engine {
+                Engine::Random => unreachable!(),
+                Engine::Mcts => {
+                    let result = search(&game, &config.search, &mut rng)?;
+                    (result.sample(&mut rng).apply(&game)?, Some(result.policy))
+                }
+                Engine::Neural => {
+                    let result = search_neural(
+                        &game,
+                        &config.search,
+                        if opponent.is_some() && game.on_move() == Color::White {
+                            opponent.as_deref_mut().expect("opposing evaluator")
+                        } else {
+                            evaluator.as_deref_mut().expect("validated evaluator")
+                        },
+                        &mut rng,
+                    )?;
+                    let action = if evaluation_game {
+                        result
+                            .policy
+                            .iter()
+                            .max_by_key(|visit| (visit.visits, rng.random::<u64>()))
+                            .unwrap()
+                            .action
                     } else {
-                        evaluator.as_deref_mut().expect("validated evaluator")
-                    },
-                    &mut rng,
-                )?;
-                let action = if evaluation_game {
-                    result
-                        .policy
-                        .iter()
-                        .max_by_key(|visit| (visit.visits, rng.random::<u64>()))
-                        .unwrap()
-                        .action
-                } else {
-                    result.sample(&mut rng)
-                };
-                (action.apply(&game)?, Some(result.policy))
+                        result.sample(&mut rng)
+                    };
+                    (action.apply(&game)?, Some(result.policy))
+                }
             }
         };
         if let Some(index) = &mut availability {
@@ -264,6 +339,7 @@ fn generate_inner<const PROFILE: bool>(
         profile: PROFILE.then_some(profile),
         model,
         opponent: opponent_id,
+        evaluation: None,
     };
     let mut record = sgf::Record {
         plays: game.record().to_vec(),
@@ -275,21 +351,9 @@ fn generate_inner<const PROFILE: bool>(
         .find(|(name, _)| name == "SZ")
         .expect("default SGF root includes board size")
         .1 = vec![board.size().to_string()];
-    let player = match config.engine {
-        Engine::Random => "random".to_owned(),
-        Engine::Mcts => "mcts".to_owned(),
-        Engine::Neural => format!("neural-{}", name.as_deref().unwrap()),
-    };
     record.root.extend([
-        ("PB".into(), vec![player.clone()]),
-        (
-            "PW".into(),
-            vec![
-                opponent_name
-                    .as_ref()
-                    .map_or(player, |id| format!("neural-{id}")),
-            ],
-        ),
+        ("PB".into(), vec![players[0].clone()]),
+        ("PW".into(), vec![players[1].clone()]),
     ]);
     if let Some(result) = result {
         record
@@ -383,6 +447,82 @@ mod tests {
             .unwrap();
         assert_eq!(info.result.as_deref(), Some("0"));
         assert_eq!(info.policy_visit_totals, vec![Some(4), Some(4)]);
+        for candidate_black in [true, false] {
+            let before = black.calls;
+            let mut reference = generate_reference_match(
+                Board::new(9).unwrap(),
+                &config,
+                7,
+                &mut black,
+                candidate_black,
+            )
+            .unwrap();
+            assert!(black.calls > before);
+            assert!(reference.metadata.result.is_none());
+            reference.annotate_evaluation("test-fingerprint").unwrap();
+            let info = crate::replay::ReplayGame::load(&reference.sgf)
+                .unwrap()
+                .info(4)
+                .unwrap();
+            assert_eq!(
+                info.policy_visit_totals,
+                (0..8)
+                    .map(|ply| {
+                        if (ply % 2 == 0) == candidate_black {
+                            Some(4)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(info.root_comment.unwrap()["evaluation"], "test-fingerprint");
+            assert_eq!(
+                reference.metadata.model.as_deref(),
+                Some(if candidate_black {
+                    "black"
+                } else {
+                    REFERENCE_ID
+                })
+            );
+            assert_eq!(
+                reference.metadata.opponent.as_deref(),
+                Some(if candidate_black {
+                    REFERENCE_ID
+                } else {
+                    "black"
+                })
+            );
+            let restored = replay(&reference);
+            for (ply, play) in restored.record().iter().enumerate() {
+                if (ply % 2 == 0) != candidate_black {
+                    assert!(
+                        matches!(play, continugo_rules::Play::Place(_)),
+                        "random bot passed prematurely"
+                    );
+                }
+            }
+        }
+        let complete = generate_reference_match(
+            Board::new(9).unwrap(),
+            &SelfplayConfig {
+                max_moves: 512,
+                search: SearchConfig {
+                    simulations: 1,
+                    ..config.search
+                },
+                ..config
+            },
+            7,
+            &mut black,
+            true,
+        )
+        .unwrap();
+        assert!(matches!(
+            complete.metadata.result,
+            Some(territory::Outcome::Win(Color::White, _))
+        ));
+        assert!(replay(&complete).is_finished());
     }
     use continugo_analysis::fills_small_eye;
     use continugo_rules::Play;
@@ -437,9 +577,15 @@ mod tests {
                 Play::Pass(_) => game.pass(),
             }
             .unwrap();
-            if matches!(metadata.config.engine, Engine::Random)
-                && let Play::Place(stone) = play
-            {
+            let random_turn = matches!(metadata.config.engine, Engine::Random)
+                || (if game.on_move() == Color::Black {
+                    &metadata.model
+                } else {
+                    &metadata.opponent
+                })
+                .as_deref()
+                    == Some(REFERENCE_ID);
+            if random_turn && let Play::Place(stone) = play {
                 let enemy = stone.color.other();
                 let enemies_before = game
                     .position()

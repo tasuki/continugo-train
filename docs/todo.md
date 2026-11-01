@@ -6,20 +6,10 @@ This list contains outstanding work only. See [training](training.md), [inferenc
 
 ## High priority
 
-### 1. Persistent, baseline-anchored static Glicko ratings
+### Calibrate evaluation before scaling
 
-- [ ] Keep a durable, long-running table of **all accepted networks**, with readable names, acceptance dates, checkpoint identities, match counts, ratings, and **± rating deviation (RD)**. Preserve it independently of disposable `runs/`.
-- [ ] Anchor the existing **random-but-not-eye-filling bot at rating 100**. Freeze/version its reference policy. Calibrate networks through actual matches against it, connecting later network comparisons to that baseline; untested networks remain **unrated** in reports, not assigned a claimed strength.
-- [ ] Use **static-skill Glicko** for frozen bots: **no time decay, no inactivity inflation, and no volatility/process-noise inflation**, including on active updates. Ratings and uncertainty change only with new match evidence; the reference stays fixed at 100.
-- [ ] Rate neural players at a fixed, recorded **simulation budget per move**, with paired colors. Keep separate rating pools for different budgets or board-size mixes and other strength-affecting evaluation settings. Equal simulations do not imply equal wall-clock compute across architectures. Default board mix remains 40%/40%/20% for 9/13/19.
-- [ ] Retain the underlying match evidence, including rejected candidates rather than only successful promotions. Count genuine draws as half-points; report truncations explicitly and exclude unknown outcomes from rating updates. Keep evaluation games out of training replay.
-- [ ] Make evidence ingestion restart-safe and idempotent so resumed or reimported matches cannot update ratings twice. Keep rating history auditable from authoritative SGFs; do not introduce game-record JSON sidecars.
-- [ ] Wire the shared `../continugo/backend/rating` static-Glicko component and native adapter into the rating ledger; do not duplicate the math in Python. Add end-to-end tests for baseline calibration, persistent history, independent rating pools, and idempotent restart/reimport. The math and stateless adapter are implemented; see [evaluation](evaluation.md#ratings-shared-foundation-integration-pending).
-
-### 2. Calibrate evaluation before scaling
-
-- [ ] Calibrate acceptance-match count, simulation budget, and threshold; measure actual strength gains against the reference bot and historical checkpoints, not just validation loss or gate acceptance.
-- [ ] Check rating uncertainty and per-size outcomes with sufficient completed games. A small finite-match gate is a regression guard, not statistical proof of improvement; ratings remain separate from the promotion decision.
+- [ ] Calibrate acceptance/reference match counts, simulation budget, move caps, and acceptance threshold; measure actual strength gains against the fixed-100 reference bot and historical checkpoints, not just validation loss or gate acceptance. The CSV rating pipeline is implemented; the default budgets are not strength-tuned.
+- [ ] Check rating uncertainty and per-size outcomes with sufficient completed games. Measure truncation/censoring bias and reference-match cost before scaling. A small finite-match gate is a regression guard, not statistical proof of improvement; ratings remain separate from the promotion decision.
 
 ## Performance and scaling
 

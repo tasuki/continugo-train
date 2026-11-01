@@ -1,12 +1,13 @@
 """Restartable fixed-budget paired-color gate. No loss-based model promotion."""
 
 from .features import inspect_game
+from .ratings import REFERENCE_ID
 from .runtime import inference_environment
 from .sampling import weighted_sizes
 
 
-def plan(config, iteration, index):
-    ordinal = (iteration - 1) * config.gate_games + index
+def plan(config, iteration, index, games=None):
+    ordinal = (iteration - 1) * (config.gate_games if games is None else games) + index
     cycle = weighted_sizes(config.sizes, config.size_weights)
     return ordinal, cycle[(ordinal // 2) % len(cycle)], config.seed + ordinal // 2, ordinal % 2 == 0
 
@@ -57,21 +58,29 @@ def summarize(records, threshold):
     }
 
 
-def evaluate(runner, iteration):
+def evaluate(runner, iteration, *, reference=False):
     config = runner.config
-    if iteration["gate"] is None:
-        iteration["gate"] = {"attempts": [], "games": [None] * config.gate_games, "report": None}
+    key = "reference" if reference else "gate"
+    count = config.reference_games if reference else config.gate_games
+    max_moves = config.reference_max_moves if reference else config.gate_max_moves
+    label = "REFERENCE" if reference else "ACCEPTANCE"
+    if iteration.get(key) is None:
+        iteration[key] = {"attempts": [], "games": [None] * count, "report": None}
         runner.save()
-    gate = iteration["gate"]
+    gate = iteration[key]
     if gate["report"] is not None:
         return gate["report"]
-    if config.gate_games == 0:
+    if count == 0:
         gate["report"] = {"decision": "accepted", "disabled": True, "draws": 0, "truncated": 0}
         runner.save()
         return gate["report"]
     search = {**config.search(), "simulations": config.gate_simulations}
     candidate = iteration["model"]
-    incumbent = iteration["parent_model"]
+    incumbent = (
+        {"checkpoint_sha256": REFERENCE_ID, "network_name": REFERENCE_ID}
+        if reference
+        else iteration["parent_model"]
+    )
     density = runner.state["feature_spec"]["samples_per_diameter"]
 
     def adopt():
@@ -81,7 +90,9 @@ def evaluate(runner, iteration):
             for index in attempt["indices"]:
                 if gate["games"][index]:
                     continue
-                ordinal, size, seed, candidate_black = plan(config, iteration["number"], index)
+                ordinal, size, seed, candidate_black = plan(
+                    config, iteration["number"], index, count
+                )
                 path = runner.path(attempt["path"]) / filename(ordinal, size, seed, candidate_black)
                 if not path.exists():
                     if attempt["status"] == "succeeded":
@@ -101,16 +112,33 @@ def evaluate(runner, iteration):
                     not isinstance(root, dict)
                     or root.get("model") != black["checkpoint_sha256"]
                     or root.get("opponent") != white["checkpoint_sha256"]
-                    or info.get("black_player") != f"neural-{black['network_name']}"
-                    or info.get("white_player") != f"neural-{white['network_name']}"
+                    or root.get("evaluation") != runner.state["rating_protocol"]["arena_sha256"]
+                    or info.get("black_player")
+                    != (
+                        REFERENCE_ID
+                        if black is incumbent and reference
+                        else f"neural-{black['network_name']}"
+                    )
+                    or info.get("white_player")
+                    != (
+                        REFERENCE_ID
+                        if white is incumbent and reference
+                        else f"neural-{white['network_name']}"
+                    )
                     or root.get("seed") != seed
                     or root.get("search") != search
                     or info["board_size"] != size
-                    or not 0 < info["moves"] <= config.gate_max_moves
-                    or info.get("policy_visit_totals") != [config.gate_simulations] * info["moves"]
+                    or not 0 < info["moves"] <= max_moves
+                    or info.get("policy_visit_totals")
+                    != [
+                        None
+                        if reference and ((ply % 2 == 0) != candidate_black)
+                        else config.gate_simulations
+                        for ply in range(info["moves"])
+                    ]
                     or info["completed"] != info["labeled"]
                     or not info["completed"]
-                    and info["moves"] != config.gate_max_moves
+                    and info["moves"] != max_moves
                 ):
                     raise ValueError(
                         f"arena record does not match its frozen two-model job: {path}"
@@ -125,9 +153,9 @@ def evaluate(runner, iteration):
                 }
                 gate["games"][index] = record
                 if info["result"] == "0":
-                    runner.log(f"WARNING DRAW in acceptance test: {path}")
+                    runner.log(f"WARNING DRAW in {label.lower()} test: {path}")
                 if not info["labeled"]:
-                    runner.log(f"WARNING TRUNCATED acceptance game (not a draw): {path}")
+                    runner.log(f"WARNING TRUNCATED {label.lower()} game (not a draw): {path}")
                 runner.save()
             attempt["adopted"] = True
             runner.save()
@@ -140,22 +168,23 @@ def evaluate(runner, iteration):
             groups.append([])
         groups[-1].append(index)
     for indices in groups:
-        relative = (
-            f"iteration-{iteration['number']:04d}/gate/attempt-{len(gate['attempts']) + 1:04d}"
+        base = (
+            "initial-reference"
+            if iteration.get("initial")
+            else f"iteration-{iteration['number']:04d}/{key}"
         )
+        relative = f"{base}/attempt-{len(gate['attempts']) + 1:04d}"
         directory = runner.path(relative)
         directory.mkdir(parents=True, exist_ok=False)
         attempt = {"path": relative, "indices": indices, "status": "running", "adopted": False}
         gate["attempts"].append(attempt)
         runner.save()
-        ordinal, _, _, _ = plan(config, iteration["number"], indices[0])
+        ordinal, _, _, _ = plan(config, iteration["number"], indices[0], count)
         library, environment = inference_environment(config.device, config.ort_library)
         command = [
             config.arena_binary,
             "--candidate",
             str(runner.check_model(candidate)),
-            "--incumbent",
-            str(runner.check_model(incumbent)),
             "--output",
             str(directory),
             "--games",
@@ -169,12 +198,17 @@ def evaluate(runner, iteration):
             "--size-weights",
             config.size_weights,
             "--max-moves",
-            str(config.gate_max_moves),
+            str(max_moves),
             "--device",
             config.device,
             "--ort-library",
             str(library),
         ]
+        command += (
+            ["--reference-random"]
+            if reference
+            else ["--incumbent", str(runner.check_model(incumbent))]
+        )
         settings = {
             **search,
             **{
@@ -189,7 +223,7 @@ def evaluate(runner, iteration):
         for name, value in settings.items():
             command += ["--" + name.replace("_", "-"), str(value)]
         runner.log(
-            f"iteration {iteration['number']}: acceptance match, {len(indices)} missing games"
+            f"iteration {iteration['number']}: {label.lower()} match, {len(indices)} missing games"
         )
         try:
             runner.execute(command, directory / "arena.log", environment)
@@ -201,6 +235,9 @@ def evaluate(runner, iteration):
         runner.save()
         adopt()
     gate["report"] = summarize(gate["games"], config.acceptance_rate)
+    if reference:
+        gate["report"].pop("decision")
+        gate["report"].pop("threshold")
     runner.save()
-    runner.log(f"ACCEPTANCE iteration={iteration['number']}: {gate['report']}")
+    runner.log(f"{label} iteration={iteration['number']}: {gate['report']}")
     return gate["report"]

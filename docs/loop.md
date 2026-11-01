@@ -30,12 +30,14 @@ CUDA is the default; `--device cpu` selects CPU explicitly. Export verification 
 CPU. Native play, training and export are supervised **separate processes**, so
 GPU inference libraries do not replace the training stack. New loops default to
 one iteration, ten self-play games, one training epoch capped at 20 batches, and
-20 gate games. These are setup budgets, not strength-tuned settings.
+20 gate games, and 10 reference games for each accepted network (including the
+initial one). Reference matches can be costly; `--reference-games 0` disables only
+rating calibration. These are setup budgets, not strength-tuned settings.
 
 Resume uses the saved total target and frozen settings; explicit conflicting
 overrides fail. The target may increase, never decrease. Keep the loop at the same
-absolute path and compatible code/rules/runtime versions. **v1/v2 loops are not
-silently migrated** to the v3 naming/progress protocol: their files remain
+absolute path and compatible code/rules/runtime versions. **v1/v2/v3 loops are not
+silently migrated** to the v4 rating/evaluation protocol: their files remain
 untouched; fork a new loop from their latest immutable training checkpoint.
 Standalone legacy training checkpoints remain loadable with unknown cumulative
 totals where provenance is missing.
@@ -88,7 +90,20 @@ when restoring a newer, unaccepted training checkpoint.
 
 See [evaluation.md](evaluation.md) for match settings, draw/truncation handling and
 conservative acceptance bounds. `--gate-games 0` explicitly disables gating; it is
-not the default and is useful only for plumbing diagnostics.
+not the default and is useful only for plumbing diagnostics. Also pass
+`--reference-games 0` to skip reference work in such a run. Otherwise the loop
+calibrates the initial accepted network, then each newly accepted candidate,
+against the fixed-100 random-but-not-eye-filling reference. The neural budget is
+`--gate-simulations`; the reference move cap is `--reference-max-moves 2048`.
+Reference results never determine promotion, and all rating games stay out of replay.
+
+Ratings and processed evidence survive in `models/ratings/networks.csv` and
+`matches.csv`, with immutable SGFs alongside them. The first CSV includes all
+networks with an `accepted` flag; the second makes restarts/reimports idempotent.
+Run `mise run ratings -- --accepted-only` to view accepted networks and their
+current rating ±RD. See [evaluation](evaluation.md#baseline-anchored-static-glicko).
+A loop also pins native arena/rating executable hashes: resume refuses changed
+binaries rather than silently combining incompatible match protocols.
 
 ## Replay and labels
 

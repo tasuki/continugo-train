@@ -11,7 +11,7 @@ import test_loop as helpers
 import torch
 from test_features import SGF
 
-from continugo_train import archive, data, gate, loop
+from continugo_train import archive, data, gate, loop, ratings
 from continugo_train import train as trainer
 from continugo_train.features import inspect_game
 from continugo_train.sampling import DEFAULT_SIZE_WEIGHTS, position_quotas, weighted_sizes
@@ -21,6 +21,7 @@ class ArenaJobs(helpers.FakeJobs):
     def __init__(self):
         super().__init__()
         self.arena_mode = "normal"
+        self.reference_mode = "normal"
 
     def __call__(self, command, logfile, lock_fd, environment=None):
         if "--candidate" not in command:
@@ -32,6 +33,8 @@ class ArenaJobs(helpers.FakeJobs):
             return command[command.index("--" + name.replace("_", "-")) + 1]
 
         candidate = (Path(value("candidate")) / "encoder.onnx").read_text()
+        if "--reference-random" in command:
+            return self.reference(command, value, candidate)
         incumbent = (Path(value("incumbent")) / "encoder.onnx").read_text()
         search = {
             name: type(default)(value(name)) for name, default in loop.LoopConfig().search().items()
@@ -46,7 +49,13 @@ class ArenaJobs(helpers.FakeJobs):
                 ordinal % 2 == 0,
             )
             black, white = (candidate, incumbent) if candidate_black else (incumbent, candidate)
-            root = {"model": black, "opponent": white, "seed": seed, "search": search}
+            root = {
+                "model": black,
+                "opponent": white,
+                "seed": seed,
+                "search": search,
+                "evaluation": archive.digest(command[0]),
+            }
             header = (
                 f"SZ[{size}]PB[neural-{self.names[black]}]PW[neural-{self.names[white]}]"
                 f"C[{json.dumps(root)}]"
@@ -69,6 +78,75 @@ class ArenaJobs(helpers.FakeJobs):
             if self.arena_mode == "partial" and index == 1:
                 path.write_text("(;incomplete")
                 self.arena_mode = "normal"
+                raise KeyboardInterrupt
+            path.write_text(text)
+
+    def reference(self, command, value, candidate):
+        search = {
+            name: type(default)(value(name)) for name, default in loop.LoopConfig().search().items()
+        }
+        count = search["simulations"]
+        cycle = weighted_sizes(tuple(map(int, value("sizes").split(","))), value("size_weights"))
+        for index in range(int(value("games"))):
+            ordinal = int(value("game_offset")) + index
+            size, seed = cycle[(ordinal // 2) % len(cycle)], int(value("seed")) + ordinal // 2
+            candidate_black = ordinal % 2 == 0
+            black, white = (
+                (candidate, ratings.REFERENCE_ID)
+                if candidate_black
+                else (ratings.REFERENCE_ID, candidate)
+            )
+            root = {
+                "model": black,
+                "opponent": white,
+                "seed": seed,
+                "search": search,
+                "evaluation": archive.digest(command[0]),
+            }
+            players = [
+                ratings.REFERENCE_ID
+                if network == ratings.REFERENCE_ID
+                else f"neural-{self.names[network]}"
+                for network in [black, white]
+            ]
+            header = f"SZ[{size}]PB[{players[0]}]PW[{players[1]}]C[{json.dumps(root)}]"
+
+            def node(color, coordinate, action, candidate_black=candidate_black):
+                neural = (color == "B") == candidate_black
+                comment = (
+                    (
+                        "C["
+                        + json.dumps({"policy": [{"action": action, "visits": count}]}).replace(
+                            "]", "\\]"
+                        )
+                        + "]"
+                    )
+                    if neural
+                    else ""
+                )
+                return f";{color}[{coordinate}]{comment}"
+
+            if self.reference_mode == "draw":
+                text = (
+                    f"(;FF[9071]GM[9071]{header}RE[0]"
+                    + node("B", "", 1000000)
+                    + node("W", "", 1000000)
+                    + ")"
+                )
+            elif self.reference_mode == "truncate":
+                text = f"(;FF[9071]GM[9071]{header}" + node("B", "dSdS", 200200) + ")"
+            else:
+                text = (
+                    f"(;FF[9071]GM[9071]{header}RE[B+220.4]"
+                    + node("B", "dSdS", 200200)
+                    + node("W", "", 1000000)
+                    + node("B", "", 1000000)
+                    + ")"
+                )
+            path = Path(value("output")) / gate.filename(ordinal, size, seed, candidate_black)
+            if self.reference_mode == "partial" and index == 1:
+                path.write_text("(;incomplete")
+                self.reference_mode = "normal"
                 raise KeyboardInterrupt
             path.write_text(text)
 

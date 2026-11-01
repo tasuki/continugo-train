@@ -8,8 +8,9 @@ use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator},
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
     search::SearchConfig,
-    selfplay::{Engine, SelfplayConfig, generate_match},
+    selfplay::{Engine, REFERENCE_ID, SelfplayConfig, generate_match, generate_reference_match},
 };
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -21,8 +22,15 @@ use std::{
 struct Args {
     #[arg(long)]
     candidate: PathBuf,
+    #[arg(
+        long,
+        required_unless_present = "reference_random",
+        conflicts_with = "reference_random"
+    )]
+    incumbent: Option<PathBuf>,
+    /// Direct random-but-not-eye-filling reference; no MCTS on its turns.
     #[arg(long)]
-    incumbent: PathBuf,
+    reference_random: bool,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
@@ -64,6 +72,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let binary_id = format!("{:x}", Sha256::digest(fs::read(std::env::current_exe()?)?));
     let schedule = weighted_sizes(&args.sizes, &args.size_weights)?;
     let end = args
         .game_offset
@@ -91,14 +100,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.inference_threads,
         args.device,
     )?;
-    let mut incumbent = OnnxEvaluator::load(
-        &args.incumbent,
-        args.ort_library.as_deref(),
-        args.inference_threads,
-        args.device,
-    )?;
+    let mut incumbent = args
+        .incumbent
+        .as_ref()
+        .map(|path| {
+            OnnxEvaluator::load(
+                path,
+                args.ort_library.as_deref(),
+                args.inference_threads,
+                args.device,
+            )
+        })
+        .transpose()?;
     candidate.configure_features(args.feature_threads, args.cache_positions)?;
-    incumbent.configure_features(args.feature_threads, args.cache_positions)?;
+    if let Some(incumbent) = &mut incumbent {
+        incumbent.configure_features(args.feature_threads, args.cache_positions)?;
+    }
     fs::create_dir_all(&args.output)?;
     let (mut wins, mut losses, mut draws, mut truncated) = (0, 0, 0, 0);
     for ordinal in args.game_offset..end {
@@ -107,11 +124,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let candidate_black = ordinal % 2 == 0;
         let color = if candidate_black { "black" } else { "white" };
         let board = Board::new(size)?;
-        let record = if candidate_black {
-            generate_match(board, &config, seed, &mut candidate, &mut incumbent)?
+        let mut record = if let Some(incumbent) = &mut incumbent {
+            if candidate_black {
+                generate_match(board, &config, seed, &mut candidate, incumbent)?
+            } else {
+                generate_match(board, &config, seed, incumbent, &mut candidate)?
+            }
         } else {
-            generate_match(board, &config, seed, &mut incumbent, &mut candidate)?
+            generate_reference_match(board, &config, seed, &mut candidate, candidate_black)?
         };
+        record.annotate_evaluation(&binary_id)?;
         let path = args.output.join(format!(
             "game-{:06}-size{size}-seed{seed}-candidate-{color}.sgf",
             ordinal + 1
@@ -149,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "arena: candidate={} incumbent={} wins={wins} losses={losses} draws={draws} truncated={truncated}",
         candidate.model_id(),
-        incumbent.model_id()
+        incumbent.as_ref().map_or(REFERENCE_ID, |e| e.model_id())
     );
     Ok(())
 }

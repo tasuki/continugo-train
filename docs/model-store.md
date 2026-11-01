@@ -26,6 +26,9 @@ models/
     README.md                  per-bundle recovery instructions
   training/YYYYMMDD-HHMMSS-0001-NAME-ID/  checkpoint/replay pack for every candidate
   sgf-blobs/                   immutable store-owned copies, shared via hardlinks
+  ratings/networks.csv         all networks; accepted flag, progress, per-pool rating ±RD
+  ratings/matches.csv          processed SGF hashes, protocols and rating-update history
+  ratings/games/*.sgf          all rating evidence, including rejected candidates
 ```
 
 `--model-store PATH` can select another disk, but not the loop output or `runs/`.
@@ -57,6 +60,20 @@ kind, not a cross-experiment strength ranking. The loop's accepted state is its
 own `loop.pt` pointer. A newly selected initial checkpoint is a trusted baseline,
 not a model proven stronger by a match. Historical v1 auto-accepted models can be
 kept as historical baselines; that does not retroactively qualify them by gating.
+
+The [rating tables](evaluation.md#two-csvs-no-database-or-rating-json-files) are
+store-level **CSV files**, not a database or JSON state. `networks.csv` includes
+all archived/evaluated networks; filter `accepted=1` for the accepted history.
+`matches.csv` is the committed evidence/update ledger and rebuilds the current
+numeric rating view after a crash. The initial trusted network can be unrated;
+acceptance does not itself establish playing strength. Ratings do not replace the gate.
+
+`ratings/games/` is self-contained via store-owned hardlinks and survives losing
+`runs/`. It includes reference and gate records even for rejected candidates.
+Accepted bundles also contain available evaluation SGFs, but a single bundle does
+**not** preserve the global rating table/history. Back up both CSVs and the evidence;
+quiesce writers when copying them as a pair. Never discard the match ledger just
+to rebuild a view, and do not edit processed hashes or rating snapshots by hand.
 
 ## What survives loss of `runs/`?
 
@@ -113,8 +130,9 @@ inside a read-only recovery bundle. Legacy checkpoints without board-mixture
 options retain their original uniform sampling on strict resume; warm-start/new
 loops default to the new 40/40/20 mixture.
 
-Existing v1/v2 loop control checkpoints are intentionally not resumed under the
-v3 naming/progress protocol. Fork from their newest immutable epoch checkpoint into
+Existing v1/v2/v3 loop control checkpoints are intentionally not resumed under the
+v4 rating/evaluation protocol. Evaluation/rating executable fingerprints are also
+frozen for an active v4 loop; changing them requires a fork. Fork from their newest immutable epoch checkpoint into
 a new loop rather than silently changing a frozen experiment. Old files are not
 overwritten. The earlier smoke runs and old sibling archive were explicitly deleted
 at the user's request for a clean start. Historical benchmark numbers do not imply
