@@ -205,6 +205,6 @@ see [batching.md](batching.md). Retaining encoder context on GPU (instead of hos
 round trips), overlapping CPU extraction with GPU execution, and skipping
 unnecessary coordinate work remain follow-up throughput work. GPU inference alone cannot remove
 the CPU extraction cost; do not infer production self-play speed from this milestone.
-The iterative self-play/training loop is also still pending: fixed-corpus offline
-`--resume` intentionally rejects new games, so a new replay corpus needs a separate
-warm-start training contract, not an override of that safety check.
+Iterative orchestration is still pending. Fixed-corpus offline `--resume`
+intentionally rejects new games; the separate [`--warm-start` training mode](training.md#warm-start-on-a-changing-replay-corpus)
+now initializes new replay runs without overriding that safety check.

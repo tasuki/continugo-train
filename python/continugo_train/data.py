@@ -40,6 +40,8 @@ class Corpus:
     validation: list[GameEntry]
     skipped: dict[str, int]
     fingerprint: str
+    # Keep ancestral assignments even when a game leaves the current replay window.
+    split_history: dict[str, str]
 
     def manifest(self) -> list[dict]:
         return [
@@ -50,10 +52,19 @@ class Corpus:
 
 
 def scan_corpus(
-    inputs: list[str], density: int, seed: int, validation_fraction: float, binary=None
+    inputs: list[str],
+    density: int,
+    seed: int,
+    validation_fraction: float,
+    binary=None,
+    *,
+    split_history: dict[str, str] | None = None,
 ) -> Corpus:
     if not 0 < validation_fraction < 1:
         raise ValueError("validation fraction must be between 0 and 1")
+    history = dict(split_history or {})
+    if any(split not in ("train", "validation") for split in history.values()):
+        raise ValueError("invalid split history")
     paths = set()
     for name in inputs:
         path = Path(name).resolve()
@@ -109,11 +120,17 @@ def scan_corpus(
             if len(games) > 1
             else 0
         )
-        validation.extend(games[:count])
-        train.extend(games[count:])
+        new_games = [game for game in games if game.game_id not in history]
+        held_out = sum(history.get(game.game_id) == "validation" for game in games)
+        new_validation = max(0, min(len(new_games), count - held_out))
+        for index, game in enumerate(new_games):
+            history[game.game_id] = "validation" if index < new_validation else "train"
+        # Preserve shuffled order on both the first scan and subsequent resumes.
+        validation.extend(game for game in games if history[game.game_id] == "validation")
+        train.extend(game for game in games if history[game.game_id] == "train")
     if not train or not validation:
         raise ValueError(
-            "need unique completed MCTS games, including at least two in one resolution bucket, for train/validation"
+            "need unique completed MCTS games, including at least two in one resolution bucket, for train/validation; inherited split assignments cannot be reassigned"
         )
     # Relocating an unchanged corpus is allowed; changing targets/content is not.
     identity = [
@@ -124,7 +141,7 @@ def scan_corpus(
     fingerprint = hashlib.sha256(
         json.dumps(sorted(identity, key=lambda g: g["game_id"]), sort_keys=True).encode()
     ).hexdigest()
-    return Corpus(train, validation, skipped, fingerprint)
+    return Corpus(train, validation, skipped, fingerprint, history)
 
 
 @dataclass

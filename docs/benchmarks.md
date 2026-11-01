@@ -958,3 +958,56 @@ sizes 9/13/19, including a six-policy batch that exercises the aggregate row cap
 They also cover duplicate contexts, disabled caching, encoder-only batches,
 partial batches, terminal errors, worker disconnect/shutdown, stable seeds and
 output-error cleanup. All 35 Python tests, shared/local Rust tests and checks pass.
+
+## Replay-corpus warm-start smoke — 2026-11-01
+
+The trainer now has a separate `--warm-start` contract for changed replay corpora;
+strict fixed-corpus `--resume` is unchanged. Warm-start copies weights/BatchNorm,
+resets SGD momentum by default (optional explicit `keep`), and starts fresh
+run/epoch/step/best-loss/RNG state. Checkpoints retain source SHA-256 provenance
+and ancestral game-level split assignments, including games absent from the current
+window. See [training.md](training.md#warm-start-on-a-changing-replay-corpus).
+
+A real CUDA smoke run used the earlier **epoch-2 / step-40** offline checkpoint
+as source, with the unchanged 80,099-parameter network and schema-4 features.
+Its new corpus was `runs/batched-inference-final/mixed-batch6`: five completed
+neural games across sizes 9/13/19, **101 eligible positions**, plus one truncated
+SGF skipped for missing outcome. These are different games from the source's
+24-game bootstrap corpus, not fixed-corpus continuation.
+
+The new split had three training games (79 eligible positions) and two validation
+games (22). Seed 303, batch one, one feature worker, no shuffle buffer, one sampled
+position per game, two training steps and one epoch. Thus it optimized only **two
+positions** and validated two; this is deliberately a wiring check, not a training
+throughput benchmark, strength test or improvement claim.
+
+| Phase | Policy CE | Value MSE | Total | Samples |
+|---|---:|---:|---:|---:|
+| Train | 11.402985 | 0.728577 | 12.131562 | 2 |
+| Validation | 12.793375 | 1.060911 | 13.854285 | 2 |
+
+The result is a **new run at epoch 1 / step 2**, with a fresh `best.pt`; the source
+checkpoint's SHA-256 remains
+`d4d466ccee0ecfa0c2bf0862a87229e29440eaf1eceb07799c995ac095afcad0`.
+The new manifest describes five current games, while `split_history` retains
+**29 IDs**: all 24 source assignments plus the five new games. Source run/epoch/
+step/hash and optimizer reset policy are embedded in the checkpoint, not sidecars.
+
+The resulting checkpoint exported successfully, with dynamic ONNX/PyTorch maximum
+absolute error **1.1920929e-6** across the standard verification shapes. Native
+CUDA value inference on a nonempty size-9 position also succeeded. This checks
+that warm-start output remains usable by the existing export/inference pipeline.
+
+```sh
+mise run train -- --data runs/batched-inference-final/mixed-batch6 --warm-start runs/offline-training/best.pt --output runs/warm-start-smoke --epochs 1 --device cuda --seed 303 --batch-size 1 --workers 1 --shuffle-buffer 0 --steps-per-epoch 2 --positions-per-game 1 --validation-positions-per-game 1
+mise run export -- --checkpoint runs/warm-start-smoke/best.pt --output runs/warm-start-smoke-onnx
+```
+
+Use fresh output directories. Artifacts are in `runs/warm-start-smoke/` (including
+`training.log`) and `runs/warm-start-smoke-onnx/`. CPU tests verify exact initial
+weight/BatchNorm copying, empty reset state, retained momentum and hyperparameter
+overrides in `keep` mode, new RNG/counters/best tracking, compatibility checks,
+legacy checkpoint support, persistent holdouts across replay windows, strict
+changed-data resume rejection, and warm-run resume versus uninterrupted training
+bit-for-bit. All **40 Python tests**, shared/local Rust tests and checks pass.
+Restartable multi-iteration orchestration remains the next milestone.

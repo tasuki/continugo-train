@@ -49,17 +49,21 @@ player's perspective. Real SGFs can now be replayed/validated in Rust and loaded
 as tensors, including sparse visits and outcome labels. `mise run train` now runs
 offline training with game-level holdout, persistent Rust feature workers,
 resolution buckets, and atomic model/optimizer checkpoints. See
-[training.md](../docs/training.md) for generation, training, resume and model loading.
+[training.md](../docs/training.md) for generation, training, strict resume,
+warm-start on changing replay data and model loading.
 `mise run export` verifies dynamic ONNX graphs against PyTorch;
 `mise run neural-selfplay` uses them inside native Rust MCTS with CPU or CUDA inference. See
 [inference.md](../docs/inference.md) for setup, sampled-action priors and limitations.
 CUDA inference is the default after `mise run setup-gpu`; `--device cpu` remains
-available. Batched inference and the iterative training loop remain future work.
+available. [Cross-game batching](../docs/batching.md) is implemented; iterative
+self-play/training orchestration remains future work.
 
 The trainer's checkpoints store `config`, weights under `model`, optimizer/RNG
 state, feature definitions and the immutable corpus/split manifest. Resume rejects
 mismatched features or changed data. CPU continuation is tested against an
-uninterrupted run, including BatchNorm and SGD momentum state.
+uninterrupted run, including BatchNorm and SGD momentum state. `--warm-start`
+creates a separate run, resets optimizer state by default (optional `keep`), and
+retains ancestral game-level holdout assignments to avoid replay-window leakage.
 
 ## Synthetic benchmarks
 

@@ -2,9 +2,12 @@
 
 No ONNX or neural self-play here. Rust owns game parsing, rules and features.
 Checkpoints are atomic, at epoch boundaries; --epochs is the total epoch target.
+--resume continues a fixed-corpus run; --warm-start initializes a new replay run.
 """
 
 import argparse
+import hashlib
+import io
 import math
 import os
 import random
@@ -77,6 +80,36 @@ def feature_spec(density):
     }
 
 
+def checkpoint_splits(saved):
+    """Conservative game-level holdout ledger, including older checkpoints."""
+    history = saved.get("split_history", {})
+    if (
+        not isinstance(history, dict)
+        or not isinstance(saved.get("manifest"), list)
+        or not saved["manifest"]
+    ):
+        raise ValueError("checkpoint is missing a valid corpus/split manifest")
+    history = dict(history)
+    for game in saved["manifest"]:
+        if not isinstance(game, dict) or not {"game_id", "split"}.issubset(game):
+            raise ValueError("checkpoint contains an invalid corpus/split manifest")
+        identity, split = game["game_id"], game["split"]
+        if not isinstance(identity, str) or split not in ("train", "validation"):
+            raise ValueError("checkpoint contains an invalid corpus/split manifest")
+        if identity in history and history[identity] != split:
+            raise ValueError("checkpoint contains conflicting split history")
+        history[identity] = split
+    if any(
+        not isinstance(identity, str)
+        or len(identity) != 64
+        or any(c not in "0123456789abcdef" for c in identity)
+        or split not in ("train", "validation")
+        for identity, split in history.items()
+    ):
+        raise ValueError("checkpoint contains invalid split history")
+    return history
+
+
 def atomic_checkpoint(path, state):
     descriptor, name = tempfile.mkstemp(prefix=".checkpoint-", suffix=".tmp", dir=path.parent)
     os.close(descriptor)
@@ -102,6 +135,16 @@ def run_lock(directory):
         yield
     finally:
         path.unlink(missing_ok=True)
+
+
+@contextmanager
+def training_output(directory, resuming):
+    with run_lock(directory):
+        # Recheck freshness while holding the writer lock, before appending a log.
+        if not resuming and any(path.name != ".train.lock" for path in directory.iterdir()):
+            raise ValueError("output directory is not empty; choose a new run or --resume")
+        with (directory / "training.log").open("a") as logfile:
+            yield logfile
 
 
 def parent_peak_rss():
@@ -199,9 +242,18 @@ def parse_args(argv=None):
         "--data", nargs="+", required=True, help="SGF files or directories (recursive)"
     )
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--resume", type=Path)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--resume", type=Path, help="continue the same fixed-corpus run")
+    source.add_argument(
+        "--warm-start", type=Path, help="initialize a new replay run from a training checkpoint"
+    )
     parser.add_argument(
-        "--epochs", type=int, help="total epochs; default 3, or one more when resuming"
+        "--warm-start-optimizer",
+        choices=["reset", "keep"],
+        help="warm-start SGD momentum: reset (default) or keep; counters/RNG still restart",
+    )
+    parser.add_argument(
+        "--epochs", type=int, help="total epochs in this run; default 3, or one more when resuming"
     )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--threads", type=int, default=min(4, os.cpu_count() or 1))
@@ -210,7 +262,10 @@ def parse_args(argv=None):
         parser.add_argument("--" + field.name.replace("_", "-"), type=type(field.default))
     for name in ["channels", "blocks", "policy_hidden", "value_hidden", "chunk_size"]:
         parser.add_argument("--" + name.replace("_", "-"), type=int)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.warm_start_optimizer is not None and args.warm_start is None:
+        parser.error("--warm-start-optimizer requires --warm-start")
+    return args
 
 
 def train(args):
@@ -218,8 +273,17 @@ def train(args):
         raise ValueError("threads must be positive")
     torch.set_num_threads(args.threads)
     binary = feature_binary(args.feature_binary)
-    saved = torch.load(args.resume, map_location="cpu", weights_only=True) if args.resume else None
-    if saved is not None and (
+    resuming = args.resume is not None
+    if args.warm_start is not None and args.output is None:
+        raise ValueError("--warm-start requires --output for a new run")
+    source = args.resume or args.warm_start
+    source_bytes = source.read_bytes() if source else None
+    saved = (
+        torch.load(io.BytesIO(source_bytes), map_location="cpu", weights_only=True)
+        if source
+        else None
+    )
+    if source is not None and (
         not isinstance(saved, dict)
         or not {
             "options",
@@ -231,6 +295,7 @@ def train(args):
             "run_id",
             "feature_spec",
             "corpus_fingerprint",
+            "manifest",
             "best_validation",
             "rng_cpu",
             "rng_python",
@@ -238,7 +303,8 @@ def train(args):
         }.issubset(saved)
     ):
         raise ValueError("not an offline-training checkpoint")
-    options = Options(**saved["options"]) if saved else Options()
+    history = checkpoint_splits(saved) if saved is not None else {}
+    options = Options(**saved["options"]) if saved is not None else Options()
     mutable = {
         "workers",
         "batch_size",
@@ -251,7 +317,7 @@ def train(args):
     for field in fields(Options):
         value = getattr(args, field.name)
         if value is not None:
-            if saved and field.name not in mutable and value != getattr(options, field.name):
+            if resuming and field.name not in mutable and value != getattr(options, field.name):
                 raise ValueError(
                     f"resume restores --{field.name.replace('_', '-')}; conflicting override"
                 )
@@ -263,7 +329,9 @@ def train(args):
         value = getattr(args, name)
         if value is not None:
             if saved and name != "chunk_size" and value != settings[name]:
-                raise ValueError(f"resume architecture conflicts with --{name.replace('_', '-')}")
+                raise ValueError(
+                    f"checkpoint architecture conflicts with --{name.replace('_', '-')}"
+                )
             settings[name] = value
     config = NetworkConfig(**settings)
     if config.input_planes != len(COARSE_PLANES) or config.move_features != len(MOVE_FEATURES):
@@ -271,15 +339,15 @@ def train(args):
     spec = feature_spec(options.samples_per_diameter)
     if saved and saved["feature_spec"] != spec:
         raise ValueError("checkpoint uses incompatible feature semantics")
-    completed = saved["epoch"] if saved else 0
-    epochs = args.epochs if args.epochs is not None else completed + (1 if saved else 3)
+    completed = saved["epoch"] if resuming else 0
+    epochs = args.epochs if args.epochs is not None else completed + (1 if resuming else 3)
     if epochs <= completed:
         raise ValueError("total epochs must exceed completed checkpoint epochs")
     output = (args.output or (args.resume.parent if args.resume else Path("runs/train"))).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    if not saved and any(output.iterdir()):
+    if not resuming and any(output.iterdir()):
         raise ValueError("output directory is not empty; choose a new run or --resume")
-    if saved:
+    if resuming:
         if output != args.resume.resolve().parent:
             raise ValueError("resume in the checkpoint's existing run directory")
         if any(int(p.stem.split("-")[1]) > completed for p in output.glob("epoch-[0-9]*.pt")):
@@ -306,16 +374,37 @@ def train(args):
         momentum=options.momentum,
         weight_decay=options.weight_decay,
     )
-    if saved:
+    if saved is not None:
         model.load_state_dict(saved["model"])
+    keep_optimizer = resuming or args.warm_start_optimizer == "keep"
+    if keep_optimizer:
         optimizer.load_state_dict(saved["optimizer"])
         for group in optimizer.param_groups:
-            group["lr"] = options.lr
+            group.update(
+                lr=options.lr, momentum=options.momentum, weight_decay=options.weight_decay
+            )
+    if resuming:
         torch.set_rng_state(saved["rng_cpu"])
         random.setstate(saved["rng_python"])
         if device.type == "cuda" and len(saved["rng_cuda"]) == torch.cuda.device_count():
             torch.cuda.set_rng_state_all(saved["rng_cuda"])
-    with run_lock(output), (output / "training.log").open("a") as logfile:
+    initialization = (
+        saved.get("initialization", {"mode": "fresh"}) if resuming else {"mode": "fresh"}
+    )
+    if args.warm_start is not None:
+        initialization = {
+            "mode": "warm_start",
+            "optimizer": args.warm_start_optimizer or "reset",
+            "source": {
+                "path": str(source.resolve()),
+                "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                "run_id": saved["run_id"],
+                "epoch": saved["epoch"],
+                "global_step": saved["global_step"],
+            },
+        }
+    del source_bytes
+    with training_output(output, resuming) as logfile:
 
         def log(message):
             print(message, flush=True)
@@ -328,13 +417,15 @@ def train(args):
             options.seed,
             options.validation_fraction,
             binary,
+            split_history=history,
         )
-        if saved and corpus.fingerprint != saved["corpus_fingerprint"]:
+        if resuming and corpus.fingerprint != saved["corpus_fingerprint"]:
             raise ValueError("eligible SGF corpus/targets changed since checkpoint")
         log(
             f"OFFLINE FP32; device={device}; torch={torch.__version__}; parameters={sum(p.numel() for p in model.parameters())}; config={asdict(config)}"
         )
         log(f"options={asdict(options)}")
+        log(f"initialization={initialization}; inherited_split_games={len(history)}")
         log(
             f"games train={len(corpus.train)} validation={len(corpus.validation)}; eligible positions train={sum(len(g.plies) for g in corpus.train)} validation={sum(len(g.plies) for g in corpus.validation)}; skipped={corpus.skipped}; corpus={corpus.fingerprint}"
         )
@@ -342,9 +433,9 @@ def train(args):
             "Validation is by complete unique game, stratified by resolution where possible; no synthetic policy/outcome labels."
         )
         actions = torch.arange(PASS, device=device)
-        step = saved["global_step"] if saved else 0
-        best = saved["best_validation"] if saved else math.inf
-        run_id = saved["run_id"] if saved else uuid.uuid4().hex
+        step = saved["global_step"] if resuming else 0
+        best = saved["best_validation"] if resuming else math.inf
+        run_id = saved["run_id"] if resuming else uuid.uuid4().hex
         for epoch in range(completed, epochs):
             metrics = {}
             for training, name, games in [
@@ -364,6 +455,8 @@ def train(args):
             best = min(best, metrics["validation"]["loss"])
             state = {
                 "run_id": run_id,
+                "initialization": initialization,
+                "split_history": corpus.split_history,
                 "epoch": epoch + 1,
                 "global_step": step,
                 "model": model.state_dict(),

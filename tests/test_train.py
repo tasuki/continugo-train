@@ -1,8 +1,11 @@
+import copy
+import hashlib
 import io
+import random
 import tempfile
 import time
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,14 +13,15 @@ import torch
 from test_features import SGF
 
 from continugo_train import data
+from continugo_train import train as trainer
 from continugo_train.features import FeatureClient, inspect_game
 from continugo_train.train import atomic_checkpoint, parse_args, train
 
 
-def fixtures(directory):
+def fixtures(directory, letters="STUV", start=200):
     paths = []
-    for offset, letter in enumerate("STUV"):
-        coordinate = 200 + offset
+    for offset, letter in enumerate(letters):
+        coordinate = start + offset
         text = SGF.replace("B[dSdS]", f"B[d{letter}d{letter}]").replace(
             "200200", str(1001 * coordinate)
         )
@@ -46,6 +50,49 @@ class OfflineDataTests(unittest.TestCase):
         repeated = data.scan_corpus([str(self.root)], 4, 7, 0.25)
         self.assertEqual(corpus.fingerprint, repeated.fingerprint)
         self.assertTrue(all(g.plies == (0, 1) for g in corpus.train + corpus.validation))
+
+    def test_split_history_survives_changing_windows_seeds_and_copied_games(self):
+        original = data.scan_corpus([str(p) for p in self.paths], 4, 0, 0.25)
+        window = self.root / "window"
+        window.mkdir()
+        new_paths = fixtures(window, "WXYZ", 204)
+        changed = data.scan_corpus(
+            [str(p) for p in new_paths],
+            4,
+            7,
+            0.5,
+            split_history=original.split_history,
+        )
+        self.assertEqual(len(changed.split_history), 8)
+        copied = self.root / "copied.sgf"
+        old_validation = Path(original.validation[0].path)
+        copied.write_text(old_validation.read_text().replace("SZ[13]", "SZ[13]PB[copy]"))
+        replay = data.scan_corpus(
+            [str(p) for p in [*self.paths, *new_paths, copied]],
+            4,
+            42,
+            0.75,
+            split_history=changed.split_history,
+        )
+        self.assertEqual(replay.skipped["duplicate_game"], 1)
+        self.assertEqual(replay.split_history, changed.split_history)
+        self.assertEqual(
+            {g.game_id for g in replay.validation},
+            {
+                identity
+                for identity, split in changed.split_history.items()
+                if split == "validation"
+            },
+        )
+        # A window containing only previously trained games cannot invent a holdout.
+        with self.assertRaisesRegex(ValueError, "inherited split"):
+            data.scan_corpus(
+                [g.path for g in original.train],
+                4,
+                42,
+                0.75,
+                split_history=original.split_history,
+            )
 
     def test_metadata_server_reuses_game_and_rejects_changed_input_on_reopen(self):
         path = self.paths[0]
@@ -163,7 +210,7 @@ class OfflineTrainerTests(unittest.TestCase):
         self.corpus.mkdir()
         fixtures(self.corpus)
 
-    def run_training(self, output, epochs=1, resume=None, extra=()):
+    def run_training(self, output, epochs=1, resume=None, warm_start=None, extra=()):
         arguments = [
             "--data",
             str(self.corpus),
@@ -178,6 +225,8 @@ class OfflineTrainerTests(unittest.TestCase):
         ]
         if resume:
             arguments += ["--resume", str(resume)]
+        elif warm_start:
+            arguments += ["--warm-start", str(warm_start)]
         else:
             arguments += [
                 "--channels",
@@ -268,6 +317,224 @@ class OfflineTrainerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "corpus/targets changed"):
             self.run_training(checkpoint.parent, epochs=2, resume=checkpoint)
         self.assertEqual(checkpoint.read_bytes(), before)
+
+    def test_warm_start_new_corpus_resets_state_keeps_weights_and_resumes_exactly(self):
+        checkpoint = self.run_training(self.root / "parent", epochs=2)
+        parent = torch.load(checkpoint, weights_only=True)
+        # Pre-warm-start checkpoints remain usable; derive their split ledger.
+        parent.pop("split_history")
+        parent.pop("initialization")
+        parent["best_validation"] = -1.0
+        source = checkpoint.parent / "legacy.pt"
+        atomic_checkpoint(source, parent)
+        before = source.read_bytes()
+        window = self.root / "new-games"
+        window.mkdir()
+        fixtures(window, "WXYZ", 204)
+        extra = [
+            "--data",
+            str(self.corpus),
+            str(window),
+            "--seed",
+            "7",
+            "--validation-fraction",
+            "0.5",
+            "--validation-positions-per-game",
+            "2",
+            "--lr",
+            "0.005",
+            "--momentum",
+            "0.7",
+            "--weight-decay",
+            "0.001",
+            "--chunk-size",
+            "32768",
+        ]
+        captured = {}
+        original_phase = trainer.run_phase
+
+        def phase(model, optimizer, *args):
+            if not captured:
+                captured["model"] = copy.deepcopy(model.state_dict())
+                captured["optimizer"] = copy.deepcopy(optimizer.state_dict())
+            return original_phase(model, optimizer, *args)
+
+        with patch.object(trainer, "run_phase", side_effect=phase):
+            warmed = self.run_training(self.root / "warm", warm_start=source, extra=extra)
+        actual = torch.load(warmed, weights_only=True)
+        self.assertEqual(captured["optimizer"]["state"], {})
+        for name, value in parent["model"].items():
+            torch.testing.assert_close(captured["model"][name], value, atol=0, rtol=0)
+        self.assertNotEqual(actual["run_id"], parent["run_id"])
+        self.assertEqual(actual["epoch"], 1)
+        self.assertEqual(actual["global_step"], 1)
+        self.assertEqual(actual["config"]["channels"], parent["config"]["channels"])
+        self.assertEqual(actual["config"]["chunk_size"], 32768)
+        self.assertNotEqual(actual["corpus_fingerprint"], parent["corpus_fingerprint"])
+        self.assertEqual(actual["best_validation"], actual["metrics"]["validation"]["loss"])
+        self.assertTrue((warmed.parent / "best.pt").is_file())
+        origin = actual["initialization"]
+        self.assertEqual(origin["mode"], "warm_start")
+        self.assertEqual(origin["optimizer"], "reset")
+        self.assertEqual(origin["source"]["sha256"], hashlib.sha256(before).hexdigest())
+        self.assertEqual(origin["source"]["run_id"], parent["run_id"])
+        self.assertEqual(origin["source"]["epoch"], 2)
+        self.assertEqual(origin["source"]["global_step"], 2)
+        self.assertEqual(source.read_bytes(), before)
+        for game in parent["manifest"]:
+            self.assertEqual(actual["split_history"][game["game_id"]], game["split"])
+        groups = actual["optimizer"]["param_groups"][0]
+        self.assertEqual(
+            (groups["lr"], groups["momentum"], groups["weight_decay"]), (0.005, 0.7, 0.001)
+        )
+        self.assertTrue(
+            any(not torch.equal(actual["model"][k], v) for k, v in parent["model"].items())
+        )
+
+        # A warm-start run's own strict resume must match uninterrupted training.
+        continuous = self.run_training(
+            self.root / "warm-continuous", epochs=2, warm_start=source, extra=extra
+        )
+        self.run_training(
+            warmed.parent, epochs=2, resume=warmed, extra=["--data", str(self.corpus), str(window)]
+        )
+        resumed = torch.load(warmed, weights_only=True)
+        continuous = torch.load(continuous, weights_only=True)
+        self.assertEqual(resumed["global_step"], 2)
+        self.assertEqual(resumed["initialization"], origin)
+        self.assertEqual(resumed["split_history"], actual["split_history"])
+        for name in continuous["model"]:
+            torch.testing.assert_close(
+                resumed["model"][name], continuous["model"][name], atol=0, rtol=0
+            )
+        for key, value in continuous["optimizer"]["state"].items():
+            torch.testing.assert_close(
+                resumed["optimizer"]["state"][key]["momentum_buffer"],
+                value["momentum_buffer"],
+                atol=0,
+                rtol=0,
+            )
+        with self.assertRaisesRegex(ValueError, "corpus/targets changed"):
+            self.run_training(
+                checkpoint.parent,
+                epochs=3,
+                resume=checkpoint,
+                extra=["--data", str(self.corpus), str(window)],
+            )
+
+    def test_warm_start_can_keep_momentum_but_reseeds_rng_and_resets_counters(self):
+        checkpoint = self.run_training(self.root / "parent", epochs=2)
+        parent = torch.load(checkpoint, weights_only=True)
+        original_phase = trainer.run_phase
+        captured = {}
+
+        def phase(model, optimizer, *args):
+            if not captured:
+                captured["optimizer"] = copy.deepcopy(optimizer.state_dict())
+                captured["python_rng"] = random.getstate()
+                captured["torch_rng"] = torch.get_rng_state()
+            return original_phase(model, optimizer, *args)
+
+        with patch.object(trainer, "run_phase", side_effect=phase):
+            warmed = self.run_training(
+                self.root / "keep",
+                warm_start=checkpoint,
+                extra=[
+                    "--warm-start-optimizer",
+                    "keep",
+                    "--seed",
+                    "123",
+                    "--lr",
+                    "0.003",
+                    "--momentum",
+                    "0.8",
+                    "--weight-decay",
+                    "0.002",
+                ],
+            )
+        actual = torch.load(warmed, weights_only=True)
+        self.assertEqual(actual["epoch"], 1)
+        self.assertEqual(actual["global_step"], 1)
+        self.assertEqual(actual["initialization"]["optimizer"], "keep")
+        for key, value in parent["optimizer"]["state"].items():
+            torch.testing.assert_close(
+                captured["optimizer"]["state"][key]["momentum_buffer"],
+                value["momentum_buffer"],
+                atol=0,
+                rtol=0,
+            )
+        group = captured["optimizer"]["param_groups"][0]
+        self.assertEqual(
+            (group["lr"], group["momentum"], group["weight_decay"]), (0.003, 0.8, 0.002)
+        )
+        self.assertEqual(captured["python_rng"], random.Random(123).getstate())
+        self.assertFalse(torch.equal(captured["torch_rng"], parent["rng_cpu"]))
+
+    def test_warm_start_persists_splits_for_games_absent_from_a_replay_window(self):
+        checkpoint = self.run_training(self.root / "parent")
+        parent = torch.load(checkpoint, weights_only=True)
+        window = self.root / "window"
+        window.mkdir()
+        fixtures(window, "WXYZ", 204)
+        first = self.run_training(
+            self.root / "first-window",
+            warm_start=checkpoint,
+            extra=["--data", str(window), "--seed", "17", "--validation-fraction", "0.5"],
+        )
+        first_state = torch.load(first, weights_only=True)
+        self.assertEqual(len(first_state["manifest"]), 4)
+        self.assertEqual(len(first_state["split_history"]), 8)
+        second = self.run_training(
+            self.root / "second-window",
+            warm_start=first,
+            extra=["--seed", "13", "--validation-fraction", "0.75"],
+        )
+        second_state = torch.load(second, weights_only=True)
+        self.assertEqual(second_state["split_history"], first_state["split_history"])
+        self.assertEqual(
+            {g["game_id"]: g["split"] for g in second_state["manifest"]},
+            {g["game_id"]: g["split"] for g in parent["manifest"]},
+        )
+
+    def test_warm_start_guards_sources_features_architecture_and_output(self):
+        with redirect_stderr(io.StringIO()):
+            for extra in [
+                ["--resume", "a.pt", "--warm-start", "b.pt"],
+                ["--warm-start-optimizer", "keep"],
+            ]:
+                with self.assertRaises(SystemExit):
+                    parse_args(["--data", str(self.corpus), *extra])
+        checkpoint = self.run_training(self.root / "parent")
+        before = checkpoint.read_bytes()
+        with self.assertRaisesRegex(ValueError, "requires --output"):
+            train(parse_args(["--data", str(self.corpus), "--warm-start", str(checkpoint)]))
+        with self.assertRaisesRegex(ValueError, "not empty"):
+            self.run_training(checkpoint.parent, warm_start=checkpoint)
+        for extra, message in [
+            (["--samples-per-diameter", "8"], "incompatible feature"),
+            (["--channels", "8"], "architecture conflicts"),
+        ]:
+            with self.assertRaisesRegex(ValueError, message):
+                self.run_training(self.root / "invalid", warm_start=checkpoint, extra=extra)
+        state = torch.load(checkpoint, weights_only=True)
+        state["feature_spec"]["coarse"][0] = "wrong-feature"
+        bad = checkpoint.parent / "incompatible.pt"
+        atomic_checkpoint(bad, state)
+        with self.assertRaisesRegex(ValueError, "incompatible feature"):
+            self.run_training(self.root / "invalid", warm_start=bad)
+        state = torch.load(checkpoint, weights_only=True)
+        identity = state["manifest"][0]["game_id"]
+        state["split_history"][identity] = (
+            "validation" if state["manifest"][0]["split"] == "train" else "train"
+        )
+        atomic_checkpoint(bad, state)
+        with self.assertRaisesRegex(ValueError, "conflicting split history"):
+            self.run_training(self.root / "invalid", warm_start=bad)
+        atomic_checkpoint(bad, {"model": {}})
+        with self.assertRaisesRegex(ValueError, "not an offline-training checkpoint"):
+            self.run_training(self.root / "invalid", warm_start=bad)
+        self.assertEqual(checkpoint.read_bytes(), before)
+        self.assertFalse((self.root / "invalid" / ".train.lock").exists())
 
 
 if __name__ == "__main__":

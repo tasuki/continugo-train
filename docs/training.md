@@ -119,8 +119,85 @@ model.eval()
 ```
 
 Resume refuses incompatible feature definitions. No new feature-schema revision
-was introduced just for this training command. Extending training to a changing
-neural self-play corpus is future loop work, not the fixed-corpus resume contract.
+was introduced just for this training command.
+
+## Warm-start on a changing replay corpus
+
+Use `--warm-start`, **not** `--resume`, when adding/removing self-play games or
+changing replay targets. It initializes a new run from an existing offline-training
+checkpoint; it does not weaken fixed-corpus resume checks.
+
+```sh
+mise run train -- --data runs/bootstrap runs/neural-001 --warm-start runs/train-001/best.pt --output runs/train-002 --epochs 3 --device cuda
+# Explicitly retain the source's SGD momentum instead of resetting it:
+mise run train -- --data runs/replay-003 --warm-start runs/train-002/latest.pt --warm-start-optimizer keep --output runs/train-003 --epochs 2
+# Continue this new run with its corpus unchanged:
+mise run train -- --data runs/replay-003 --resume runs/train-003/latest.pt --epochs 3
+```
+
+`--warm-start` and `--resume` are mutually exclusive. Warm-start requires an
+explicit **new/empty** `--output`; the source run is never overwritten. It can fork
+from an earlier epoch or `best.pt` even when the source run has newer checkpoints.
+The new run gets its own lock, log, epoch snapshots, `latest.pt` and `best.pt`.
+
+### Initialization contract
+
+- Copy **all weights and BatchNorm buffers**. Architecture and feature semantics,
+  including sample density, must match. Policy chunk size may change without
+  changing weights. No partial loading, feature migration or network resizing.
+- Inherit training options by default, including learning rate, seed and sampling
+  caps. Warm-start may explicitly override any training option except incompatible
+  feature density; unlike resume, its split seed/fraction and validation sampling
+  limits may change. Be explicit about caps when moving from a smoke run to a
+  longer run.
+- `--warm-start-optimizer reset` is the default: start fresh SGD state, without
+  source momentum. `keep` restores momentum/state. In either mode, selected learning
+  rate, momentum and weight decay apply; explicit overrides are not silently lost
+  when loading optimizer parameter groups. This flag requires `--warm-start`.
+- **Epoch and optimizer-step counters restart at zero**, even with `keep`.
+  `--epochs` is the total target for the **new** run, default three; it is not an
+  increment to the source epoch. New RNG states come from the selected seed,
+  rather than restoring source RNG states. GPU backward remains nondeterministic.
+- Reset best validation loss to infinity. Parent and child validation losses are
+  not directly comparable across changing data; `best.pt` selects only among
+  completed epochs in the new run, not against the parent's best loss.
+- Embed `initialization` provenance in every new checkpoint: source path and
+  SHA-256, source run/epoch/step and optimizer policy. Resume preserves it. The
+  source file is loaded and hashed from the same byte snapshot. No metadata
+  sidecar or new game-record format is introduced.
+
+### Holdout safety across replay windows
+
+Blindly re-splitting overlapping data would put previously trained games into
+validation. Checkpoints therefore carry a canonical-game-ID `split_history` ledger:
+
+- All ancestral train/validation assignments stay pinned, including games absent
+  from the current replay window. A removed game keeps its split when reintroduced.
+- New games are assigned deterministically with the selected seed, trying to fill
+  the validation-fraction target per resolution after inherited holdouts. Existing
+  assignments take precedence over that fraction; it is not an exact quota.
+- Duplicates/changed comments still share one canonical game identity. A copied
+  training game cannot become validation. The current corpus is still fully
+  replayed, checked and deduplicated by Rust-backed loading.
+- A window without both train and validation games **fails** instead of moving
+  known training games into validation. Include suitable inherited holdouts or
+  enough new completed games to create a holdout. Singleton new resolution buckets
+  remain in training, as before.
+- Older offline checkpoints without `split_history` are supported by deriving
+  assignments from their embedded manifest. Invalid/conflicting history is
+  rejected. The ledger stores IDs/splits, not tensors; it grows with the lineage's
+  unique games and is not pruned when the replay window shrinks.
+
+The current corpus/split manifest and fingerprint still describe only this run's
+selected eligible games. A warm-started run's own `--resume` rejects changed data
+and retains the same split, optimizer/RNG state and completed-epoch semantics.
+Holdout losses remain diagnostics/model-selection metrics, not playing-strength
+measurements or a fully untouched benchmark.
+
+Warm-start does **not** generate games, select a replay window, export a model or
+orchestrate iterations. Those are the next loop milestone. Keep each job's SGF
+inputs immutable; changing the corpus is allowed **between** warm-start runs,
+not while a job is loading it.
 
 ## Measurements
 
