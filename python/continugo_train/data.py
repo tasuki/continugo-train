@@ -10,8 +10,9 @@ import hashlib
 import json
 import queue
 import random
+import sys
 import threading
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import asdict, dataclass
@@ -21,6 +22,7 @@ import torch
 from torch import Tensor
 
 from .features import PASS, FeatureClient, inspect_game
+from .sampling import position_quotas, weighted_sizes
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,13 @@ def inspect_corpus(inputs: list[str], density: int, binary=None):
         info = inspect_game(path, density, binary)
         if not 9 <= info["board_size"] <= 19:
             raise ValueError(f"{path}: training board sizes must be in 9..19")
+        if info.get("result") == "0":
+            print(f"WARNING DRAW SGF size={info['board_size']}: {path}", file=sys.stderr)
         if not info["labeled"]:
+            print(
+                f"WARNING UNLABELED/TRUNCATED SGF excluded (size={info['board_size']}, completed={info['completed']}): {path}",
+                file=sys.stderr,
+            )
             skipped["unlabeled"] += 1
         elif not info["eligible_plies"]:
             skipped["no_policy"] += 1
@@ -160,6 +168,7 @@ class TrainingSample:
     outcome: float
     game_id: str
     ply: int
+    board_size: int = 13
 
 
 @dataclass
@@ -170,6 +179,7 @@ class Batch:
     indices: Tensor
     visits: Tensor
     outcomes: Tensor
+    board_sizes: Tensor
 
     def to(self, device) -> "Batch":
         return Batch(*(value.to(device) for value in vars(self).values()))
@@ -196,10 +206,11 @@ def collate(samples: list[TrainingSample]) -> Batch:
         indices,
         visits,
         torch.tensor([s.outcome for s in samples], dtype=torch.float32),
+        torch.tensor([s.board_size for s in samples], dtype=torch.int64),
     )
 
 
-def _plans(games, seed, epoch, training, limit):
+def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_size=1):
     rng = random.Random(seed + (epoch * 1000003 if training else 0))
     games = list(games)
     if training:
@@ -214,7 +225,36 @@ def _plans(games, seed, epoch, training, limit):
         if limit:
             plies = plies[:limit]
         plans.append((game, plies))
-    return plans
+    if size_weights == "uniform":
+        return plans
+    # Sample references before extracting any million-row packets. No dense
+    # features are computed for surplus long-board positions.
+    references = defaultdict(list)
+    for game, plies in plans:
+        references[game.board_size].extend((game, ply) for ply in plies)
+    quotas = position_quotas({size: len(items) for size, items in references.items()}, size_weights)
+    pools = {}
+    for size, count in sorted(quotas.items()):
+        items = references[size]
+        if training:
+            rng.shuffle(items)
+        elif len(items) > count:
+            items = random.Random(seed + size * 100003).sample(items, count)
+        pools[size] = deque(items[:count])
+    cycle = weighted_sizes(sorted(pools), size_weights)
+    index = (seed + epoch) % len(cycle) if training else 0
+    ordered = []
+    while pools:
+        size = cycle[index % len(cycle)]
+        index += 1
+        if size not in pools:
+            continue
+        for _ in range(min(batch_size, len(pools[size]))):
+            game, ply = pools[size].popleft()
+            ordered.append((game, [ply]))
+        if not pools[size]:
+            del pools[size]
+    return ordered
 
 
 def _serial_samples(plans, density, binary):
@@ -245,6 +285,7 @@ def _serial_samples(plans, density, binary):
                         sample.outcome,
                         game.game_id,
                         ply,
+                        game.board_size,
                     )
                 except Exception as error:
                     raise ValueError(f"{game.path} ply {ply}: {error}") from error
@@ -310,12 +351,17 @@ def batches(
     shuffle_buffer,
     limit=0,
     binary=None,
+    size_weights="uniform",
 ):
     """Bounded, deterministic shuffling and homogeneous-resolution batches.
 
     Close the generator when stopping an epoch early, so Rust workers are reaped.
     """
-    plans = _plans(games, seed, epoch, training, limit)
+    plans = _plans(games, seed, epoch, training, limit, size_weights, batch_size)
+    # Weighted plans already shuffle references within each size. A global dense
+    # shuffle would undo the early-step budget mix and waste extraction work.
+    if size_weights != "uniform":
+        shuffle_buffer = 0
     rng = random.Random(seed + epoch * 1000033)
     buffered = []
     buckets = defaultdict(list)

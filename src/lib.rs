@@ -6,5 +6,6 @@ pub mod inference;
 mod liberty_area;
 pub mod profile;
 pub mod replay;
+pub mod sampling;
 pub mod search;
 pub mod selfplay;

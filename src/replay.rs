@@ -25,6 +25,9 @@ pub struct ReplayGame {
     black_outcome: Option<f32>,
     game_id: String,
     root_comment: Option<serde_json::Value>,
+    result: Option<String>,
+    black_player: Option<String>,
+    white_player: Option<String>,
 }
 
 /// Metadata, not a second game-record format. Identity hashes SZ + decoded plays,
@@ -42,6 +45,9 @@ pub struct GameInfo {
     /// Shared-codec metadata for supervised loop artifact validation, not rules.
     pub root_comment: Option<serde_json::Value>,
     pub policy_visit_totals: Vec<Option<u64>>,
+    pub result: Option<String>,
+    pub black_player: Option<String>,
+    pub white_player: Option<String>,
 }
 
 fn property<'a>(properties: &'a [sgf::Property], name: &str) -> Result<Option<&'a str>, String> {
@@ -162,6 +168,9 @@ impl ReplayGame {
             game_id: format!("{:x}", identity.finalize()),
             root_comment: property(&record.root, "C")?
                 .and_then(|comment| serde_json::from_str(comment).ok()),
+            result: property(&record.root, "RE")?.map(str::to_owned),
+            black_player: property(&record.root, "PB")?.map(str::to_owned),
+            white_player: property(&record.root, "PW")?.map(str::to_owned),
         })
     }
 
@@ -174,6 +183,9 @@ impl ReplayGame {
             resolution: crate::features::resolution(game.board().diameter(), samples_per_diameter)?,
             moves: self.policies.len(),
             root_comment: self.root_comment.clone(),
+            result: self.result.clone(),
+            black_player: self.black_player.clone(),
+            white_player: self.white_player.clone(),
             policy_visit_totals: self
                 .policies
                 .iter()

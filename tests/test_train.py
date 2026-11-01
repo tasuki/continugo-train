@@ -301,6 +301,24 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(adjusted["options"]["batch_size"], 2)
         self.assertEqual(adjusted["config"]["chunk_size"], 32768)
 
+    def test_legacy_resume_keeps_uniform_sampling_and_rejects_mix_changes(self):
+        checkpoint = self.run_training(self.root / "legacy")
+        state = torch.load(checkpoint, weights_only=True)
+        del state["options"]["size_weights"]
+        legacy = checkpoint.parent / "legacy.pt"
+        atomic_checkpoint(legacy, state)
+        with self.assertRaisesRegex(ValueError, "resume restores --size-weights"):
+            self.run_training(
+                checkpoint.parent,
+                epochs=2,
+                resume=legacy,
+                extra=["--size-weights", "9:2,13:2,19:1"],
+            )
+        continued = self.run_training(checkpoint.parent, epochs=2, resume=legacy)
+        self.assertEqual(
+            torch.load(continued, weights_only=True)["options"]["size_weights"], "uniform"
+        )
+
     def test_resume_rejects_corpus_and_feature_changes_and_fresh_run_overwrite(self):
         checkpoint = self.run_training(self.root / "run")
         before = checkpoint.read_bytes()
@@ -506,8 +524,6 @@ class OfflineTrainerTests(unittest.TestCase):
                     parse_args(["--data", str(self.corpus), *extra])
         checkpoint = self.run_training(self.root / "parent")
         before = checkpoint.read_bytes()
-        with self.assertRaisesRegex(ValueError, "requires --output"):
-            train(parse_args(["--data", str(self.corpus), "--warm-start", str(checkpoint)]))
         with self.assertRaisesRegex(ValueError, "not empty"):
             self.run_training(checkpoint.parent, warm_start=checkpoint)
         for extra, message in [

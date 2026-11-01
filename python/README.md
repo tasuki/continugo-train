@@ -56,8 +56,11 @@ warm-start on changing replay data and model loading.
 [inference.md](../docs/inference.md) for setup, sampled-action priors and limitations.
 CUDA inference is the default after `mise run setup-gpu`; `--device cpu` remains
 available. [Cross-game batching](../docs/batching.md) and the
-[restartable synchronous loop](../docs/loop.md) are implemented. Strength evaluation
-and optional model gating remain future work.
+[restartable synchronous loop](../docs/loop.md) are implemented, including
+[paired-color acceptance gating](../docs/evaluation.md). New generation, replay,
+training-position and evaluation budgets use a configurable **40% size 9 / 40%
+size 13 / 20% size 19** mix. Actual per-size samples and unexpected draws/truncations
+are reported.
 
 The trainer's checkpoints store `config`, weights under `model`, optimizer/RNG
 state, feature definitions and the immutable corpus/split manifest. Resume rejects
@@ -65,6 +68,12 @@ mismatched features or changed data. CPU continuation is tested against an
 uninterrupted run, including BatchNorm and SGD momentum state. `--warm-start`
 creates a separate run, resets optimizer state by default (optional `keep`), and
 retains ancestral game-level holdout assignments to avoid replay-window leakage.
+Rejection does not roll back training/optimizer progress. Accepted ONNX and full
+trainable checkpoint/replay recovery packs live in a separate read-only
+[model store](../docs/model-store.md), in this repo's `models/` and separate from
+disposable `runs/`. New run defaults and model bundle names start with UTC datetime
+prefixes; inner checkpoint/ONNX filenames remain stable. ONNX alone is not a
+resumable training checkpoint.
 
 ## Synthetic benchmarks
 

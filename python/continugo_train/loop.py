@@ -1,7 +1,8 @@
 """Restartable native self-play -> bounded replay -> warm-start -> ONNX loop.
 
 SGFs remain the game records. loop.pt is an atomic orchestration checkpoint, not
-an alternate game format. This initial loop promotes latest weights, not strength.
+an alternate game format. Training progress and accepted self-play models are
+separate; paired-color matches gate promotion, and recovery bundles live outside runs/.
 """
 
 import argparse
@@ -21,20 +22,24 @@ from pathlib import Path
 
 import torch
 
+from . import archive, gate
 from .data import inspect_corpus, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
+from .paths import new_run_directory
 from .runtime import inference_environment
+from .sampling import DEFAULT_SIZE_WEIGHTS, weighted_sizes
 from .train import Options, atomic_checkpoint, checkpoint_splits, feature_spec
 
-VERSION = 1
+VERSION = 2
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
 class LoopConfig:
     sizes: tuple[int, ...] = (9, 13, 19)
-    games_per_iteration: int = 12
+    size_weights: str = DEFAULT_SIZE_WEIGHTS
+    games_per_iteration: int = 10
     seed: int = 0
     simulations: int = 32
     max_moves: int = 512
@@ -66,8 +71,25 @@ class LoopConfig:
     selfplay_binary: str = str(ROOT / "target/release/continugo-train")
     feature_binary: str = str(ROOT / "target/release/features")
     ort_library: str | None = None
+    arena_binary: str = str(ROOT / "target/release/arena")
+    gate_games: int = 20
+    gate_simulations: int = 32
+    gate_max_moves: int = 512
+    acceptance_rate: float = 0.5
+    model_store: str = str(ROOT / "models")
 
     def validate(self):
+        weighted_sizes(self.sizes, self.size_weights)
+        if not 0 <= self.gate_games < 2**32 or self.gate_games % 2:
+            raise ValueError(
+                "gate-games must be an even nonnegative native u32 count (0 disables gating)"
+            )
+        if (
+            not 0 < self.gate_simulations < 2**32
+            or self.gate_max_moves <= 0
+            or not 0.5 <= self.acceptance_rate <= 1
+        ):
+            raise ValueError("positive gate budgets and acceptance-rate in 0.5..1 required")
         if not self.sizes or any(size not in range(9, 20) for size in self.sizes):
             raise ValueError("sizes must be nonempty and in 9..19")
         if not 1 <= self.games_per_iteration < 2**32 or not 1 <= self.simulations < 2**32:
@@ -141,6 +163,7 @@ class LoopConfig:
             "validation_positions_per_game",
             "steps_per_epoch",
             "validation_fraction",
+            "size_weights",
         ]:
             options[name] = getattr(self, name)
         options["seed"] = self.seed + iteration - 1
@@ -277,7 +300,7 @@ def verify_export(directory, checkpoint, saved):
     verify(model, directory)
 
 
-def select_replay(records, limit):
+def select_replay(records, limit, size_weights=DEFAULT_SIZE_WEIGHTS):
     """Newest candidates first, balanced round-robin by board size, unique plays."""
     buckets = defaultdict(deque)
     seen = set()
@@ -285,14 +308,20 @@ def select_replay(records, limit):
         if record["eligible"] and record["game_id"] not in seen:
             seen.add(record["game_id"])
             buckets[record["board_size"]].append(record)
+    if not buckets:
+        return []
+    cycle = weighted_sizes(sorted(buckets), size_weights)
+    buckets = {size: items for size, items in buckets.items() if size in cycle}
     selected = []
+    index = 0
     while buckets and len(selected) < limit:
-        for size in sorted(buckets):
-            selected.append(buckets[size].popleft())
-            if not buckets[size]:
-                del buckets[size]
-            if len(selected) == limit:
-                break
+        size = cycle[index % len(cycle)]
+        index += 1
+        if size not in buckets:
+            continue
+        selected.append(buckets[size].popleft())
+        if not buckets[size]:
+            del buckets[size]
     return selected
 
 
@@ -303,6 +332,9 @@ class LoopRunner:
 
     def save(self):
         atomic_checkpoint(self.root / "loop.pt", self.state)
+
+    def execute(self, command, logfile, environment=None):
+        run_process(command, logfile, self.lock_fd, environment)
 
     def log(self, text):
         print(text, flush=True)
@@ -330,7 +362,11 @@ class LoopRunner:
         return self.path(record["directory"])
 
     def snapshots(self):
-        records = [self.state["initial_checkpoint"], *self.state["bootstrap"]]
+        records = [
+            self.state["initial_checkpoint"],
+            self.state["initial_accepted_checkpoint"],
+            *self.state["bootstrap"],
+        ]
         for record in records:
             destination = self.path(record["path"])
             if destination.exists() or self.state["snapshots_ready"]:
@@ -358,6 +394,43 @@ class LoopRunner:
                 self.check(iteration["checkpoint"])
             if iteration["model"]:
                 self.check_model(iteration["model"])
+            if iteration["gate"]:
+                for record in iteration["gate"]["games"]:
+                    if record:
+                        self.check(record)
+            for key in ["training_archive", "accepted_archive"]:
+                if iteration[key]:
+                    archive.verify_bundle(iteration[key])
+        for key in ["initial_training_archive", "initial_archive"]:
+            if self.state[key]:
+                archive.verify_bundle(self.state[key])
+
+    def recovery(self, checkpoint, kind, *, model=None, iteration=None):
+        candidates = [str(self.check(record)) for record in self.state["bootstrap"]]
+        # Recovery packs can be used even after their original corpus paths vanish.
+        source = Path(checkpoint.get("source", self.check(checkpoint)))
+        candidates += [str(path) for path in (source.parent / "replay").glob("*.sgf")]
+        evaluation = []
+        if iteration and iteration["gate"]:
+            evaluation = [str(self.check(r)) for r in iteration["gate"]["games"] if r]
+        reference = archive.publish(
+            self.config.model_store,
+            kind,
+            self.check(checkpoint),
+            model=self.check_model(model) if model else None,
+            game_candidates=candidates,
+            evaluation=evaluation,
+            context={
+                "loop": str(self.root),
+                "iteration": iteration["number"] if iteration else 0,
+                "config": asdict(self.config),
+                "next_seed": self.config.seed
+                + (iteration["number"] if iteration else 0) * self.config.games_per_iteration,
+                "gate": iteration["gate"]["report"] if iteration and iteration["gate"] else None,
+            },
+        )
+        self.log(f"RECOVERY {kind}: {reference['directory']}")
+        return reference
 
     def export(self, checkpoint, directory):
         saved = load_training(self.check(checkpoint))
@@ -389,7 +462,10 @@ class LoopRunner:
         }
 
     def plan(self, iteration, index):
-        size = self.config.sizes[index % len(self.config.sizes)]
+        cycle = weighted_sizes(self.config.sizes, self.config.size_weights)
+        size = cycle[
+            ((iteration["number"] - 1) * self.config.games_per_iteration + index) % len(cycle)
+        ]
         seed = (
             self.config.seed + (iteration["number"] - 1) * self.config.games_per_iteration + index
         )
@@ -421,7 +497,8 @@ class LoopRunner:
                     not isinstance(root, dict)
                     or info["board_size"] != size
                     or root.get("seed") != seed
-                    or root.get("model") != iteration["parent_checkpoint"]["sha256"]
+                    or root.get("model") != iteration["parent_model"]["checkpoint_sha256"]
+                    or root.get("opponent") is not None
                     or root.get("search") != self.config.search()
                     or not 0 < info["moves"] <= self.config.max_moves
                     or info.get("policy_visit_totals") != [self.config.simulations] * info["moves"]
@@ -439,7 +516,12 @@ class LoopRunner:
                     "seed": seed,
                     "moves": info["moves"],
                     "eligible": bool(info["eligible_plies"]),
+                    "result": info["result"],
                 }
+                if info["result"] == "0":
+                    self.log(f"WARNING DRAW in self-play: {path}")
+                if not info["labeled"]:
+                    self.log(f"WARNING TRUNCATED self-play game: {path}")
                 self.save()
             attempt["adopted"] = True
             self.save()
@@ -461,8 +543,11 @@ class LoopRunner:
             attempt = {"path": relative, "indices": indices, "status": "running", "adopted": False}
             iteration["selfplay_attempts"].append(attempt)
             self.save()
-            rotation = indices[0] % len(self.config.sizes)
-            sizes = self.config.sizes[rotation:] + self.config.sizes[:rotation]
+            cycle = weighted_sizes(self.config.sizes, self.config.size_weights)
+            rotation = (
+                (iteration["number"] - 1) * self.config.games_per_iteration + indices[0]
+            ) % len(cycle)
+            sizes = cycle[rotation:] + cycle[:rotation]
             _, seed = self.plan(iteration, indices[0])
             library, environment = inference_environment(
                 self.config.device, self.config.ort_library
@@ -481,6 +566,8 @@ class LoopRunner:
                 str(len(indices)),
                 "--sizes",
                 ",".join(map(str, sizes)),
+                "--size-weights",
+                "uniform",
                 "--seed",
                 str(seed),
                 "--max-moves",
@@ -529,7 +616,9 @@ class LoopRunner:
             ]
             candidates = [record for previous in reversed(recent) for record in previous["games"]]
             selected = select_replay(
-                [*candidates, *self.state["bootstrap"]], self.config.replay_games
+                [*candidates, *self.state["bootstrap"]],
+                self.config.replay_games,
+                self.config.size_weights,
             )
         else:
             selected = iteration["replay"]
@@ -664,8 +753,27 @@ class LoopRunner:
         self.verify_committed()
         if self.state["initial_model"] is None:
             self.state["initial_model"] = self.export(
-                self.state["initial_checkpoint"], "initial-model"
+                self.state["initial_accepted_checkpoint"], "initial-model"
             )
+            self.save()
+        if self.state["initial_training_archive"] is None:
+            self.state["initial_training_archive"] = self.recovery(
+                self.state["initial_checkpoint"], "training"
+            )
+            self.save()
+        if self.state["initial_archive"] is None:
+            self.state["initial_archive"] = self.recovery(
+                self.state["initial_accepted_checkpoint"],
+                "accepted",
+                model=self.state["initial_model"],
+            )
+            self.save()
+        if self.state["accepted"] is None:
+            self.state["accepted"] = {
+                "checkpoint": self.state["initial_accepted_checkpoint"],
+                "model": self.state["initial_model"],
+                "archive": self.state["initial_archive"],
+            }
             self.save()
         for number in range(1, self.state["target_iterations"] + 1):
             if len(self.state["iterations"]) < number:
@@ -676,9 +784,7 @@ class LoopRunner:
                         "parent_checkpoint": previous["checkpoint"]
                         if previous
                         else self.state["initial_checkpoint"],
-                        "parent_model": previous["model"]
-                        if previous
-                        else self.state["initial_model"],
+                        "parent_model": self.state["accepted"]["model"],
                         "games": [None] * self.config.games_per_iteration,
                         "selfplay_attempts": [],
                         "replay": None,
@@ -686,34 +792,70 @@ class LoopRunner:
                         "train_attempts": [],
                         "checkpoint": None,
                         "model": None,
+                        "gate": None,
+                        "decision": None,
+                        "training_archive": None,
+                        "accepted_archive": None,
                     }
                 )
                 self.save()
             iteration = self.state["iterations"][number - 1]
-            if iteration["model"]:
+            if iteration["decision"] is not None:
                 continue
             parent = load_training(self.check(iteration["parent_checkpoint"]))
             self.selfplay(iteration)
             options = self.replay(iteration, parent)
             self.training(iteration, parent, options)
-            iteration["model"] = self.export(
-                iteration["checkpoint"], f"iteration-{number:04d}/model"
-            )
+            if iteration["training_archive"] is None:
+                iteration["training_archive"] = self.recovery(
+                    iteration["checkpoint"], "training", iteration=iteration
+                )
+                self.save()
+            if iteration["model"] is None:
+                iteration["model"] = self.export(
+                    iteration["checkpoint"], f"iteration-{number:04d}/model"
+                )
+                self.save()
+            report = gate.evaluate(self, iteration)
+            if report["decision"] == "accepted":
+                if iteration["accepted_archive"] is None:
+                    iteration["accepted_archive"] = self.recovery(
+                        iteration["checkpoint"],
+                        "accepted",
+                        model=iteration["model"],
+                        iteration=iteration,
+                    )
+                    self.save()
+                self.state["accepted"] = {
+                    "checkpoint": iteration["checkpoint"],
+                    "model": iteration["model"],
+                    "archive": iteration["accepted_archive"],
+                }
+            iteration["decision"] = report["decision"]
             self.save()
             self.log(
-                f"iteration {number} complete; promoted latest epoch: {iteration['checkpoint']['path']}"
+                f"iteration {number} complete: {iteration['decision']}; training progress retained at {iteration['checkpoint']['path']}"
             )
         self.log(
-            f"loop complete: {self.state['target_iterations']} iterations; no playing-strength claim"
+            f"loop complete: {self.state['target_iterations']} iterations; finite-match gating is not proof of improvement"
         )
         return self.state
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="new runs default to runs/YYYYMMDD-HHMMSS-loop; required with --resume",
+    )
     parser.add_argument(
         "--checkpoint", type=Path, help="initial offline-training checkpoint (new loop only)"
+    )
+    parser.add_argument(
+        "--incumbent-checkpoint",
+        type=Path,
+        help="optional different accepted checkpoint when restoring latest training progress",
     )
     parser.add_argument(
         "--bootstrap-data", nargs="+", help="optional SGFs snapshotted into a new loop"
@@ -741,11 +883,23 @@ def parse_args(argv=None):
 
 
 def run_loop(args):
-    root = args.output.resolve()
+    if args.output is None:
+        if args.resume:
+            raise ValueError("--resume requires --output naming the existing loop")
+        if args.checkpoint is None:
+            raise ValueError("a new loop requires --checkpoint")
+        root = new_run_directory("loop")
+        print(f"Loop output: {root}", flush=True)
+    else:
+        root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True)
     with loop_lock(root) as lock_fd:
         if args.resume:
-            if args.checkpoint is not None or args.bootstrap_data is not None:
+            if (
+                args.checkpoint is not None
+                or args.bootstrap_data is not None
+                or args.incumbent_checkpoint is not None
+            ):
                 raise ValueError(
                     "--checkpoint/--bootstrap-data are new-loop inputs, not resume overrides"
                 )
@@ -755,7 +909,9 @@ def run_loop(args):
                 or state.get("version") != VERSION
                 or state.get("root") != str(root)
             ):
-                raise ValueError("incompatible or relocated loop checkpoint")
+                raise ValueError(
+                    "incompatible/relocated loop checkpoint; v1 loops are preserved but must be forked from their latest training checkpoint into a new v2 loop"
+                )
             for field in fields(LoopConfig):
                 value = getattr(args, field.name)
                 if value is not None and value != state["config"][field.name]:
@@ -776,7 +932,13 @@ def run_loop(args):
                 for field in fields(LoopConfig)
                 if getattr(args, field.name) is not None
             }
-            for name in ["selfplay_binary", "feature_binary", "ort_library"]:
+            for name in [
+                "selfplay_binary",
+                "feature_binary",
+                "ort_library",
+                "arena_binary",
+                "model_store",
+            ]:
                 if name in supplied:
                     supplied[name] = str(Path(supplied[name]).resolve())
             config = LoopConfig(**supplied)
@@ -786,6 +948,26 @@ def run_loop(args):
             saved = load_training(io.BytesIO(content))
             initial_hash = hashlib.sha256(content).hexdigest()
             del content
+            accepted_source = (args.incumbent_checkpoint or args.checkpoint).resolve()
+            if accepted_source == source:
+                accepted_record = {
+                    "path": "initial.pt",
+                    "sha256": initial_hash,
+                    "source": str(source),
+                }
+            else:
+                content = accepted_source.read_bytes()
+                accepted_saved = load_training(io.BytesIO(content))
+                if accepted_saved["feature_spec"] != saved["feature_spec"]:
+                    raise ValueError(
+                        "incumbent and training checkpoints need identical feature semantics/density"
+                    )
+                accepted_record = {
+                    "path": "incumbent.pt",
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "source": str(accepted_source),
+                }
+                del content
             bootstrap, skipped = (
                 inspect_corpus(
                     args.bootstrap_data,
@@ -808,6 +990,10 @@ def run_loop(args):
                     "source": str(source),
                 },
                 "initial_model": None,
+                "initial_accepted_checkpoint": accepted_record,
+                "initial_training_archive": None,
+                "initial_archive": None,
+                "accepted": None,
                 "bootstrap": [],
                 "bootstrap_skipped": skipped,
                 "iterations": [],
@@ -826,11 +1012,26 @@ def run_loop(args):
                 )
         config = LoopConfig(**state["config"])
         config.validate()
+        store = Path(config.model_store).resolve()
+        if (
+            store.is_relative_to(root)
+            or root.is_relative_to(store)
+            or store.is_relative_to(ROOT / "runs")
+        ):
+            raise ValueError(
+                "model-store must be separate from the loop output and outside disposable runs/"
+            )
         target = state["target_iterations"]
-        if target <= 0 or config.seed + target * config.games_per_iteration > 2**64:
+        if (
+            target <= 0
+            or config.seed + target * max(config.games_per_iteration, config.gate_games // 2)
+            > 2**64
+        ):
             raise ValueError("positive iteration target and nonoverflowing u64 game seeds required")
         if not Path(config.selfplay_binary).is_file():
             raise ValueError("self-play binary missing; build release binaries first")
+        if config.gate_games and not Path(config.arena_binary).is_file():
+            raise ValueError("arena binary missing; build release binaries first")
         feature_binary(config.feature_binary)
         torch.set_num_threads(config.threads)
         runner = LoopRunner(root, state, lock_fd)

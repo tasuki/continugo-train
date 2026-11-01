@@ -17,6 +17,7 @@ import torch
 from torch import nn
 
 from .model import NetworkConfig, PolicyValueNet
+from .paths import new_run_directory
 from .train import feature_spec
 
 METADATA_KEY = "continugo"
@@ -167,7 +168,9 @@ def export_checkpoint(checkpoint, output):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--output", type=Path, help="default: a model bundle inside runs/YYYYMMDD-HHMMSS-export"
+    )
     parser.add_argument(
         "--runtime-path",
         action="store_true",
@@ -178,8 +181,10 @@ def main(argv=None):
     if args.runtime_path:
         print(runtime_path())
         return
-    if args.checkpoint is None or args.output is None or args.threads <= 0:
-        parser.error("export requires --checkpoint, --output and positive --threads")
+    if args.checkpoint is None or args.threads <= 0:
+        parser.error("export requires --checkpoint and positive --threads")
+    if args.output is None:
+        args.output = new_run_directory("export") / "model"
     torch.set_num_threads(args.threads)
     error = export_checkpoint(args.checkpoint, args.output)
     print(f"Exported {args.output}; dynamic ONNX/PyTorch parity max_abs_error={error:.8g}")

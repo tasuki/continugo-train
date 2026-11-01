@@ -13,8 +13,8 @@ use crate::{
     search::{SearchConfig, Visit, search, search_neural},
 };
 use continugo_analysis::GeometricAvailability;
-use continugo_rules::{Board, Game, sgf, territory};
-use rand::{SeedableRng, rngs::StdRng};
+use continugo_rules::{Board, Color, Game, sgf, territory};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use serde::Serialize;
 use std::time::Instant;
 
@@ -55,6 +55,7 @@ pub struct GameMetadata {
     pub result: Option<territory::Outcome>,
     pub profile: Option<GameProfile>,
     pub model: Option<String>,
+    pub opponent: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -66,6 +67,8 @@ struct GameComment<'a> {
     model: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<&'a GameProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opponent: Option<&'a str>,
 }
 
 impl GameMetadata {
@@ -75,6 +78,7 @@ impl GameMetadata {
             search: (!matches!(self.config.engine, Engine::Random)).then_some(&self.config.search),
             model: self.model.as_deref(),
             profile: self.profile.as_ref(),
+            opponent: self.opponent.as_deref(),
         }
     }
 }
@@ -94,7 +98,7 @@ pub struct GameRecord {
 }
 
 pub fn generate(board: Board, config: &SelfplayConfig, seed: u64) -> Result<GameRecord, String> {
-    generate_inner::<false>(board, config, seed, None)
+    generate_inner::<false>(board, config, seed, None, None)
 }
 
 pub fn generate_profiled(
@@ -105,7 +109,7 @@ pub fn generate_profiled(
     if !matches!(config.engine, Engine::Random) {
         return Err("Detailed profiling currently supports --engine random only".into());
     }
-    generate_inner::<true>(board, config, seed, None)
+    generate_inner::<true>(board, config, seed, None, None)
 }
 
 pub fn generate_neural(
@@ -117,7 +121,22 @@ pub fn generate_neural(
     if !matches!(config.engine, Engine::Neural) {
         return Err("neural evaluator requires neural engine".into());
     }
-    generate_inner::<false>(board, config, seed, Some(evaluator))
+    generate_inner::<false>(board, config, seed, Some(evaluator), None)
+}
+
+/// Color-specific frozen networks, same search budget/rules. Evaluation chooses
+/// maximum visits (random tie breaks), not training's temperature-one sampling.
+pub fn generate_match(
+    board: Board,
+    config: &SelfplayConfig,
+    seed: u64,
+    black: &mut dyn Evaluator,
+    white: &mut dyn Evaluator,
+) -> Result<GameRecord, String> {
+    if !matches!(config.engine, Engine::Neural) {
+        return Err("matches require the neural engine".into());
+    }
+    generate_inner::<false>(board, config, seed, Some(black), Some(white))
 }
 
 fn generate_inner<const PROFILE: bool>(
@@ -125,12 +144,15 @@ fn generate_inner<const PROFILE: bool>(
     config: &SelfplayConfig,
     seed: u64,
     mut evaluator: Option<&mut dyn Evaluator>,
+    mut opponent: Option<&mut dyn Evaluator>,
 ) -> Result<GameRecord, String> {
     config.validate()?;
     if matches!(config.engine, Engine::Neural) && evaluator.is_none() {
         return Err("neural engine requires a loaded model".into());
     }
     let model = evaluator.as_ref().map(|e| e.model_id().to_owned());
+    let opponent_id = opponent.as_ref().map(|e| e.model_id().to_owned());
+    let evaluation_game = opponent.is_some();
     let started = PROFILE.then(Instant::now);
     let mut profile = GameProfile::default();
     let mut rng = StdRng::seed_from_u64(seed);
@@ -174,10 +196,24 @@ fn generate_inner<const PROFILE: bool>(
                 let result = search_neural(
                     &game,
                     &config.search,
-                    evaluator.as_deref_mut().expect("validated evaluator"),
+                    if evaluation_game && game.on_move() == Color::White {
+                        opponent.as_deref_mut().expect("opposing evaluator")
+                    } else {
+                        evaluator.as_deref_mut().expect("validated evaluator")
+                    },
                     &mut rng,
                 )?;
-                (result.sample(&mut rng).apply(&game)?, Some(result.policy))
+                let action = if evaluation_game {
+                    result
+                        .policy
+                        .iter()
+                        .max_by_key(|visit| (visit.visits, rng.random::<u64>()))
+                        .unwrap()
+                        .action
+                } else {
+                    result.sample(&mut rng)
+                };
+                (action.apply(&game)?, Some(result.policy))
             }
         };
         if let Some(index) = &mut availability {
@@ -225,6 +261,7 @@ fn generate_inner<const PROFILE: bool>(
         result,
         profile: PROFILE.then_some(profile),
         model,
+        opponent: opponent_id,
     };
     let mut record = sgf::Record {
         plays: game.record().to_vec(),
@@ -243,7 +280,15 @@ fn generate_inner<const PROFILE: bool>(
     };
     record.root.extend([
         ("PB".into(), vec![player.clone()]),
-        ("PW".into(), vec![player]),
+        (
+            "PW".into(),
+            vec![
+                metadata
+                    .opponent
+                    .as_ref()
+                    .map_or(player, |id| format!("neural-{id}")),
+            ],
+        ),
     ]);
     if let Some(result) = result {
         record
@@ -283,6 +328,61 @@ fn generate_inner<const PROFILE: bool>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matches_use_both_color_specific_evaluators_and_authoritative_draws() {
+        struct PassOnly {
+            id: &'static str,
+            calls: usize,
+        }
+        impl Evaluator for PassOnly {
+            fn model_id(&self) -> &str {
+                self.id
+            }
+            fn evaluate(&mut self, _: &Game) -> Result<crate::inference::Evaluation, String> {
+                self.calls += 1;
+                let mut logits = vec![f32::NEG_INFINITY; 1_000_001];
+                logits[1_000_000] = 0.0;
+                Ok(crate::inference::Evaluation {
+                    value: 0.0,
+                    logits,
+                    legal: vec![0; 1_000_000],
+                })
+            }
+        }
+        let mut black = PassOnly {
+            id: "black",
+            calls: 0,
+        };
+        let mut white = PassOnly {
+            id: "white",
+            calls: 0,
+        };
+        let config = SelfplayConfig {
+            engine: Engine::Neural,
+            max_moves: 8,
+            search: SearchConfig {
+                simulations: 4,
+                ..SearchConfig::default()
+            },
+        };
+        let game =
+            generate_match(Board::new(9).unwrap(), &config, 1, &mut black, &mut white).unwrap();
+        assert!(black.calls > 0 && white.calls > 0);
+        assert!(matches!(
+            game.metadata.result,
+            Some(territory::Outcome::Draw)
+        ));
+        assert!(game.sgf.contains("PB[neural-black]"));
+        assert!(game.sgf.contains("PW[neural-white]"));
+        assert!(game.sgf.contains("RE[0]"));
+        let info = crate::replay::ReplayGame::load(&game.sgf)
+            .unwrap()
+            .info(4)
+            .unwrap();
+        assert_eq!(info.result.as_deref(), Some("0"));
+        assert_eq!(info.policy_visit_totals, vec![Some(4), Some(4)]);
+    }
     use continugo_analysis::fills_small_eye;
     use continugo_rules::Play;
 

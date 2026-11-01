@@ -1,0 +1,206 @@
+"""Restartable fixed-budget paired-color gate. No loss-based model promotion."""
+
+from .features import inspect_game
+from .runtime import inference_environment
+from .sampling import weighted_sizes
+
+
+def plan(config, iteration, index):
+    ordinal = (iteration - 1) * config.gate_games + index
+    cycle = weighted_sizes(config.sizes, config.size_weights)
+    return ordinal, cycle[(ordinal // 2) % len(cycle)], config.seed + ordinal // 2, ordinal % 2 == 0
+
+
+def filename(ordinal, size, seed, candidate_black):
+    color = "black" if candidate_black else "white"
+    return f"game-{ordinal + 1:06d}-size{size}-seed{seed}-candidate-{color}.sgf"
+
+
+def summarize(records, threshold):
+    totals = {"wins": 0, "losses": 0, "draws": 0, "truncated": 0}
+    per_size = {}
+    for record in records:
+        bucket = per_size.setdefault(record["board_size"], dict.fromkeys(totals, 0))
+        if record["result"] is None:
+            key = "truncated"
+        elif record["result"] == "0":
+            key = "draws"
+        elif (record["result"].startswith("B+")) == record["candidate_black"]:
+            key = "wins"
+        else:
+            key = "losses"
+        totals[key] += 1
+        bucket[key] += 1
+    completed = len(records) - totals["truncated"]
+    points = totals["wins"] + 0.5 * totals["draws"]
+    score = points / completed if completed else None
+    # Unknown games are not draws. Decide only when the planned match score is
+    # guaranteed even if every truncated game resolves against that decision.
+    planned = len(records)
+    lower = points / planned if planned else 0.0
+    upper = (points + totals["truncated"]) / planned if planned else 1.0
+    if planned and points + 1e-10 >= threshold * planned:
+        decision = "accepted"
+    elif planned and points + totals["truncated"] + 1e-10 < threshold * planned:
+        decision = "rejected"
+    else:
+        decision = "inconclusive"
+    return {
+        **totals,
+        "completed": completed,
+        "games": len(records),
+        "score": score,
+        "planned_score_bounds": (lower, upper),
+        "threshold": threshold,
+        "per_size": per_size,
+        "decision": decision,
+    }
+
+
+def evaluate(runner, iteration):
+    config = runner.config
+    if iteration["gate"] is None:
+        iteration["gate"] = {"attempts": [], "games": [None] * config.gate_games, "report": None}
+        runner.save()
+    gate = iteration["gate"]
+    if gate["report"] is not None:
+        return gate["report"]
+    if config.gate_games == 0:
+        gate["report"] = {"decision": "accepted", "disabled": True, "draws": 0, "truncated": 0}
+        runner.save()
+        return gate["report"]
+    search = {**config.search(), "simulations": config.gate_simulations}
+    candidate = iteration["model"]
+    incumbent = iteration["parent_model"]
+    density = runner.state["feature_spec"]["samples_per_diameter"]
+
+    def adopt():
+        for attempt in gate["attempts"]:
+            if attempt.get("adopted"):
+                continue
+            for index in attempt["indices"]:
+                if gate["games"][index]:
+                    continue
+                ordinal, size, seed, candidate_black = plan(config, iteration["number"], index)
+                path = runner.path(attempt["path"]) / filename(ordinal, size, seed, candidate_black)
+                if not path.exists():
+                    if attempt["status"] == "succeeded":
+                        raise ValueError(f"successful arena omitted {path}")
+                    continue
+                try:
+                    info = inspect_game(path, density, config.feature_binary)
+                except ValueError:
+                    if attempt["status"] == "succeeded":
+                        raise
+                    runner.log(f"WARNING: retaining invalid partial arena SGF: {path}")
+                    continue
+                black = candidate if candidate_black else incumbent
+                white = incumbent if candidate_black else candidate
+                root = info.get("root_comment")
+                if (
+                    not isinstance(root, dict)
+                    or root.get("model") != black["checkpoint_sha256"]
+                    or root.get("opponent") != white["checkpoint_sha256"]
+                    or info.get("black_player") != f"neural-{black['checkpoint_sha256']}"
+                    or info.get("white_player") != f"neural-{white['checkpoint_sha256']}"
+                    or root.get("seed") != seed
+                    or root.get("search") != search
+                    or info["board_size"] != size
+                    or not 0 < info["moves"] <= config.gate_max_moves
+                    or info.get("policy_visit_totals") != [config.gate_simulations] * info["moves"]
+                    or info["completed"] != info["labeled"]
+                    or not info["completed"]
+                    and info["moves"] != config.gate_max_moves
+                ):
+                    raise ValueError(
+                        f"arena record does not match its frozen two-model job: {path}"
+                    )
+                record = {
+                    **runner.record(path),
+                    "board_size": size,
+                    "seed": seed,
+                    "candidate_black": candidate_black,
+                    "result": info["result"],
+                    "moves": info["moves"],
+                }
+                gate["games"][index] = record
+                if info["result"] == "0":
+                    runner.log(f"WARNING DRAW in acceptance test: {path}")
+                if not info["labeled"]:
+                    runner.log(f"WARNING TRUNCATED acceptance game (not a draw): {path}")
+                runner.save()
+            attempt["adopted"] = True
+            runner.save()
+
+    adopt()
+    missing = [i for i, record in enumerate(gate["games"]) if record is None]
+    groups = []
+    for index in missing:
+        if not groups or index != groups[-1][-1] + 1:
+            groups.append([])
+        groups[-1].append(index)
+    for indices in groups:
+        relative = (
+            f"iteration-{iteration['number']:04d}/gate/attempt-{len(gate['attempts']) + 1:04d}"
+        )
+        directory = runner.path(relative)
+        directory.mkdir(parents=True, exist_ok=False)
+        attempt = {"path": relative, "indices": indices, "status": "running", "adopted": False}
+        gate["attempts"].append(attempt)
+        runner.save()
+        ordinal, _, _, _ = plan(config, iteration["number"], indices[0])
+        library, environment = inference_environment(config.device, config.ort_library)
+        command = [
+            config.arena_binary,
+            "--candidate",
+            str(runner.check_model(candidate)),
+            "--incumbent",
+            str(runner.check_model(incumbent)),
+            "--output",
+            str(directory),
+            "--games",
+            str(len(indices)),
+            "--game-offset",
+            str(ordinal),
+            "--seed",
+            str(config.seed),
+            "--sizes",
+            ",".join(map(str, config.sizes)),
+            "--size-weights",
+            config.size_weights,
+            "--max-moves",
+            str(config.gate_max_moves),
+            "--device",
+            config.device,
+            "--ort-library",
+            str(library),
+        ]
+        settings = {
+            **search,
+            **{
+                name: getattr(config, name)
+                for name in [
+                    "inference_threads",
+                    "feature_threads",
+                    "cache_positions",
+                ]
+            },
+        }
+        for name, value in settings.items():
+            command += ["--" + name.replace("_", "-"), str(value)]
+        runner.log(
+            f"iteration {iteration['number']}: acceptance match, {len(indices)} missing games"
+        )
+        try:
+            runner.execute(command, directory / "arena.log", environment)
+        except BaseException:
+            attempt["status"] = "interrupted"
+            runner.save()
+            raise
+        attempt["status"] = "succeeded"
+        runner.save()
+        adopt()
+    gate["report"] = summarize(gate["games"], config.acceptance_rate)
+    runner.save()
+    runner.log(f"ACCEPTANCE iteration={iteration['number']}: {gate['report']}")
+    return gate["report"]

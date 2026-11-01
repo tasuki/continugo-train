@@ -2,6 +2,12 @@
 
 Initial self-play and network measurements: 2026-10-30.
 
+**Artifact reset:** the generated `runs/` contents and the old sibling model store
+were explicitly deleted at the user's request after these measurements. Paths and
+hashes below are historical diagnostics, not currently available models. New
+outputs stay in this repository: UTC-dated `runs/` directories and dated recovery
+bundles under `models/`. These written measurements are retained.
+
 The first whole-game table describes the **original full-coordinate sampler**,
 before the incremental coverage-count index. Switching to the free-list sampler
 changes seeded trajectories, so that switch cannot be judged by whole-game times
@@ -1077,4 +1083,65 @@ native SGFs appear, verifies child cleanup, resumes without overwriting partial 
 completed files, and completes two iterations across 9/13/19. That test uses a tiny
 pass-biased network/reduced widening for fast plumbing verification, not strength.
 All **53 Python tests**, shared/local Rust tests and checks pass. The next milestone
-is fixed-budget playing-strength evaluation, not larger loop runs or networks.
+was fixed-budget playing-strength evaluation at this snapshot, not larger loop runs or networks.
+
+## 40/40/20 sampling, acceptance gate and durable recovery — 2026-11-01
+
+New defaults emphasize size 9 and 13: `--size-weights 9:2,13:2,19:1` drives
+self-play, active replay selection, actual training/validation positions and
+paired-color evaluation. This reduces expensive size-19 **extraction work**, not
+merely its loss coefficient. Historical sections used literal/equal size cycling;
+add `--size-weights uniform` to reproduce those older schedules. Shape/parity tests
+still cover all resolutions.
+
+A real CUDA smoke forked from the previous loop's latest checkpoint (`328c0402...`),
+preserving its optimizer state, rather than restarting from random or rolling back
+to the original bootstrap model. Configuration: five generation games, seeds
+400..404, sizes 9/13/19, eight simulations, 32-move generation cap, five concurrent
+games/batch limit five, 20-game replay cap, one epoch, five training batches of one,
+one feature worker, one sampled position per game, and kept SGD momentum.
+
+| Work | Size 9 | Size 13 | Size 19 |
+|---|---:|---:|---:|
+| Generated games | 2 | 2 | 1 |
+| Actually optimized positions | 2 | 2 | 1 |
+| Actually validated positions | 2 | 2 | 1 |
+| Evaluation games (color-paired) | 4 | 4 | 2 |
+
+Generation produced **110 moves**: three naturally completed games (46 eligible
+positions) and **two truncated size-13 games** at the 32-move cap. All truncations
+were explicitly reported and excluded from replay. The frozen replay corpus had
+20 unique labeled games (15 train / 5 validation). Train policy CE/value MSE were
+12.725578 / 1.075501; validation 12.536001 / 1.125330. These are five-update wiring
+measurements with changed data/weights, not evidence of strength or a controlled
+throughput comparison.
+
+The acceptance smoke deliberately used only **eight moves per game** and eight
+simulations, to exercise two-model native CUDA matching cheaply. **All ten matches
+truncated** (zero draws, zero completed outcomes), and warnings named every SGF.
+The result was correctly **inconclusive**: no invented draw scores and no promotion.
+The accepted model stayed at `328c0402...`; the trained candidate
+`2996db3124c7ff7fcfc0629b528a2cd4e5e9067fe1933a37b9a6ce520c912173` was retained
+with full optimizer/RNG/corpus state. Production defaults allow 512 moves, but
+budgets still need calibration rather than claiming this smoke is an acceptance win.
+
+Artifacts are under `runs/weighted-gate-smoke/`. Durable bundles are outside the
+repository at `../continugo-models/`: accepted ONNX + full checkpoint/replay packs
+and a separate latest-training pack, including this inconclusive candidate. The
+three previously auto-accepted models (`d4d466...`, `8bff85...`, `328c04...`) were
+also preserved as historical baselines; they were not retroactively gate-qualified.
+SGF blobs are independent copies, shared only between store-owned recovery packs.
+Bundles are hashed, atomically published, read-only and never automatically pruned.
+
+Tests exercise default native/Python schedules, early-step training sample ratios,
+without-replacement downsampling of surplus size-19 positions, pairing/color/model
+identity, draw warnings, unknown-outcome bounds, rejection/inconclusive separation
+of training and self-play state, partial gate recovery without retraining, foreign
+store rejection, corruption checks and lost-run recovery. A real CPU gate uses a
+deliberately pass-biased tiny network: its ten genuine draws are loudly reported,
+not treated as a strength result. Its archived checkpoint and relocated SGFs then
+continue training **bit-for-bit against the original corpus after the original run
+is deleted**, including SGD momentum. See [evaluation.md](evaluation.md),
+[model-store.md](model-store.md) and [loop.md](loop.md) for controls and limitations.
+All **66 Python tests**, shared/local Rust tests and checks pass, including CPU/CUDA
+inference parity, paired-gate recovery and bit-for-bit archive continuation.

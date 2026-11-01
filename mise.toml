@@ -47,7 +47,7 @@ run = ".venv/bin/python -m continugo_train.train"
 
 [tasks.build-loop]
 description = "Build native self-play and authoritative feature binaries"
-run = "cargo build --locked --release --bin continugo-train --bin features"
+run = "cargo build --locked --release --bin continugo-train --bin features --bin arena"
 
 [tasks.loop]
 description = "Restartable neural self-play, bounded replay, warm-start and export loop"
@@ -65,6 +65,10 @@ run = ".venv/bin/python -m continugo_train.runtime setup"
 [tasks.neural-selfplay]
 description = "Native ONNX-guided MCTS (CUDA by default; --device cpu for CPU)"
 run = ".venv/bin/python -m continugo_train.runtime selfplay"
+
+[tasks.arena]
+description = "Paired-color candidate/incumbent evaluation (40/40/20 board mix)"
+run = ".venv/bin/python -m continugo_train.runtime arena"
 
 [tasks.infer]
 description = "Native ONNX diagnostics (CUDA by default; --device cpu for CPU)"

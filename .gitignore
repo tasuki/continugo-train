@@ -1,6 +1,7 @@
 /target/
 /.venv/
 /runs/
+/models/
 __pycache__/
 *.egg-info/
 /.ruff_cache/

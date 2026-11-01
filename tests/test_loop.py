@@ -138,7 +138,7 @@ class FakeJobs:
             atomic_checkpoint(output / "latest.pt", state)
 
 
-class LoopTests(unittest.TestCase):
+class LoopHarness(unittest.TestCase):
     def setUp(self):
         torch.set_num_threads(1)
         torch.manual_seed(0)
@@ -197,6 +197,10 @@ class LoopTests(unittest.TestCase):
                 str(self.source),
                 "--bootstrap-data",
                 str(self.corpus),
+                "--model-store",
+                str(self.root / "models"),
+                "--gate-games",
+                "0",
                 "--sizes",
                 "13",
                 "--games-per-iteration",
@@ -243,6 +247,8 @@ class LoopTests(unittest.TestCase):
     def stage_calls(self, name):
         return [command for command in self.jobs.calls if name in command]
 
+
+class LoopTests(LoopHarness):
     def test_two_iterations_handoff_replay_window_and_idempotent_resume(self):
         output = self.root / "loop"
         state = self.run_loop(output)
@@ -476,6 +482,10 @@ class LoopTests(unittest.TestCase):
             str(self.corpus),
             "--device",
             "cpu",
+            "--model-store",
+            str(self.root / "real-models"),
+            "--gate-games",
+            "0",
             "--sizes",
             "9,13,19",
             "--games-per-iteration",

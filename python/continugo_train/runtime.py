@@ -14,6 +14,7 @@ import sysconfig
 from pathlib import Path
 
 from .export import runtime_path
+from .paths import new_run_directory
 
 CUDA_INDEX = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-11/pypi/simple/"
 GPU_VERSION = "1.20.1"
@@ -113,7 +114,7 @@ def setup_gpu():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
-    parser.add_argument("command", choices=["setup", "selfplay", "infer"])
+    parser.add_argument("command", choices=["setup", "selfplay", "infer", "arena"])
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--ort-library", type=Path)
     args, remaining = parser.parse_known_args(argv)
@@ -122,11 +123,17 @@ def main(argv=None):
             setup_gpu()
             return
         command = ["cargo", "run", "--locked", "--release"]
-        command += ["--bin", "infer"] if args.command == "infer" else []
+        command += ["--bin", args.command] if args.command in {"infer", "arena"} else []
         command += ["--"] + (["--engine", "neural"] if args.command == "selfplay" else [])
         if "--help" in remaining or "-h" in remaining:
             os.execvpe(command[0], [*command, *remaining], os.environ.copy())
         library, environment = inference_environment(args.device, args.ort_library)
+        if args.command in {"selfplay", "arena"} and not any(
+            value == "--output" or value.startswith("--output=") for value in remaining
+        ):
+            output = new_run_directory(args.command)
+            print(f"Output: {output}", flush=True)
+            remaining += ["--output", str(output)]
         command += ["--device", args.device, "--ort-library", str(library), *remaining]
         os.execvpe(command[0], command, environment)
     except (ValueError, OSError) as error:

@@ -15,7 +15,10 @@ mise run selfplay -- --engine mcts --games 24 --sizes 9,13,19 --seed 100 --simul
 mise run train -- --data runs/bootstrap --output runs/train-001 --device cuda --epochs 3 --steps-per-epoch 20 --positions-per-game 8 --validation-positions-per-game 4
 ```
 
-Use a new output directory. `--device auto` (default) chooses CUDA when available,
+Use a new output directory, or omit `--output` to reserve
+`runs/YYYYMMDD-HHMMSS-train` here automatically (UTC, collision-safe).
+Explicit output paths remain literal; resume defaults to its checkpoint's existing
+directory rather than allocating a new one. `--device auto` chooses CUDA when available,
 otherwise CPU; `--device cpu` forces CPU. Inspect options with
 `mise run train -- --help`. Architecture options include `--channels`, `--blocks`, `--policy-hidden`,
 `--value-hidden`, and `--chunk-size`. Defaults are the existing 32-channel/4-block
@@ -24,16 +27,41 @@ norm clipping at 5, batch size 2, and two feature workers. This fits the local G
 1080 comfortably; mixed precision is not assumed to help Pascal.
 
 The example deliberately limits the run. With omitted limits (all default to
-zero), each epoch uses every eligible position once, and validation evaluates all
-held-out positions. Nonzero `--positions-per-game` chooses a fresh reproducible
+zero), all eligible positions are candidates before board-mixture downsampling.
+`--size-weights uniform` instead uses every eligible position once and evaluates
+all held-out positions. Nonzero `--positions-per-game` chooses a fresh reproducible
 subset each training epoch. `--validation-positions-per-game` chooses a fixed
 seeded subset per held-out game. `--steps-per-epoch` caps optimizer batches;
 otherwise an epoch exhausts the data. Final partial batches are retained.
 
+### Board mixture: 40% / 40% / 20%
+
+New training/warm-start runs default to `--size-weights 9:2,13:2,19:1`, emphasizing
+9/13 equivalents while retaining 20% for size 19. This controls **actual positions**:
+a long 19 game cannot dominate merely by providing many more plies. Surplus
+positions are downsampled without replacement before extracting million-row
+features, and homogeneous batches follow the weighted schedule. There are no
+extra loss multipliers, duplicate synthetic samples or conditional action softmaxes.
+
+The default cycle is 9,13,19,9,13. Very small budgets round; unavailable sizes
+renormalize and tiny buckets retain coverage where possible. Zero weight excludes
+a size, and unlisted supported sizes have weight one. At least one positive-weight
+size is required in both train and validation. Actual `samples_by_size` is saved
+and logged for both phases. These fractions are samples, not elapsed CPU/GPU time.
+
+Weighted mode shuffles lightweight references within sizes and bypasses the dense
+global `--shuffle-buffer` so early-step caps retain their intended board mix. It
+can revisit a worker's game snapshot more often than contiguous uniform loading;
+worker queues remain bounded. `uniform` retains the original exhaustive ordering
+and dense shuffle-buffer behavior. Strict resume freezes this sampling option;
+legacy checkpoints without it restore `uniform`, rather than silently changing an
+old experiment. Warm-start/new loops use the new default unless otherwise specified.
+
 **Random SGFs have no MCTS policy labels.** They are not silently assigned played-
 move targets. This initial joint policy/value trainer uses only positions with
 both real visits and a completed-game outcome. It reports skipped unlabeled,
-no-policy and duplicate games. Invalid moves, policies or scores fail rather than
+no-policy and duplicate games, and explicitly warns about draws and unlabeled/
+truncated SGFs. Invalid moves, policies or scores fail rather than
 being silently skipped. At least two eligible unique games in one resolution
 bucket are needed to obtain a held-out set. Train board sizes are 9..19.
 
@@ -51,9 +79,10 @@ bucket are needed to obtain a held-out set. Train board sizes are 9..19.
 - Each background thread owns a persistent Rust process, which retains immutable
   pre-move snapshots of one validated game. A game is replayed/scored once per
   worker visit, not once per sampled position. Workers never touch CUDA.
-- Games and within-game positions are shuffled; workers are consumed in stable
-  round-robin order. A bounded position shuffle buffer (default 8) mixes their
-  output. Positions are batched by actual resolution without spatial padding.
+- Position references are shuffled within board size and scheduled by the configured
+  mixture; workers are consumed in stable round-robin order. In `uniform` mode, the
+  original bounded dense shuffle buffer (default 8) mixes output. Positions are
+  batched by actual resolution without spatial padding.
 - Every sample includes **all million coordinates plus pass** for exact policy
   normalization, not a sampled/conditional action softmax. Sparse visit targets
   are padded with zero counts; no dense target distribution is allocated.
@@ -69,13 +98,15 @@ when loading a game, then serve that snapshot. Do not point a run at files being
 rewritten by self-play. The implementation stores per-game snapshots, so unusually
 long games consume more worker memory. Dense feature packets are never cached as
 an entire corpus: one packet is about 45 MB. Reduce `--shuffle-buffer`,
-`--batch-size`, or `--workers` for less host memory. Worker queues are bounded;
+`--batch-size`, or `--workers` for less host memory (`--shuffle-buffer` applies only
+in uniform mode). Worker queues are bounded;
 early epoch termination closes readers and reaps Rust processes.
 
 ## Checkpoints and resume
 
 An epoch produces `epoch-0001.pt`, etc., plus atomic `latest.pt` and `best.pt`.
 Best means the lowest held-out **policy CE + value MSE**, not playing strength.
+The [loop acceptance gate](evaluation.md) uses head-to-head results instead.
 Checkpoints contain weights and BatchNorm buffers, SGD momentum/state, optimizer
 step count, completed epochs, RNG states, architecture/options, feature names,
 existing compatibility marker/density, and an embedded corpus/split manifest.
@@ -93,7 +124,7 @@ epoch files prevent accidentally rewinding/overwriting progress. Training settin
 are restored. Batch size, workers, shuffle buffer, training position/step caps,
 learning rate, gradient clipping and policy chunk size may be explicitly changed.
 Feature semantics/density, architecture weights, split seed/fraction and validation
-sample selection must match. Changed eligible SGF contents/targets are rejected;
+sample selection and board-mixture policy must match. Changed eligible SGF contents/targets are rejected;
 relocating an otherwise identical corpus is allowed.
 
 Checkpoints are at **completed epoch boundaries**, after validation. Ctrl-C does
@@ -135,8 +166,8 @@ mise run train -- --data runs/replay-003 --warm-start runs/train-002/latest.pt -
 mise run train -- --data runs/replay-003 --resume runs/train-003/latest.pt --epochs 3
 ```
 
-`--warm-start` and `--resume` are mutually exclusive. Warm-start requires an
-explicit **new/empty** `--output`; the source run is never overwritten. It can fork
+`--warm-start` and `--resume` are mutually exclusive. Warm-start uses a **new/empty**
+output, automatically dated if `--output` is omitted; the source run is never overwritten. It can fork
 from an earlier epoch or `best.pt` even when the source run has newer checkpoints.
 The new run gets its own lock, log, epoch snapshots, `latest.pt` and `best.pt`.
 

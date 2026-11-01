@@ -4,9 +4,10 @@
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::Parser;
-use continugo_rules::Board;
+use continugo_rules::{Board, territory};
 use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
+    sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
     search::SearchConfig,
     selfplay::{
         Engine, GameRecord, SelfplayConfig, generate, generate_neural, generate_profiled,
@@ -31,9 +32,12 @@ struct Args {
     engine: Engine,
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     games: u32,
-    /// Equivalent board sizes, cycled in order. The rules currently use integer sizes.
+    /// Supported board equivalents; allocation follows --size-weights.
     #[arg(long, value_delimiter = ',', default_value = "9,13,19", num_args = 1..)]
     sizes: Vec<i32>,
+    /// Board mix: default 40%/40%/20%; 'uniform' preserves literal size cycling.
+    #[arg(long, default_value = DEFAULT_SIZE_WEIGHTS)]
+    size_weights: String,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     #[arg(long, default_value_t = 512)]
@@ -143,8 +147,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             args.inference_batch_wait_ms
         );
     }
-    let boards: Vec<_> = args
-        .sizes
+    let schedule = weighted_sizes(&args.sizes, &args.size_weights)?;
+    let boards: Vec<_> = schedule
         .iter()
         .map(|&size| {
             if !(9..=19).contains(&size) {
@@ -163,12 +167,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let mut total_moves = 0;
     let mut completed = 0;
+    let mut draws = 0;
     let mut emit = |index: u32,
                     record: GameRecord,
                     generation_seconds: f64|
      -> Result<(), String> {
         total_moves += record.metadata.policies.len();
         completed += usize::from(record.metadata.result.is_some());
+        if matches!(record.metadata.result, Some(territory::Outcome::Draw)) {
+            draws += 1;
+            eprintln!(
+                "WARNING DRAW: game={} size={} seed={}",
+                index + 1,
+                record.metadata.board_size,
+                record.metadata.seed
+            );
+        } else if record.metadata.result.is_none() {
+            eprintln!(
+                "WARNING TRUNCATED: game={} size={} seed={} max_moves={}",
+                index + 1,
+                record.metadata.board_size,
+                record.metadata.seed,
+                args.max_moves
+            );
+        }
         let output_started = Instant::now();
         if preview {
             writeln!(stdout, "{}", record.sgf).map_err(|e| e.to_string())?;
@@ -226,6 +248,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         total_moves,
         elapsed,
         total_moves as f64 / elapsed
+    );
+    eprintln!(
+        "outcomes: draws={draws} truncated={}",
+        args.games as usize - completed
     );
     if let Some(stats) = &parallel_stats {
         eprintln!("native inference: {stats:?}");

@@ -37,6 +37,35 @@ impl Drop for TestDir {
 }
 
 #[test]
+fn default_mix_and_truncation_warnings_are_explicit() {
+    let directory = TestDir::new("weighted-default");
+    let output = cli()
+        .args([
+            "--engine",
+            "random",
+            "--games",
+            "5",
+            "--max-moves",
+            "1",
+            "--output",
+        ])
+        .arg(&directory.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let mut sizes = std::collections::BTreeMap::new();
+    for entry in fs::read_dir(&directory.0).unwrap() {
+        let record =
+            sgf::decode_record(&fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
+        *sizes.entry(board_from_sgf(&record).size()).or_insert(0) += 1;
+    }
+    assert_eq!(sizes, [(9, 2), (13, 2), (19, 1)].into_iter().collect());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.matches("WARNING TRUNCATED").count(), 5);
+    assert!(stderr.contains("draws=0 truncated=5"));
+}
+
+#[test]
 fn stdout_previews_use_the_main_repo_sgf_codec() {
     for size in [9, 13, 19] {
         let output = cli()

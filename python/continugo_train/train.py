@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import Counter
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -25,6 +26,8 @@ from .data import batches, scan_corpus
 from .features import COARSE_PLANES, MOVE_FEATURES, PASS, SCHEMA_VERSION, feature_binary
 from .losses import policy_value_loss
 from .model import NetworkConfig, PolicyValueNet
+from .paths import new_run_directory
+from .sampling import DEFAULT_SIZE_WEIGHTS, parse_weights
 
 
 @dataclass
@@ -42,8 +45,10 @@ class Options:
     momentum: float = 0.9
     weight_decay: float = 1e-4
     grad_clip: float = 5.0
+    size_weights: str = DEFAULT_SIZE_WEIGHTS
 
     def validate(self):
+        parse_weights(self.size_weights)
         if self.batch_size <= 0 or self.samples_per_diameter <= 0:
             raise ValueError("batch size and sample density must be positive")
         if any(
@@ -167,6 +172,7 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, actions, 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     samples = steps = 0
+    samples_by_size = Counter()
     totals = [0.0, 0.0, 0.0]
     wait = compute = 0.0
     started = time.perf_counter()
@@ -181,6 +187,7 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, actions, 
         shuffle_buffer=options.shuffle_buffer if training else 0,
         limit=options.positions_per_game if training else options.validation_positions_per_game,
         binary=binary,
+        size_weights=options.size_weights,
     )
     with closing(stream), torch.set_grad_enabled(training):
         while not (training and options.steps_per_epoch and steps >= options.steps_per_epoch):
@@ -191,6 +198,7 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, actions, 
                 break
             wait += time.perf_counter() - tick
             tick = time.perf_counter()
+            samples_by_size.update(cpu_batch.board_sizes.tolist())
             batch = cpu_batch.to(device)
             if training:
                 optimizer.zero_grad(set_to_none=True)
@@ -222,6 +230,7 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, actions, 
     return {
         "samples": samples,
         "steps": steps,
+        "samples_by_size": dict(sorted(samples_by_size.items())),
         "loss": totals[0] / samples,
         "policy_ce": totals[1] / samples,
         "value_mse": totals[2] / samples,
@@ -241,7 +250,9 @@ def parse_args(argv=None):
     parser.add_argument(
         "--data", nargs="+", required=True, help="SGF files or directories (recursive)"
     )
-    parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--output", type=Path, help="new runs default to runs/YYYYMMDD-HHMMSS-train"
+    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--resume", type=Path, help="continue the same fixed-corpus run")
     source.add_argument(
@@ -274,8 +285,6 @@ def train(args):
     torch.set_num_threads(args.threads)
     binary = feature_binary(args.feature_binary)
     resuming = args.resume is not None
-    if args.warm_start is not None and args.output is None:
-        raise ValueError("--warm-start requires --output for a new run")
     source = args.resume or args.warm_start
     source_bytes = source.read_bytes() if source else None
     saved = (
@@ -304,7 +313,12 @@ def train(args):
     ):
         raise ValueError("not an offline-training checkpoint")
     history = checkpoint_splits(saved) if saved is not None else {}
-    options = Options(**saved["options"]) if saved is not None else Options()
+    restored_options = dict(saved["options"]) if saved is not None else {}
+    # Old fixed-corpus checkpoints retain their original exhaustive ordering.
+    # New jobs/warm-starts use the new 40/40/20 default unless explicitly set.
+    if resuming and "size_weights" not in restored_options:
+        restored_options["size_weights"] = "uniform"
+    options = Options(**restored_options)
     mutable = {
         "workers",
         "batch_size",
@@ -343,7 +357,9 @@ def train(args):
     epochs = args.epochs if args.epochs is not None else completed + (1 if resuming else 3)
     if epochs <= completed:
         raise ValueError("total epochs must exceed completed checkpoint epochs")
-    output = (args.output or (args.resume.parent if args.resume else Path("runs/train"))).resolve()
+    output = (
+        args.output or (args.resume.parent if resuming else new_run_directory("train"))
+    ).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if not resuming and any(output.iterdir()):
         raise ValueError("output directory is not empty; choose a new run or --resume")
@@ -421,10 +437,20 @@ def train(args):
         )
         if resuming and corpus.fingerprint != saved["corpus_fingerprint"]:
             raise ValueError("eligible SGF corpus/targets changed since checkpoint")
+        weights = parse_weights(options.size_weights)
+        if weights is not None and any(
+            not any(weights.get(g.board_size, 1) for g in games)
+            for games in [corpus.train, corpus.validation]
+        ):
+            raise ValueError("both train and validation need positive-weight board sizes")
         log(
             f"OFFLINE FP32; device={device}; torch={torch.__version__}; parameters={sum(p.numel() for p in model.parameters())}; config={asdict(config)}"
         )
         log(f"options={asdict(options)}")
+        if options.size_weights != "uniform":
+            log(
+                "Sampling uses board-weighted position references (without replacement); surplus rows are not extracted; dense shuffle-buffer is bypassed."
+            )
         log(f"initialization={initialization}; inherited_split_games={len(history)}")
         log(
             f"games train={len(corpus.train)} validation={len(corpus.validation)}; eligible positions train={sum(len(g.plies) for g in corpus.train)} validation={sum(len(g.plies) for g in corpus.validation)}; skipped={corpus.skipped}; corpus={corpus.fingerprint}"
@@ -480,6 +506,9 @@ def train(args):
             atomic_checkpoint(output / "latest.pt", state)
             if improved:
                 atomic_checkpoint(output / "best.pt", state)
+            log(
+                f"samples_by_size: train={metrics['train']['samples_by_size']} validation={metrics['validation']['samples_by_size']}"
+            )
             log(f"saved {destination}; best_validation={best:.6f}; global_step={step}")
     return output / "latest.pt"
 

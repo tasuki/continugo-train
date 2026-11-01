@@ -42,7 +42,7 @@ Follow KataGo's approach wherever applicable, with these ContinuGo-specific cons
 - **Direct random play** (`--engine random`) uses no tree search and supplies no search-policy targets; retain it for rules/performance diagnostics. Its narrow eye-avoidance filter rejects only an enclosed, single-friendly-group pocket that one stone would completely fill; allow larger pockets, captures and connections. Pass only after an exhaustive search finds no acceptable placement. Keep this filter separate from MCTS; do not add heuristic-guided MCTS or handcrafted value evaluations.
 - Replace the bootstrap priors/value evaluator with neural guidance in MCTS, retaining PUCT and progressive widening to handle the enormous action space.
 - Maintain sufficient independent exploration to discover moves the current policy undervalues.
-- Train across the supported discrete stone sizes, with good coverage of 9×9, 13×13, and 19×19 equivalents.
+- Prioritize 9×9 and 13×13 equivalents: default to **40% / 40% / 20%** for 9/13/19 across generation, replay, actual training/validation positions and evaluation. Keep this configurable; do not let longer size-19 games dominate position extraction. Retain support for the other discrete sizes without particularly optimizing for 19 now.
 - Batch positions with similar input resolutions efficiently.
 - Train the policy from MCTS search results and the value from game outcomes.
 - Iterate through self-play, training, model export, and evaluation.
@@ -64,11 +64,11 @@ If evaluating all million coordinates per position proves too expensive, investi
 
 ## Iterative loop milestone
 
-The [restartable synchronous loop](loop.md) now generates SGFs, freezes a bounded replay corpus, warm-starts training, exports and repeats. Per-game, completed-epoch and published-export recovery are implemented; game-level holdouts remain pinned across the checkpoint lineage. CPU interruption/restart tests and a real two-iteration CUDA smoke across 9/13/19 pass. Latest weights are promoted automatically, without playing-strength gating. This validates the pipeline, not stronger play.
+The [restartable synchronous loop](loop.md) generates SGFs, freezes bounded replay, warm-starts, exports and runs a [paired-color acceptance gate](evaluation.md). It separates latest training progress from the accepted self-play model: rejection or inconclusive evaluation never rolls training back. Draws and truncations are explicitly reported; unknown outcomes are never invented draws. Generation, replay, actual position sampling and evaluation default to 40/40/20 for 9/13/19. [Durable recovery packs](model-store.md) preserve accepted ONNX plus full checkpoints and replay data in this repository's `models/`, separate from disposable `runs/`, and also back up rejected candidates. New run/model directories have UTC datetime prefixes; old smoke artifacts were explicitly cleared for a clean start. Per-game/epoch/export/gate recovery and training restoration after losing the original run are tested. These are pipeline/regression-guard milestones, not proof of stronger play.
 
 ## Implementation priorities
 
-1. Establish reproducible playing-strength evaluation across board sizes and fixed compute/search budgets before scaling loop runs. Compare checkpoints and baselines; add model gating only if measurements justify it.
+1. Calibrate acceptance-match count, search budget and threshold, and measure actual strength improvements against checkpoints/baselines before scaling runs. Prioritize 9/13, retaining 20% size-19 coverage. The current small finite-match gate is not a statistical proof of improvement.
 2. Improve neural self-play throughput before scaling runs: reduce unnecessary full-domain feature/scoring work and investigate CPU/GPU overlap without losing independent exploration or correct policy normalization. CPU/CUDA inference, bounded host context caching, parallel exact-feature extraction, and bounded cross-game inference batching are implemented; dense policy is deferred at value-only leaves and exact rows are streamed in bounded chunks. Benchmark concurrency/batch settings rather than assuming batching is faster. Feature extraction remains the dominant measured cost.
 3. Scale network capacity and training/self-play budgets only as justified by strength per unit of computation.
 4. Move stable reusable components into the main ContinuGo repository.
