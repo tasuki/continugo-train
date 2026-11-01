@@ -24,6 +24,7 @@ pub struct ReplayGame {
     policies: Vec<Option<Vec<PolicyTarget>>>,
     black_outcome: Option<f32>,
     game_id: String,
+    root_comment: Option<serde_json::Value>,
 }
 
 /// Metadata, not a second game-record format. Identity hashes SZ + decoded plays,
@@ -38,6 +39,9 @@ pub struct GameInfo {
     pub completed: bool,
     pub labeled: bool,
     pub eligible_plies: Vec<usize>,
+    /// Shared-codec metadata for supervised loop artifact validation, not rules.
+    pub root_comment: Option<serde_json::Value>,
+    pub policy_visit_totals: Vec<Option<u64>>,
 }
 
 fn property<'a>(properties: &'a [sgf::Property], name: &str) -> Result<Option<&'a str>, String> {
@@ -156,6 +160,8 @@ impl ReplayGame {
             policies,
             black_outcome,
             game_id: format!("{:x}", identity.finalize()),
+            root_comment: property(&record.root, "C")?
+                .and_then(|comment| serde_json::from_str(comment).ok()),
         })
     }
 
@@ -167,6 +173,16 @@ impl ReplayGame {
             diameter: game.board().diameter(),
             resolution: crate::features::resolution(game.board().diameter(), samples_per_diameter)?,
             moves: self.policies.len(),
+            root_comment: self.root_comment.clone(),
+            policy_visit_totals: self
+                .policies
+                .iter()
+                .map(|policy| {
+                    policy
+                        .as_ref()
+                        .map(|targets| targets.iter().map(|t| u64::from(t.visits)).sum())
+                })
+                .collect(),
             completed: self.positions.last().unwrap().is_finished(),
             labeled: self.black_outcome.is_some(),
             eligible_plies: self

@@ -51,20 +51,8 @@ class Corpus:
         ]
 
 
-def scan_corpus(
-    inputs: list[str],
-    density: int,
-    seed: int,
-    validation_fraction: float,
-    binary=None,
-    *,
-    split_history: dict[str, str] | None = None,
-) -> Corpus:
-    if not 0 < validation_fraction < 1:
-        raise ValueError("validation fraction must be between 0 and 1")
-    history = dict(split_history or {})
-    if any(split not in ("train", "validation") for split in history.values()):
-        raise ValueError("invalid split history")
+def inspect_corpus(inputs: list[str], density: int, binary=None):
+    """Validate/deduplicate eligible games without requiring a holdout yet."""
     paths = set()
     for name in inputs:
         path = Path(name).resolve()
@@ -107,8 +95,26 @@ def scan_corpus(
             skipped["duplicate_game"] += 1
         else:
             unique[game.game_id] = game
+    return list(unique.values()), skipped
+
+
+def scan_corpus(
+    inputs: list[str],
+    density: int,
+    seed: int,
+    validation_fraction: float,
+    binary=None,
+    *,
+    split_history: dict[str, str] | None = None,
+) -> Corpus:
+    if not 0 < validation_fraction < 1:
+        raise ValueError("validation fraction must be between 0 and 1")
+    history = dict(split_history or {})
+    if any(split not in ("train", "validation") for split in history.values()):
+        raise ValueError("invalid split history")
+    eligible, skipped = inspect_corpus(inputs, density, binary)
     buckets = defaultdict(list)
-    for game in unique.values():
+    for game in eligible:
         buckets[game.resolution].append(game)
     train, validation = [], []
     rng = random.Random(seed)

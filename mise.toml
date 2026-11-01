@@ -45,6 +45,15 @@ description = "Offline PyTorch training from completed MCTS SGFs"
 depends = ["build-features"]
 run = ".venv/bin/python -m continugo_train.train"
 
+[tasks.build-loop]
+description = "Build native self-play and authoritative feature binaries"
+run = "cargo build --locked --release --bin continugo-train --bin features"
+
+[tasks.loop]
+description = "Restartable neural self-play, bounded replay, warm-start and export loop"
+depends = ["build-loop"]
+run = ".venv/bin/python -m continugo_train.loop"
+
 [tasks.export]
 description = "Export and verify a checkpoint as portable ONNX graphs"
 run = ".venv/bin/python -m continugo_train.export"

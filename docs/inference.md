@@ -205,6 +205,8 @@ see [batching.md](batching.md). Retaining encoder context on GPU (instead of hos
 round trips), overlapping CPU extraction with GPU execution, and skipping
 unnecessary coordinate work remain follow-up throughput work. GPU inference alone cannot remove
 the CPU extraction cost; do not infer production self-play speed from this milestone.
-Iterative orchestration is still pending. Fixed-corpus offline `--resume`
-intentionally rejects new games; the separate [`--warm-start` training mode](training.md#warm-start-on-a-changing-replay-corpus)
-now initializes new replay runs without overriding that safety check.
+The [restartable synchronous loop](loop.md) now connects generation, bounded replay,
+warm-start training and export. Fixed-corpus offline `--resume` still intentionally
+rejects new games; the separate [`--warm-start` mode](training.md#warm-start-on-a-changing-replay-corpus)
+initializes each iteration without overriding that safety check. The loop promotes
+latest weights automatically; playing-strength evaluation/gating is not implemented.

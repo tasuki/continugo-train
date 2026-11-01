@@ -55,8 +55,9 @@ warm-start on changing replay data and model loading.
 `mise run neural-selfplay` uses them inside native Rust MCTS with CPU or CUDA inference. See
 [inference.md](../docs/inference.md) for setup, sampled-action priors and limitations.
 CUDA inference is the default after `mise run setup-gpu`; `--device cpu` remains
-available. [Cross-game batching](../docs/batching.md) is implemented; iterative
-self-play/training orchestration remains future work.
+available. [Cross-game batching](../docs/batching.md) and the
+[restartable synchronous loop](../docs/loop.md) are implemented. Strength evaluation
+and optional model gating remain future work.
 
 The trainer's checkpoints store `config`, weights under `model`, optimizer/RNG
 state, feature definitions and the immutable corpus/split manifest. Resume rejects

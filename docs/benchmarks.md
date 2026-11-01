@@ -1010,4 +1010,71 @@ overrides in `keep` mode, new RNG/counters/best tracking, compatibility checks,
 legacy checkpoint support, persistent holdouts across replay windows, strict
 changed-data resume rejection, and warm-run resume versus uninterrupted training
 bit-for-bit. All **40 Python tests**, shared/local Rust tests and checks pass.
-Restartable multi-iteration orchestration remains the next milestone.
+Restartable multi-iteration orchestration remains the next milestone at this snapshot.
+
+## Restartable two-iteration neural loop — 2026-11-01
+
+The [synchronous loop supervisor](loop.md) now connects native self-play, bounded
+SGF replay, warm-start training and verified ONNX export. This is the small-machine
+synchronous pattern from KataGo's training guide, without a strength gate: latest
+completed epoch weights are promoted automatically. No rules, network feature
+schema or policy normalization changes were needed. Rust SGF inspection additionally
+exposes root generation metadata and per-move visit totals for handoff validation.
+
+A real GTX 1080/CUDA run started from the same offline epoch-2 best checkpoint
+(`d4d466...cad0`, 80,099 parameters) and snapshotted the 24-game bootstrap corpus.
+Configuration: six games per iteration, sizes 9/13/19, eight simulations, 64-move
+cap, six concurrent games/batch limit six, four exact-feature workers and one ONNX
+helper thread. Replay: current/previous iteration plus older bootstrap candidates,
+round-robin by size, at most **32 unique labeled games**.
+
+Each iteration used one FP32 epoch, batch one, one feature worker, no shuffle
+buffer, at most two training steps, one sampled training/validation position per
+game, inherited SGD settings and **kept momentum**. Thus only **four new SGD updates**
+were performed across both iterations. Local epoch/step counters restart per warm
+run; source lineage and optimizer state are retained separately.
+
+| Iteration | Game seeds | Games / naturally completed | Generated moves | Selected replay games | Train / validation games | Native generation |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | 200..205 | 6 / 5 | 165 | 29 | 23 / 6 | 53.673 s |
+| 2 | 206..211 | 6 / 5 | 258 | 32 | 26 / 6 | 71.294 s |
+
+All 12 generated SGFs were authoritatively validated. One game per iteration hit
+the 64-move cap and supplied **no value labels**; the other ten supplied 295 eligible
+positions in total. Truncated games remain SGF diagnostics and are excluded from
+replay. Archive bootstrap copies are exact snapshots; no game JSON sidecars exist.
+These native generation times exclude model loading, training/export and supervisor
+setup; trajectories/models differ between iterations, so they are not a controlled
+speedup comparison or an end-to-end training throughput benchmark.
+
+The model handoff was checked by immutable checkpoint hashes:
+
+```text
+initial:     d4d466ccee0ecfa0c2bf0862a87229e29440eaf1eceb07799c995ac095afcad0
+iteration 1: 8bff852e17ada6b6abf129b5d1d94f4b4bd0681e40bc9f01731c05bd2ab3d3f1
+iteration 2: 328c0402e366016c2642b5a3544e799c6cf4b004b50d612f28d95b6d38b64f84
+```
+
+Iteration-2 SGFs identify the iteration-1 checkpoint, not the initial model. Both
+new checkpoints are local epoch 1 / step 2; their provenance points to the correct
+parent. Each encoder/scorer bundle passed export parity and metadata validation.
+The holdout ledger grew from 24 to **29 then 34** canonical IDs even though the
+active replay corpus was capped at 32. Known training games were never reassigned
+to validation. Loss values remain weak-data diagnostics, not evidence of stronger
+play or an optimal training/data ratio.
+
+The run was first stopped normally after iteration 1, then restarted with
+`--resume --iterations 2`. A further idempotent `--resume` verified and reused all
+committed games/checkpoints/models without launching another stage. Artifacts and
+stage logs are under `runs/loop-smoke/`; reproduce with the small command in
+[loop.md](loop.md), using a fresh output directory.
+
+Fault-injection tests additionally cover partial self-play, publication gaps after
+completed epochs and atomic export renames, failed first epochs, input snapshot
+recovery, immutable artifact checks, configuration conflicts and inherited writer
+locks. A **real CPU integration test** sends SIGINT to an active supervisor after
+native SGFs appear, verifies child cleanup, resumes without overwriting partial or
+completed files, and completes two iterations across 9/13/19. That test uses a tiny
+pass-biased network/reduced widening for fast plumbing verification, not strength.
+All **53 Python tests**, shared/local Rust tests and checks pass. The next milestone
+is fixed-budget playing-strength evaluation, not larger loop runs or networks.

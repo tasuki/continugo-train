@@ -62,11 +62,15 @@ Keep the architecture configurable to compare network sizes, input features, and
 
 If evaluating all million coordinates per position proves too expensive, investigate more selective approaches without sacrificing the ability to discover unexpected moves.
 
+## Iterative loop milestone
+
+The [restartable synchronous loop](loop.md) now generates SGFs, freezes a bounded replay corpus, warm-starts training, exports and repeats. Per-game, completed-epoch and published-export recovery are implemented; game-level holdouts remain pinned across the checkpoint lineage. CPU interruption/restart tests and a real two-iteration CUDA smoke across 9/13/19 pass. Latest weights are promoted automatically, without playing-strength gating. This validates the pipeline, not stronger play.
+
 ## Implementation priorities
 
-1. Build restartable iterative neural self-play orchestration: generate SGFs, select a replay corpus, train, export and repeat. Warm-start training on a changing replay corpus is implemented separately from strict fixed-corpus `--resume`, with explicit optimizer reset/keep semantics and lineage-pinned game-level holdouts. Next: wire the stages together and verify a tiny two-iteration loop across 9/13/19.
+1. Establish reproducible playing-strength evaluation across board sizes and fixed compute/search budgets before scaling loop runs. Compare checkpoints and baselines; add model gating only if measurements justify it.
 2. Improve neural self-play throughput before scaling runs: reduce unnecessary full-domain feature/scoring work and investigate CPU/GPU overlap without losing independent exploration or correct policy normalization. CPU/CUDA inference, bounded host context caching, parallel exact-feature extraction, and bounded cross-game inference batching are implemented; dense policy is deferred at value-only leaves and exact rows are streamed in bounded chunks. Benchmark concurrency/batch settings rather than assuming batching is faster. Feature extraction remains the dominant measured cost.
-3. Evaluate playing strength across board sizes and scale the network as justified.
+3. Scale network capacity and training/self-play budgets only as justified by strength per unit of computation.
 4. Move stable reusable components into the main ContinuGo repository.
 
 **Guiding principle:** Keep the initial implementation simple and performant. Reuse KataGo's proven training methods, while concentrating original engineering effort on ContinuGo's unusual action space, exact geometric rules, and efficient neural policy representation.

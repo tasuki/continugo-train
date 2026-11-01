@@ -194,10 +194,11 @@ and retains the same split, optimizer/RNG state and completed-epoch semantics.
 Holdout losses remain diagnostics/model-selection metrics, not playing-strength
 measurements or a fully untouched benchmark.
 
-Warm-start does **not** generate games, select a replay window, export a model or
-orchestrate iterations. Those are the next loop milestone. Keep each job's SGF
-inputs immutable; changing the corpus is allowed **between** warm-start runs,
-not while a job is loading it.
+The standalone trainer does **not** generate games, select a replay window or
+export a model. The separate [`mise run loop` supervisor](loop.md) now orchestrates
+these stages with frozen replay selection and interruption recovery. Keep each
+job's SGF inputs immutable; changing the corpus is allowed **between** warm-start
+runs, not while a job is loading it.
 
 ## Measurements
 

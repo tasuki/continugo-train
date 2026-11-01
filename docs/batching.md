@@ -71,7 +71,8 @@ An inference error is returned to every affected request, never converted into a
 unguided move. Game/output errors stop new game assignments; in-flight games are
 drained and threads joined. Already saved SGFs remain. A missing worker or dropped
 reply becomes an error instead of an indefinitely blocked client. There is no
-persistent replay-loop restart state in this scheduler.
+persistent replay-loop restart state in this low-level scheduler; the separate
+[loop supervisor](loop.md) provides per-game/epoch/export recovery.
 
 ## Measurements
 
