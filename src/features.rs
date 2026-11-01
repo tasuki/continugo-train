@@ -6,6 +6,8 @@ use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
 };
 
+use rayon::prelude::*;
+
 pub const SCHEMA_VERSION: u32 = 4;
 pub const COARSE_PLANES: [&str; 12] = [
     "friendly_stones",
@@ -73,17 +75,11 @@ pub struct FeatureExtractor<'a> {
 
 impl<'a> FeatureExtractor<'a> {
     pub fn new(game: &'a Game, samples_per_diameter: usize) -> Result<Self, String> {
-        if game.is_finished() {
-            return Err("cannot extract a policy input from a finished game".into());
-        }
+        let mut this = Self::for_moves(game)?;
         let board = game.board();
         let resolution = resolution(board.diameter(), samples_per_diameter)?;
-        let mut this = Self {
-            game,
-            prepared: game.position().prepare(),
-            resolution,
-            coarse: vec![0.0; COARSE_PLANES.len() * resolution * resolution],
-        };
+        this.resolution = resolution;
+        this.coarse = vec![0.0; COARSE_PLANES.len() * resolution * resolution];
         for color in [game.on_move(), game.on_move().other()] {
             let offset = usize::from(color != game.on_move());
             for members in game.position().groups(color) {
@@ -118,6 +114,20 @@ impl<'a> FeatureExtractor<'a> {
             }
         }
         Ok(this)
+    }
+
+    /// Move facts only: inference already has a cached coarse-network context.
+    /// Keep this crate-private so an empty raster cannot escape as a full input.
+    pub(crate) fn for_moves(game: &'a Game) -> Result<Self, String> {
+        if game.is_finished() {
+            return Err("cannot extract a policy input from a finished game".into());
+        }
+        Ok(Self {
+            game,
+            prepared: game.position().prepare(),
+            resolution: 0,
+            coarse: Vec::new(),
+        })
     }
 
     fn grid_spot(&self, x: usize, y: usize) -> Spot {
@@ -171,11 +181,47 @@ impl<'a> FeatureExtractor<'a> {
             exact: vec![0.0; actions.len() * MOVE_FEATURES.len()],
             legal: vec![0; actions.len()],
         };
-        for (i, &action) in actions.iter().enumerate() {
+        self.fill_moves(actions, &mut result.exact, &mut result.legal)?;
+        Ok(result)
+    }
+
+    /// Bounded caller-owned CPU pool, sharing one immutable prepared rules view.
+    /// Disjoint output rows preserve action order and exactly match serial facts.
+    pub fn moves_parallel(
+        &self,
+        actions: &[Action],
+        pool: &rayon::ThreadPool,
+    ) -> Result<MoveFeatures, String> {
+        const CHUNK: usize = 4096;
+        let mut result = MoveFeatures {
+            exact: vec![0.0; actions.len() * MOVE_FEATURES.len()],
+            legal: vec![0; actions.len()],
+        };
+        pool.install(|| {
+            result
+                .exact
+                .par_chunks_mut(CHUNK * MOVE_FEATURES.len())
+                .zip(result.legal.par_chunks_mut(CHUNK))
+                .zip(actions.par_chunks(CHUNK))
+                .try_for_each(|((exact, legal), actions)| self.fill_moves(actions, exact, legal))
+        })?;
+        Ok(result)
+    }
+
+    fn fill_moves(
+        &self,
+        actions: &[Action],
+        exact: &mut [f32],
+        legal: &mut [u8],
+    ) -> Result<(), String> {
+        for ((&action, row), legal) in actions
+            .iter()
+            .zip(exact.chunks_mut(MOVE_FEATURES.len()))
+            .zip(legal.iter_mut())
+        {
             let spot = action
                 .spot()
                 .ok_or("pass must not appear in coordinate features")?;
-            let row = &mut result.exact[i * MOVE_FEATURES.len()..(i + 1) * MOVE_FEATURES.len()];
             row[6..10].copy_from_slice(&self.borders(spot));
             let Some(analysis) = self.prepared.analyze_move(
                 Stone {
@@ -186,7 +232,7 @@ impl<'a> FeatureExtractor<'a> {
             ) else {
                 continue;
             };
-            result.legal[i] = 1;
+            *legal = 1;
             row[..6].copy_from_slice(&[
                 1.0,
                 count_feature(analysis.connected_groups),
@@ -196,6 +242,6 @@ impl<'a> FeatureExtractor<'a> {
                 count_feature(analysis.group_size),
             ]);
         }
-        Ok(result)
+        Ok(())
     }
 }

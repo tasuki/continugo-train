@@ -65,7 +65,7 @@ If evaluating all million coordinates per position proves too expensive, investi
 ## Implementation priorities
 
 1. Build the iterative neural self-play training loop, including warm-start training on a changing replay corpus (separate from fixed-corpus offline resume).
-2. Improve neural self-play throughput before scaling runs: parallel feature extraction/batched queries and reducing full-domain feature/scoring work without losing independent exploration or correct policy normalization. CPU and CUDA inference are available; dense policy is already deferred at value-only leaves. CPU feature extraction is now the dominant measured cost.
+2. Improve neural self-play throughput before scaling runs: batch queries across independent games and reduce unnecessary full-domain feature/scoring work without losing independent exploration or correct policy normalization. CPU/CUDA inference, bounded host context caching, and parallel exact-feature extraction are implemented; dense policy is deferred at value-only leaves. Feature extraction remains the dominant measured cost.
 3. Evaluate playing strength across board sizes and scale the network as justified.
 4. Move stable reusable components into the main ContinuGo repository.
 

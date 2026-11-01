@@ -101,6 +101,46 @@ operator placement, set `CONTINUGO_ORT_PROFILE` to an existing directory before 
 native diagnostic. ONNX Runtime writes encoder/scorer execution profiles there;
 these are optional backend diagnostics, not game records or SGF sidecars.
 
+## Feature extraction and context caching
+
+Neural inference defaults to `--feature-threads 4 --cache-positions 64`:
+
+- A bounded, caller-owned **Rayon CPU pool** extracts disjoint coordinate chunks
+  using one immutable shared-rules prepared position. Row order and facts are
+  bit-for-bit identical to serial extraction. `--feature-threads 1` is the serial
+  control. This pool is separate from ONNX `--inference-threads` / diagnostic
+  `--threads`; CPU helper threads for CUDA still default to one.
+- A first value query already produces projected spatial context, pass logit and
+  value. These small **host-side encoded contexts** are cached. Later value
+  queries or policy expansion reuse them, skipping coarse raster/area/capture
+  extraction and the ResNet. Raw coarse rasters need not be retained separately.
+- Keys use exact immutable **Game equality**, including board, stones and full
+  record/turn/pass history. The cache belongs to one frozen model/backend/density,
+  and reconfiguration clears it. There is no cross-model cache or approximate
+  position matching. Terminal queries are rejected before lookup.
+- LRU eviction bounds entries to 64 by default, with an additional **32 MiB spatial
+  payload ceiling**. Game keys, scalar data and allocator overhead are separate,
+  bounded by entry count. Oversized contexts are not cached. `--cache-positions 0`
+  disables the cache.
+- **Dense move features and million-action logits are never cached.** Policy
+  expansion still extracts fresh exact move facts; there is no incremental update
+  across different boards or duplicated Python rule logic. MCTS separately keeps
+  its small sampled candidate reservoirs as before.
+
+Only the neural self-play and `infer` executables use **mimalloc**, a scalable Rust
+allocator: the short-lived vectors created by authoritative move validation caused
+system-allocator contention under parallel workloads. Without addressing that,
+fixed-position speedups did not translate to whole games. This changes allocation,
+not game rules or feature semantics. The offline feature exporter remains serial
+per process (the training loader already has multiple processes).
+
+Stderr separates coarse/move extraction time and reports actual encoder positions,
+cache hits/misses/evictions, current entries and spatial payload bytes. Logical
+full-policy/value query counts include cache hits. Warmup retains the cache, so
+`infer --warmup 1 --iterations 3` may report zero measured encoder calls for a
+repeated position. Add `--cache-positions 0` to benchmark uncached work; also set
+`--feature-threads 1` for a serial baseline. See [benchmarks.md](benchmarks.md).
+
 ## Search semantics
 
 The existing unguided `--engine mcts` and direct `--engine random` remain available.
@@ -158,8 +198,9 @@ runtime. Native peak memory is bounded by transient full-domain features/logits,
 not a million-action distribution retained for every tree node. See
 [benchmarks.md](benchmarks.md) for the measured three-game run and memory caveats.
 
-Full-domain extraction is still expensive. Parallel/batched queries, retaining
-encoder context on GPU (instead of host round trips), and skipping unnecessary
+Full-domain extraction is still expensive despite the CPU pool and host context
+cache. Batched queries across independent games, retaining encoder context on GPU
+(instead of host round trips), and skipping unnecessary
 coordinate work are follow-up throughput work. GPU inference alone cannot remove
 the CPU extraction cost; do not infer production self-play speed from this milestone.
 The iterative self-play/training loop is also still pending: fixed-corpus offline

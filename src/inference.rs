@@ -2,6 +2,9 @@
 //! CUDA registration is mandatory when requested; no silent CPU fallback.
 //! Full policy is streamed in chunks and deferred at value-only leaves.
 
+mod cache;
+use cache::{Context, ContextCache};
+
 use crate::{
     action::Action,
     features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION},
@@ -17,6 +20,7 @@ use ort::{
 use serde::Deserialize;
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
@@ -73,8 +77,17 @@ pub struct InferenceStats {
     pub calls: u64,
     pub value_calls: u64,
     pub feature_seconds: f64,
+    pub coarse_seconds: f64,
+    pub move_seconds: f64,
     pub encoder_seconds: f64,
     pub scorer_seconds: f64,
+    pub encoder_positions: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub cache_evictions: u64,
+    pub cache_entries: usize,
+    /// Encoded spatial payloads only; excludes bounded Game keys/allocator overhead.
+    pub cache_bytes: usize,
 }
 
 pub struct OnnxEvaluator {
@@ -82,6 +95,8 @@ pub struct OnnxEvaluator {
     scorer: Session,
     metadata: Metadata,
     actions: Vec<Action>,
+    feature_pool: Option<rayon::ThreadPool>,
+    cache: ContextCache,
     pub device: InferenceDevice,
     pub stats: InferenceStats,
 }
@@ -95,6 +110,34 @@ impl OnnxEvaluator {
     ) -> Result<Self, String> {
         Self::load_inner(directory, library, threads, device)
             .map_err(|error| format!("ONNX {} load: {error}", device.name()))
+    }
+
+    /// A single bounded CPU pool, reused for every position. Reconfiguration
+    /// clears the per-model context cache, never mutating the model or rules.
+    pub fn configure_features(
+        &mut self,
+        threads: usize,
+        cache_positions: usize,
+    ) -> Result<(), String> {
+        if threads == 0 {
+            return Err("feature thread count must be positive".into());
+        }
+        let pool = if threads == 1 {
+            None
+        } else {
+            Some(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .thread_name(|i| format!("features-{i}"))
+                    .build()
+                    .map_err(|error| format!("feature pool: {error}"))?,
+            )
+        };
+        self.feature_pool = pool;
+        self.cache = ContextCache::new(cache_positions, 32 * 1024 * 1024);
+        self.stats.cache_entries = 0;
+        self.stats.cache_bytes = 0;
+        Ok(())
     }
 
     fn load_inner(
@@ -176,37 +219,31 @@ impl OnnxEvaluator {
             actions: (0..COORDINATE_ACTIONS)
                 .map(|i| Action::from_index(i).unwrap())
                 .collect(),
+            feature_pool: None,
+            cache: ContextCache::new(64, 32 * 1024 * 1024),
             stats: InferenceStats::default(),
         })
     }
 
-    fn value_inner(&mut self, game: &Game) -> Result<f64, Box<dyn std::error::Error>> {
-        let tick = Instant::now();
-        let extractor =
-            FeatureExtractor::new(game, self.metadata.feature_spec.samples_per_diameter)?;
-        let resolution = extractor.resolution;
-        self.stats.feature_seconds += tick.elapsed().as_secs_f64();
-        let tick = Instant::now();
-        let encoded = self
-            .encoder
-            .run(ort::inputs!["coarse" => Tensor::from_array(
-            ([1, COARSE_PLANES.len(), resolution, resolution], extractor.coarse.as_slice()))?]?)?;
-        let (_, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
-        if value.len() != 1 || !value[0].is_finite() || !(-1.0..=1.0).contains(&value[0]) {
-            return Err("invalid encoder value".into());
+    fn context(&mut self, game: &Game) -> Result<Arc<Context>, Box<dyn std::error::Error>> {
+        // Reject terminals even if a cache lookup would otherwise be possible.
+        if game.is_finished() {
+            return Err("cannot evaluate a finished game".into());
         }
-        self.stats.encoder_seconds += tick.elapsed().as_secs_f64();
-        self.stats.value_calls += 1;
-        Ok(f64::from(value[0]))
-    }
-
-    fn evaluate_inner(&mut self, game: &Game) -> Result<Evaluation, Box<dyn std::error::Error>> {
+        if let Some(context) = self.cache.get(game) {
+            self.stats.cache_hits += 1;
+            self.stats.cache_entries = self.cache.len();
+            self.stats.cache_bytes = self.cache.bytes;
+            return Ok(context);
+        }
+        self.stats.cache_misses += 1;
         let tick = Instant::now();
         let extractor =
             FeatureExtractor::new(game, self.metadata.feature_spec.samples_per_diameter)?;
-        let moves = extractor.moves(&self.actions)?;
         let resolution = extractor.resolution;
-        self.stats.feature_seconds += tick.elapsed().as_secs_f64();
+        let seconds = tick.elapsed().as_secs_f64();
+        self.stats.feature_seconds += seconds;
+        self.stats.coarse_seconds += seconds;
         let tick = Instant::now();
         let encoded = self
             .encoder
@@ -234,7 +271,38 @@ impl OnnxEvaluator {
         {
             return Err("invalid encoder outputs".into());
         }
+        let context = Arc::new(Context {
+            resolution,
+            spatial: spatial.to_vec(),
+            pass: pass[0],
+            value: f64::from(value[0]),
+        });
         self.stats.encoder_seconds += tick.elapsed().as_secs_f64();
+        self.stats.encoder_positions += 1;
+        self.stats.cache_evictions += self.cache.insert(game, Arc::clone(&context)) as u64;
+        self.stats.cache_entries = self.cache.len();
+        self.stats.cache_bytes = self.cache.bytes;
+        Ok(context)
+    }
+
+    fn value_inner(&mut self, game: &Game) -> Result<f64, Box<dyn std::error::Error>> {
+        let context = self.context(game)?;
+        self.stats.value_calls += 1;
+        Ok(context.value)
+    }
+
+    fn evaluate_inner(&mut self, game: &Game) -> Result<Evaluation, Box<dyn std::error::Error>> {
+        let context = self.context(game)?;
+        let resolution = context.resolution;
+        let tick = Instant::now();
+        let extractor = FeatureExtractor::for_moves(game)?;
+        let moves = match &self.feature_pool {
+            Some(pool) => extractor.moves_parallel(&self.actions, pool)?,
+            None => extractor.moves(&self.actions)?,
+        };
+        let seconds = tick.elapsed().as_secs_f64();
+        self.stats.feature_seconds += seconds;
+        self.stats.move_seconds += seconds;
         let tick = Instant::now();
         let mut logits = Vec::with_capacity(COORDINATE_ACTIONS as usize + 1);
         let chunk = self
@@ -246,7 +314,7 @@ impl OnnxEvaluator {
             let end = (start + chunk).min(COORDINATE_ACTIONS as usize);
             let ids: Vec<i64> = (start as i64..end as i64).collect();
             let output = self.scorer.run(ort::inputs![
-                "spatial" => Tensor::from_array(([1, self.metadata.config.policy_hidden, resolution, resolution], spatial))?,
+                "spatial" => Tensor::from_array(([1, self.metadata.config.policy_hidden, resolution, resolution], context.spatial.as_slice()))?,
                 "exact" => Tensor::from_array(([1, end-start, MOVE_FEATURES.len()],
                     &moves.exact[start*MOVE_FEATURES.len()..end*MOVE_FEATURES.len()]))?,
                 "actions" => Tensor::from_array(([end-start], ids.as_slice()))?
@@ -262,11 +330,11 @@ impl OnnxEvaluator {
                 *logit = f32::NEG_INFINITY;
             }
         }
-        logits.push(pass[0]);
+        logits.push(context.pass);
         self.stats.scorer_seconds += tick.elapsed().as_secs_f64();
         self.stats.calls += 1;
         Ok(Evaluation {
-            value: f64::from(value[0]),
+            value: context.value,
             logits,
             legal: moves.legal,
         })

@@ -807,3 +807,72 @@ Fresh output directories are required. Raw measurements are in
 `runs/cuda-inference/timing.txt`, `runs/cuda-inference/gpu-memory.txt`, and
 `runs/neural-cuda/run.log`; neural games are self-contained SGFs in
 `runs/neural-cuda/`. Batched inference and the iterative training loop remain next.
+
+## Cached contexts and parallel exact features — 2026-11-01
+
+Neural inference now has a bounded host LRU for projected coarse context/pass/value,
+and a four-worker Rayon pool for exact move rows. Raw million-row features and
+logits are **not cached**. Both native self-play and `infer` use mimalloc for Rust
+allocations. Initial parallel whole-game tests regressed despite fast isolated
+queries: short-lived rule-validation vectors contended under the system allocator.
+A diagnostic allocator swap identified the issue; the scalable allocator restores
+whole-game scaling. Shared rules and feature calculations are unchanged.
+
+### Fixed positions, same allocator
+
+Same nonempty inputs/checkpoint/CUDA runtime as above, one ONNX CPU helper thread,
+cache disabled, one warmup followed by the mean of three queries. Both serial and
+parallel cases use mimalloc. Times are milliseconds per position.
+
+| Size / ply | Serial coarse | Parallel-run coarse (serial) | Serial exact rows | 4-worker exact rows | Row speedup |
+|---|---:|---:|---:|---:|---:|
+| 9 / 6 | 5.493 | 5.518 | 172.548 | 53.208 | 3.24x |
+| 13 / 9 | 4.275 | 4.278 | 236.416 | 85.861 | 2.75x |
+| 19 / 14 | 6.803 | 6.829 | 319.466 | 97.556 | 3.27x |
+
+Serial/parallel diagnostic outputs match bit-for-bit. Tests independently compare
+all million legality/feature rows on a nonempty size-9 position and noncanonical,
+duplicated, uneven action chunks on all three sizes, including a capture. No
+approximate validation, feature-schema change or altered normalization was used.
+
+### Identical whole games
+
+Same GPU, model, seeds, search settings and four ONNX CPU helper threads as the
+previous CUDA measurement. New feature workers: 4; cache: 64 contexts. All three
+SGFs are **byte-for-byte identical** to the previous CUDA games, including policy
+visits and scored RE; all 55 positions remain valid labels.
+
+| Size / seed | Moves | Previous CUDA pipeline | Cache + parallel rows + scalable allocator |
+|---|---:|---:|---:|
+| 9 / 200 | 13 | 7.909 s | 2.806 s |
+| 13 / 201 | 14 | 10.481 s | 3.562 s |
+| 19 / 202 | 28 | 29.011 s | 9.565 s |
+| Total | 55 | **47.402 s** | **15.933 s** |
+
+About **2.98x faster overall**, or **3.45 moves/s** rather than 1.16. This measures
+the combined changes, not caching alone. These are individual diagnostic runs,
+not statistical averages or a playing-strength improvement. The default one-ONNX-
+thread configuration separately finished the same games in 16.203 s.
+
+Final totals: 125 full-policy requests, 432 value-only requests; **435 actual
+encoder executions**, **122 cache hits**, 371 LRU evictions. The previous pipeline
+encoded all 557 requests, so caching eliminated about 22% of coarse extraction /
+encoding. Final cache: 64 entries, **24,920,064 bytes (23.77 MiB)** of spatial data,
+plus bounded Game keys/overhead. The hard spatial budget is 32 MiB. This is a host
+cache, not retained GPU tensors or 64 copies of 40-MB move matrices.
+
+Feature time: **11.193 s** (coarse 2.454 s, exact rows 8.739 s); encoder **0.486 s**;
+dense scorer **2.653 s**. Feature work is still dominant, although much reduced.
+Queries remain synchronous; cross-game inference batching is still future work.
+
+```sh
+# Defaults are already four feature workers and 64 cached contexts.
+mise run neural-selfplay -- --model runs/onnx-initial --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --inference-threads 4 --feature-threads 4 --cache-positions 64 --output runs/neural-cached-parallel-ort4
+# Uncached serial control; add warmup/iterations for repeated diagnostics.
+mise run infer -- --model runs/onnx-initial --sgf FILE --ply 1 --feature-threads 1 --cache-positions 0
+```
+
+Use fresh output directories. Raw results: `runs/parallel-features/timing-mimalloc.txt`,
+`runs/neural-cached-parallel-ort4/run.log`, and the corresponding SGFs. The default
+ONNX-thread run is under `runs/neural-cached-parallel/`. Earlier benchmark sections
+are historical pipeline snapshots; allocator/cache defaults now differ.

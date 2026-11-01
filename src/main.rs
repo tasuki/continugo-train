@@ -1,3 +1,8 @@
+// Parallel rules queries create many short-lived vectors. Keep their allocations
+// thread-local rather than contending on the system allocator's shared arenas.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use clap::Parser;
 use continugo_rules::Board;
 use continugo_train::{
@@ -50,6 +55,12 @@ struct Args {
     ort_library: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     inference_threads: usize,
+    /// Bounded CPU pool for exact coordinate features (1 = serial).
+    #[arg(long, default_value_t = 4)]
+    feature_threads: usize,
+    /// Maximum cached coarse-network contexts; 0 disables, payload capped at 32 MiB.
+    #[arg(long, default_value_t = 64)]
+    cache_positions: usize,
     #[arg(long, value_enum, default_value = "cuda")]
     device: InferenceDevice,
     /// Time random-engine stages and moves; embed diagnostics in SGF comments.
@@ -89,12 +100,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         (_, Some(_)) => return Err("--model requires --engine neural".into()),
         _ => None,
     };
-    if let Some(evaluator) = &evaluator {
+    if let Some(evaluator) = &mut evaluator {
+        evaluator.configure_features(args.feature_threads, args.cache_positions)?;
         eprintln!(
-            "ONNX device={} model={} threads={}",
+            "ONNX device={} model={} threads={} feature_threads={} cache_positions={}",
             evaluator.device.name(),
             evaluator.model_id(),
-            args.inference_threads
+            args.inference_threads,
+            args.feature_threads,
+            args.cache_positions
         );
     }
     let boards: Vec<_> = args

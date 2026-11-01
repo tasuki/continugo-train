@@ -1,5 +1,8 @@
 //! One-position native diagnostic: selected raw logits/value on stdout as JSON.
 //! This is not a game-record writer. Inference still evaluates the full domain.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use clap::Parser;
 use continugo_train::{
     action::Action,
@@ -16,6 +19,10 @@ struct Args {
     ort_library: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     threads: usize,
+    #[arg(long, default_value_t = 4)]
+    feature_threads: usize,
+    #[arg(long, default_value_t = 64)]
+    cache_positions: usize,
     #[arg(long, value_enum, default_value = "cuda")]
     device: InferenceDevice,
     #[arg(long)]
@@ -54,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.threads,
         args.device,
     )?;
+    evaluator.configure_features(args.feature_threads, args.cache_positions)?;
     let text = std::fs::read_to_string(&args.sgf)?;
     let position = load_position(&text, args.ply)?;
     for _ in 0..args.warmup {

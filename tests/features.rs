@@ -32,6 +32,53 @@ fn empty_positions_have_real_borders_and_legal_masks_across_sizes() {
 }
 
 #[test]
+fn parallel_move_features_match_serial_bits_and_action_order() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    for size in [9, 13, 19] {
+        let board = Board::new(size).unwrap();
+        let r = board.stone_radius();
+        let game = Game::new(board).play(Spot { x: r, y: r }).unwrap();
+        let features = FeatureExtractor::new(&game, 4).unwrap();
+        // Full domain once; noncanonical order, duplicates and uneven chunks too.
+        let step = if size == 9 { 1 } else { 127 };
+        let mut actions: Vec<_> = (0..1_000_000)
+            .step_by(step)
+            .map(|id| Action::from_index(id).unwrap())
+            .collect();
+        let group = game.position().groups(Color::Black).remove(0);
+        let capture = game
+            .position()
+            .prepare()
+            .analyze_group(&group)
+            .capture_in_one
+            .unwrap();
+        actions.extend([action(r, r), action(r, r), action(capture.x, capture.y)]);
+        actions.reverse();
+        let serial = features.moves(&actions).unwrap();
+        let parallel = features.moves_parallel(&actions, &pool).unwrap();
+        assert_eq!(serial.legal, parallel.legal);
+        assert!(
+            serial
+                .exact
+                .iter()
+                .map(|v| v.to_bits())
+                .eq(parallel.exact.iter().map(|v| v.to_bits()))
+        );
+        assert!(features.moves_parallel(&[Action::PASS], &pool).is_err());
+        assert!(
+            features
+                .moves_parallel(&[], &pool)
+                .unwrap()
+                .exact
+                .is_empty()
+        );
+    }
+}
+
+#[test]
 fn friendly_enemy_planes_are_side_to_move_relative() {
     let game = Game::default().play(Spot { x: 500, y: 500 }).unwrap();
     let white = FeatureExtractor::new(&game, 4).unwrap();

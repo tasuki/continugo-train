@@ -60,6 +60,7 @@ class NativeInferenceTests(unittest.TestCase):
         device="cpu",
         library=None,
         environment=None,
+        extra=(),
     ):
         return subprocess.run(
             [
@@ -77,11 +78,41 @@ class NativeInferenceTests(unittest.TestCase):
                 "--actions",
                 ",".join(map(str, actions)),
                 *(["--value-only"] if value_only else []),
+                *extra,
             ],
             env=environment,
             check=False,
             capture_output=True,
             text=True,
+        )
+
+    def test_cached_parallel_queries_match_uncached_serial_results(self):
+        source = self.root / "cache.sgf"
+        source.write_text(SGF)
+        common = ["--iterations", "3"]
+        actions = [0, 200200, 500500, 500501, 65535, 65536, 900900, 1000000]
+        serial = self.infer(
+            source, actions, extra=[*common, "--feature-threads", "1", "--cache-positions", "0"]
+        )
+        cached = self.infer(
+            source, actions, extra=[*common, "--feature-threads", "4", "--cache-positions", "2"]
+        )
+        self.assertEqual(serial.returncode, 0, serial.stderr)
+        self.assertEqual(cached.returncode, 0, cached.stderr)
+        self.assertEqual(json.loads(serial.stdout), json.loads(cached.stdout))
+        self.assertIn("encoder_positions: 3", serial.stderr)
+        self.assertIn("cache_hits: 0", serial.stderr)
+        self.assertIn("encoder_positions: 1", cached.stderr)
+        self.assertIn("cache_hits: 2", cached.stderr)
+        self.assertIn("cache_misses: 1", cached.stderr)
+        value = self.infer(
+            source, actions, value_only=True, extra=[*common, "--cache-positions", "2"]
+        )
+        self.assertEqual(value.returncode, 0, value.stderr)
+        self.assertIn("encoder_positions: 1", value.stderr)
+        self.assertIn("cache_hits: 2", value.stderr)
+        self.assertAlmostEqual(
+            json.loads(value.stdout)["value"], json.loads(cached.stdout)["value"], places=7
         )
 
     def test_real_full_domain_native_outputs_match_torch_across_sizes(self):
@@ -151,6 +182,10 @@ class NativeInferenceTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("calls: 2, value_calls: 8", result.stderr)
+        # The chosen first move was already a value-only leaf: its next root
+        # reuses that context rather than rebuilding coarse facts/encoding.
+        self.assertIn("encoder_positions: 9", result.stderr)
+        self.assertIn("cache_hits: 1", result.stderr)
         source = next(output.glob("*.sgf"))
         # Rust replays and validates every move/policy before exposing tensors.
         sample = load_position(source, 0)
