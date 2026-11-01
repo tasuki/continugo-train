@@ -2,6 +2,7 @@
 pub mod action;
 pub mod feature_io;
 pub mod features;
+pub mod inference;
 mod liberty_area;
 pub mod profile;
 pub mod replay;

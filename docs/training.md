@@ -1,8 +1,9 @@
 # Offline policy/value training
 
 This is a real SGF → Rust features → PyTorch training job, without ONNX. It learns
-from saved baseline MCTS games; it does **not** generate neural-guided self-play
-or establish playing strength yet. The first goal is a usable initial checkpoint
+from saved MCTS games; this command does **not** generate self-play or establish
+playing strength. Use the separate [native neural self-play command](inference.md)
+after exporting a checkpoint. The first goal is a usable initial checkpoint
 and verified data/optimization plumbing, not prolonged fitting of weak data.
 
 ## First run

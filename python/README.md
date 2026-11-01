@@ -50,7 +50,10 @@ as tensors, including sparse visits and outcome labels. `mise run train` now run
 offline training with game-level holdout, persistent Rust feature workers,
 resolution buckets, and atomic model/optimizer checkpoints. See
 [training.md](../docs/training.md) for generation, training, resume and model loading.
-ONNX export and replacement of the Rust baseline evaluator are still next.
+`mise run export` verifies dynamic ONNX graphs against PyTorch;
+`mise run neural-selfplay` uses them inside native CPU Rust MCTS. See
+[inference.md](../docs/inference.md) for setup, sampled-action priors and limitations.
+GPU/batched inference and the iterative training loop remain future work.
 
 The trainer's checkpoints store `config`, weights under `model`, optimizer/RNG
 state, feature definitions and the immutable corpus/split manifest. Resume rejects

@@ -664,3 +664,69 @@ Use fresh output directories to reproduce. Artifacts: `runs/offline-bootstrap/`,
 and `runs/offline-training/latest.pt` (epoch 3). The separate resume check is in
 `runs/offline-smoke/`. See [training.md](training.md) for normal uncapped training,
 loading and resume. No feature-schema revision was introduced for this command.
+
+## Native ONNX neural self-play — 2026-11-01
+
+Exported the previous job's **epoch-2 best checkpoint**, unchanged 80,099-parameter
+network and feature definitions, as separate encoder and coordinate-scorer graphs.
+ONNX opset 17, Python onnx 1.18.0, native ONNX Runtime **1.22.1 CPU**, Rust ort
+2.0.0-rc.10. Export verification varied resolution, batch and candidate count;
+maximum absolute difference from eager PyTorch was **1.1921e-6**. Real-feature
+native/PyTorch parity tests also cover all three sizes, neighboring coordinates,
+legality, chunk boundaries, pass, value-only inference and incompatible models.
+
+The following are **neural-guided games**, not unguided MCTS or direct random
+play. Same i5-8400; four ONNX intra-op threads, one synchronous query at a time,
+thread spinning disabled. No GPU inference or cross-game batching. Search used
+8 simulations/move, PUCT 1.5, widening 2*sqrt(visits), independent uniform-legal
+proposal mixture 0.25, and visit-count move sampling. All games finished naturally
+before the 64-move cap. Shared SGF replay validated every move, policy target and
+scored RE; **all 59 pre-move positions** have eligible training labels.
+
+| Equivalent size | Seed | Moves | Generation | Moves/s |
+|---|---:|---:|---:|---:|
+| 9 | 200 | 13 | 11.912 s | 1.09 |
+| 13 | 201 | 18 | 21.231 s | 0.85 |
+| 19 | 202 | 28 | 46.469 s | 0.60 |
+
+Together: **79.613 s / 59 moves = 0.74 moves/s**, excluding model/runtime loading,
+process startup, compilation and SGF file output. These are individual diagnostic
+games, not a strength evaluation, multi-seed throughput average or a before/after
+speedup comparison. Eight simulations and a weak initial network are only a
+pipeline smoke test. Early passing does not establish sensible play.
+
+Native stage totals over the three games:
+
+- **133 full-policy queries**, deferred until node expansion.
+- **464 value-only leaf queries**, requiring no million-coordinate extraction or
+  dense scoring; terminal nodes use authoritative outcomes without network calls.
+- Rust features: **48.496 s** (60.9% of total), including coarse-only queries.
+- Encoder: **2.005 s** (2.5%); dense scorer: **25.857 s** (32.5%).
+- Remaining time includes sampling/normalizing full policies, tree work and scoring.
+
+Full-policy logits are normalized over **all legal coordinates plus pass**.
+Progressive widening then uses a bounded sampled candidate reservoir with
+importance-corrected, pass-stratified priors. This is an approximate sampled
+search, not a conditional visited-action training softmax. Nodes do not retain
+million-element policies. See [inference.md](inference.md) for the proposal law,
+why duplicates retain multiplicity, and independent exploration behavior.
+
+The measured `mise run neural-selfplay` launcher reached **373.8 MiB peak RSS**
+(`/usr/bin/time -v`, 382,764 KiB). This includes child processes, including the
+short-lived Python/Torch runtime-library locator, so it is **not native-only RSS**.
+No CUDA memory was used by this inference backend. Full feature extraction and
+CPU scoring remain the throughput bottlenecks; GPU inference alone cannot remove
+the Rust extraction cost. Batching/parallel feature work and reducing unnecessary
+coordinate work are follow-ups before large runs.
+
+```sh
+mise run export -- --checkpoint runs/offline-training/best.pt --output runs/onnx-initial
+mise run neural-selfplay -- --model runs/onnx-initial --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --inference-threads 4 --output runs/neural-initial
+```
+
+Use fresh directories. Artifacts: `runs/onnx-initial/encoder.onnx`,
+`runs/onnx-initial/policy.onnx`, and three self-contained SGFs plus diagnostic text
+log under `runs/neural-initial/`. The source checkpoint SHA-256 is
+`d4d466ccee0ecfa0c2bf0862a87229e29440eaf1eceb07799c995ac095afcad0`.
+The iterative training loop, warm-start on changing replay data, GPU inference,
+batching and playing-strength evaluation are still pending.

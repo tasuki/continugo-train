@@ -1,8 +1,9 @@
 use clap::Parser;
 use continugo_rules::Board;
 use continugo_train::{
+    inference::{Evaluator, OnnxEvaluator},
     search::SearchConfig,
-    selfplay::{Engine, GameRecord, SelfplayConfig, generate, generate_profiled},
+    selfplay::{Engine, GameRecord, SelfplayConfig, generate, generate_neural, generate_profiled},
 };
 use std::{
     error::Error,
@@ -15,7 +16,7 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
-    about = "ContinuGo random and MCTS self-play baselines (no neural inference yet)"
+    about = "ContinuGo random, unguided MCTS and native ONNX neural MCTS self-play"
 )]
 struct Args {
     #[arg(long, value_enum, default_value = "mcts")]
@@ -39,6 +40,16 @@ struct Args {
     widening_exponent: f64,
     #[arg(long, default_value_t = 128)]
     proposal_attempts: usize,
+    #[arg(long, default_value_t = 0.25)]
+    independent_exploration: f64,
+    /// ONNX model directory containing encoder.onnx and policy.onnx (neural engine).
+    #[arg(long)]
+    model: Option<PathBuf>,
+    /// Native ONNX Runtime 1.22 shared library; otherwise use ORT_DYLIB_PATH.
+    #[arg(long)]
+    ort_library: Option<PathBuf>,
+    #[arg(long, default_value_t = 1)]
+    inference_threads: usize,
     /// Time random-engine stages and moves; embed diagnostics in SGF comments.
     #[arg(long)]
     profile: bool,
@@ -61,9 +72,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             widening: args.widening,
             widening_exponent: args.widening_exponent,
             proposal_attempts: args.proposal_attempts,
+            independent_exploration: args.independent_exploration,
         },
     };
     config.validate()?;
+    let mut evaluator = match (args.engine, &args.model) {
+        (Engine::Neural, Some(path)) => Some(OnnxEvaluator::load(
+            path,
+            args.ort_library.as_deref(),
+            args.inference_threads,
+        )?),
+        (Engine::Neural, None) => return Err("--engine neural requires --model".into()),
+        (_, Some(_)) => return Err("--model requires --engine neural".into()),
+        _ => None,
+    };
+    if let Some(evaluator) = &evaluator {
+        eprintln!(
+            "ONNX CPU model={} threads={}",
+            evaluator.model_id(),
+            args.inference_threads
+        );
+    }
     let boards: Vec<_> = args
         .sizes
         .iter()
@@ -90,6 +119,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let game_started = Instant::now();
         let record = if args.profile {
             generate_profiled(board, &config, seed)?
+        } else if let Some(evaluator) = &mut evaluator {
+            generate_neural(board, &config, seed, evaluator)?
         } else {
             generate(board, &config, seed)?
         };
@@ -129,6 +160,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         elapsed,
         total_moves as f64 / elapsed
     );
+    if let Some(evaluator) = &evaluator {
+        eprintln!("native inference: {:?}", evaluator.stats);
+    }
     Ok(())
 }
 

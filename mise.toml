@@ -9,7 +9,7 @@ run = [
   "cargo build --locked --release --bin features",
   "python -m venv .venv",
   '.venv/bin/python -m pip install torch==2.7.1 --index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu118}"',
-  ".venv/bin/python -m pip install -e '.[dev]'",
+  ".venv/bin/python -m pip install -e '.[dev,inference]'",
 ]
 
 [tasks.test]
@@ -17,7 +17,7 @@ description = "Test shared rules, analysis, and training infrastructure"
 run = [
   "cargo test --locked --workspace --manifest-path ../continugo/backend/Cargo.toml",
   "cargo test --locked",
-  "cargo build --locked --release --bin features",
+  "cargo build --locked --release --bins",
   ".venv/bin/python -m unittest discover -s tests -p 'test_*.py'",
 ]
 
@@ -44,6 +44,14 @@ run = "cargo run --locked --release --bin features --"
 description = "Offline PyTorch training from completed MCTS SGFs"
 depends = ["build-features"]
 run = ".venv/bin/python -m continugo_train.train"
+
+[tasks.export]
+description = "Export and verify a checkpoint as portable ONNX graphs"
+run = ".venv/bin/python -m continugo_train.export"
+
+[tasks.neural-selfplay]
+description = "Native CPU ONNX-guided MCTS (runtime from the Python wheel by default)"
+run = 'ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$(.venv/bin/python -m continugo_train.export --runtime-path)}" cargo run --locked --release -- --engine neural'
 
 [tasks.model-bench]
 description = "Benchmark synthetic coarse/dense inference and training (FP32)"

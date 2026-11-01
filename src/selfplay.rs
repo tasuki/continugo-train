@@ -1,13 +1,14 @@
 //! SGF uses SZ, PB/PW and scored RE for standard game information.
-//! Root JSON is limited to seed, MCTS settings (when used) and optional profiling.
+//! Root JSON contains seed, search/model settings (when used) and optional profiling.
 //! Move comments carry pre-move policy targets and/or profiling; otherwise they
 //! are omitted. Truncated games have no RE. Generation/export timings finish
 //! after annotation serialization, so those remain stderr-only.
 
 use crate::{
     action::random_move,
+    inference::Evaluator,
     profile::{GameProfile, MoveProfile},
-    search::{SearchConfig, Visit, search},
+    search::{SearchConfig, Visit, search, search_neural},
 };
 use continugo_analysis::GeometricAvailability;
 use continugo_rules::{Board, Game, sgf, territory};
@@ -20,6 +21,7 @@ use std::time::Instant;
 pub enum Engine {
     Random,
     Mcts,
+    Neural,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -50,6 +52,7 @@ pub struct GameMetadata {
     /// None for a truncated game; otherwise the authoritative scored outcome.
     pub result: Option<territory::Outcome>,
     pub profile: Option<GameProfile>,
+    pub model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -58,6 +61,8 @@ struct GameComment<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<&'a SearchConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<&'a GameProfile>,
 }
 
@@ -65,7 +70,8 @@ impl GameMetadata {
     fn comment(&self) -> GameComment<'_> {
         GameComment {
             seed: self.seed,
-            search: matches!(self.config.engine, Engine::Mcts).then_some(&self.config.search),
+            search: (!matches!(self.config.engine, Engine::Random)).then_some(&self.config.search),
+            model: self.model.as_deref(),
             profile: self.profile.as_ref(),
         }
     }
@@ -86,7 +92,7 @@ pub struct GameRecord {
 }
 
 pub fn generate(board: Board, config: &SelfplayConfig, seed: u64) -> Result<GameRecord, String> {
-    generate_inner::<false>(board, config, seed)
+    generate_inner::<false>(board, config, seed, None)
 }
 
 pub fn generate_profiled(
@@ -97,15 +103,32 @@ pub fn generate_profiled(
     if !matches!(config.engine, Engine::Random) {
         return Err("Detailed profiling currently supports --engine random only".into());
     }
-    generate_inner::<true>(board, config, seed)
+    generate_inner::<true>(board, config, seed, None)
+}
+
+pub fn generate_neural(
+    board: Board,
+    config: &SelfplayConfig,
+    seed: u64,
+    evaluator: &mut dyn Evaluator,
+) -> Result<GameRecord, String> {
+    if !matches!(config.engine, Engine::Neural) {
+        return Err("neural evaluator requires neural engine".into());
+    }
+    generate_inner::<false>(board, config, seed, Some(evaluator))
 }
 
 fn generate_inner<const PROFILE: bool>(
     board: Board,
     config: &SelfplayConfig,
     seed: u64,
+    mut evaluator: Option<&mut dyn Evaluator>,
 ) -> Result<GameRecord, String> {
     config.validate()?;
+    if matches!(config.engine, Engine::Neural) && evaluator.is_none() {
+        return Err("neural engine requires a loaded model".into());
+    }
+    let model = evaluator.as_ref().map(|e| e.model_id().to_owned());
     let started = PROFILE.then(Instant::now);
     let mut profile = GameProfile::default();
     let mut rng = StdRng::seed_from_u64(seed);
@@ -143,6 +166,15 @@ fn generate_inner<const PROFILE: bool>(
             }
             Engine::Mcts => {
                 let result = search(&game, &config.search, &mut rng)?;
+                (result.sample(&mut rng).apply(&game)?, Some(result.policy))
+            }
+            Engine::Neural => {
+                let result = search_neural(
+                    &game,
+                    &config.search,
+                    evaluator.as_deref_mut().expect("validated evaluator"),
+                    &mut rng,
+                )?;
                 (result.sample(&mut rng).apply(&game)?, Some(result.policy))
             }
         };
@@ -190,6 +222,7 @@ fn generate_inner<const PROFILE: bool>(
         policies,
         result,
         profile: PROFILE.then_some(profile),
+        model,
     };
     let mut record = sgf::Record {
         plays: game.record().to_vec(),
@@ -202,12 +235,13 @@ fn generate_inner<const PROFILE: bool>(
         .expect("default SGF root includes board size")
         .1 = vec![board.size().to_string()];
     let player = match config.engine {
-        Engine::Random => "random",
-        Engine::Mcts => "mcts",
+        Engine::Random => "random".to_owned(),
+        Engine::Mcts => "mcts".to_owned(),
+        Engine::Neural => format!("neural-{}", metadata.model.as_deref().unwrap()),
     };
     record.root.extend([
-        ("PB".into(), vec![player.into()]),
-        ("PW".into(), vec![player.into()]),
+        ("PB".into(), vec![player.clone()]),
+        ("PW".into(), vec![player]),
     ]);
     if let Some(result) = result {
         record

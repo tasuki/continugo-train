@@ -64,8 +64,8 @@ If evaluating all million coordinates per position proves too expensive, investi
 
 ## Implementation priorities
 
-1. Export trained models to ONNX and integrate native inference into Rust MCTS.
-2. Build the iterative neural self-play training loop, including warm-start training on a changing replay corpus (separate from fixed-corpus offline resume).
+1. Build the iterative neural self-play training loop, including warm-start training on a changing replay corpus (separate from fixed-corpus offline resume).
+2. Improve neural self-play throughput before scaling runs: parallel/batched queries, native GPU inference, and reducing full-domain feature/scoring work without losing independent exploration or correct policy normalization. The current native backend is synchronous CPU; dense policy is already deferred at value-only leaves.
 3. Evaluate playing strength across board sizes and scale the network as justified.
 4. Move stable reusable components into the main ContinuGo repository.
 
