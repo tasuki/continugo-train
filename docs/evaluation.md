@@ -85,6 +85,27 @@ ordinals put the candidate on black. Each pair advances the seed once.
 The standalone binary writes records and raw outcome totals; it does not move
 models or update any accepted pointer by itself.
 
+## Ratings: shared foundation, integration pending
+
+`../continugo/backend/rating` provides dependency-free **static Glicko** math,
+following the original Glicko update with no elapsed-time, inactivity or active
+process-noise inflation. Empty evidence leaves a bot unchanged; zero RD denotes
+a fixed reference. The reference prior is centered at 100, but a prior is **not**
+a measured rating. RD is a rating deviation, not a 95% confidence interval.
+
+The native `rating` binary is a stateless JSON stdin/stdout adapter: a request has
+`players` (`id`, `rating`, `deviation`) and completed `games` (`black`, `white`,
+`score` as black's win points). It updates all players simultaneously from their
+pre-match states. Unknown outcomes must be omitted, not converted to draws. The
+adapter does not validate SGFs, deduplicate evidence, persist history, or publish
+ratings. Its library tests cover the published Glicko example and no inflation;
+CLI tests cover simultaneous updates, fixed references and invalid evidence.
+
+**Not implemented yet:** matches against the random-but-not-eye-filling reference,
+the persistent accepted-network rating table, and loop ingestion of match evidence.
+The existing arena still takes two neural networks. No network has been assigned
+a baseline-calibrated rating by this code. See [open work](todo.md).
+
 ## Limits
 
 Twenty games are cheap enough for initial wiring but noisy. The threshold, visit

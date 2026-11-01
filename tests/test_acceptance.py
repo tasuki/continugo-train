@@ -47,7 +47,10 @@ class ArenaJobs(helpers.FakeJobs):
             )
             black, white = (candidate, incumbent) if candidate_black else (incumbent, candidate)
             root = {"model": black, "opponent": white, "seed": seed, "search": search}
-            header = f"SZ[{size}]PB[neural-{black}]PW[neural-{white}]C[{json.dumps(root)}]"
+            header = (
+                f"SZ[{size}]PB[neural-{self.names[black]}]PW[neural-{self.names[white]}]"
+                f"C[{json.dumps(root)}]"
+            )
             text = (
                 SGF.replace("SZ[13]", header)
                 .replace('"action":200200,"visits":7', f'"action":200200,"visits":{count - 1}')

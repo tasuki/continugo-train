@@ -33,7 +33,7 @@ def new_run_directory(label, base=None):
     raise ValueError("too many run-directory collisions in one second")
 
 
-def bundle_directory(parent, checksum, moment):
+def bundle_directory(parent, checksum, moment, name=None):
     """Call under the store lock: sortable publication time + sequence + short ID."""
     stamp = timestamp(moment)
     pattern = re.compile(rf"^{re.escape(stamp)}-(\d{{4}})-")
@@ -42,4 +42,5 @@ def bundle_directory(parent, checksum, moment):
     )
     if highest >= 9999:
         raise ValueError("too many model publications in one second")
-    return parent / f"{stamp}-{highest + 1:04d}-{checksum[:12]}"
+    label = f"{name}-" if name else ""
+    return parent / f"{stamp}-{highest + 1:04d}-{label}{checksum[:12]}"

@@ -27,11 +27,13 @@ from .data import inspect_corpus, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
+from .progress import checkpoint_progress, data_history, network_name
+from .progress import initialize as initialize_progress
 from .runtime import inference_environment
 from .sampling import DEFAULT_SIZE_WEIGHTS, weighted_sizes
 from .train import Options, atomic_checkpoint, checkpoint_splits, feature_spec
 
-VERSION = 2
+VERSION = 3
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -258,7 +260,8 @@ def load_training(path):
     }
     if not isinstance(saved, dict) or not required.issubset(saved):
         raise ValueError(f"not a training checkpoint: {path}")
-    checkpoint_splits(saved)
+    data_history(saved, checkpoint_splits(saved))
+    checkpoint_progress(saved)
     options = Options(**saved["options"])
     options.validate()
     config = NetworkConfig(**saved["config"])
@@ -286,6 +289,8 @@ def verify_export(directory, checkpoint, saved):
     expected = {
         "checkpoint_sha256": digest(checkpoint),
         "epoch": saved["epoch"],
+        "network_name": network_name(saved),
+        "progress": checkpoint_progress(saved),
         "config": saved["config"],
         "feature_spec": saved["feature_spec"],
     }
@@ -390,6 +395,8 @@ class LoopRunner:
                     self.check(record)
             for record in iteration["replay"] or []:
                 self.check(record)
+            if iteration.get("generated_data"):
+                self.check(iteration["generated_data"])
             if iteration["checkpoint"]:
                 self.check(iteration["checkpoint"])
             if iteration["model"]:
@@ -457,6 +464,7 @@ class LoopRunner:
         return {
             "directory": directory,
             "checkpoint_sha256": checkpoint["sha256"],
+            "network_name": network_name(saved),
             "encoder": self.record(output / "encoder.onnx"),
             "policy": self.record(output / "policy.onnx"),
         }
@@ -516,6 +524,7 @@ class LoopRunner:
                     "seed": seed,
                     "moves": info["moves"],
                     "eligible": bool(info["eligible_plies"]),
+                    "eligible_positions": len(info["eligible_plies"]),
                     "result": info["result"],
                 }
                 if info["result"] == "0":
@@ -603,6 +612,18 @@ class LoopRunner:
             attempt["status"] = "succeeded"
             self.save()
             self.adopt_games(iteration)
+        initial = self.state["initial_data_positions"]
+        iteration["data_positions"] = (
+            initial
+            + sum(
+                record["eligible_positions"]
+                for previous in self.state["iterations"][: iteration["number"]]
+                for record in previous["games"]
+            )
+            if initial is not None
+            else None
+        )
+        self.save()
         if not any(record["eligible"] for record in iteration["games"]):
             raise ValueError(
                 "iteration has no completed policy-labeled games; use a larger move budget in a new loop"
@@ -650,6 +671,31 @@ class LoopRunner:
             )
         return options
 
+    def generation_progress(self, iteration):
+        expected = {
+            "version": 1,
+            "data_positions": iteration["data_positions"],
+            "game_ids": sorted(
+                {
+                    record["game_id"]
+                    for record in [*self.state["bootstrap"], *iteration["games"]]
+                    if record["eligible"]
+                }
+            ),
+        }
+        path = self.path(f"iteration-{iteration['number']:04d}/generation-progress.pt")
+        if iteration.get("generated_data"):
+            self.check(iteration["generated_data"])
+        if path.exists():
+            if torch.load(path, map_location="cpu", weights_only=True) != expected:
+                raise ValueError("frozen generation progress changed")
+        else:
+            atomic_checkpoint(path, expected)
+        if not iteration.get("generated_data"):
+            iteration["generated_data"] = self.record(path)
+            self.save()
+        return path
+
     def epoch_snapshots(self, iteration, attempt, parent, options):
         directory = self.path(attempt["path"])
         snapshots = sorted(
@@ -657,11 +703,19 @@ class LoopRunner:
         )
         run_id = None
         ancestral_splits = checkpoint_splits(parent)
+        expected_progress = checkpoint_progress(parent)
+        expected_progress["data_positions"] = iteration["data_positions"]
+        generated = torch.load(self.generation_progress(iteration), weights_only=True)
+        expected_data_ids = data_history(parent, ancestral_splits) | set(generated["game_ids"])
         for number, path in enumerate(snapshots, 1):
             saved = load_training(path)
             history = checkpoint_splits(saved)
+            if expected_progress["samples_seen"] is not None:
+                expected_progress["samples_seen"] += saved["metrics"]["train"]["samples"]
             if (
-                path.name != f"epoch-{number:04d}.pt"
+                checkpoint_progress(saved) != expected_progress
+                or data_history(saved, history) != expected_data_ids
+                or path.name != f"epoch-{number:04d}.pt"
                 or saved["epoch"] != number
                 or number > self.config.train_epochs
                 or saved["options"] != asdict(options)
@@ -727,6 +781,7 @@ class LoopRunner:
                 "--feature-binary",
                 self.config.feature_binary,
             ]
+            command += ["--generated-data", str(self.generation_progress(iteration))]
             for name, value in asdict(options).items():
                 command += ["--" + name.replace("_", "-"), str(value)]
             if snapshots:
@@ -910,7 +965,7 @@ def run_loop(args):
                 or state.get("root") != str(root)
             ):
                 raise ValueError(
-                    "incompatible/relocated loop checkpoint; v1 loops are preserved but must be forked from their latest training checkpoint into a new v2 loop"
+                    "incompatible/relocated loop checkpoint; older loops are preserved but must be forked from their latest training checkpoint into a new v3 loop"
                 )
             for field in fields(LoopConfig):
                 value = getattr(args, field.name)
@@ -990,6 +1045,9 @@ def run_loop(args):
                     "source": str(source),
                 },
                 "initial_model": None,
+                "initial_data_positions": initialize_progress(
+                    saved, bootstrap, data_history(saved, checkpoint_splits(saved))
+                )["data_positions"],
                 "initial_accepted_checkpoint": accepted_record,
                 "initial_training_archive": None,
                 "initial_archive": None,

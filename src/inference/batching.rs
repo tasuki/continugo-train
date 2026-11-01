@@ -38,6 +38,7 @@ struct Request {
 pub struct BatchingClient {
     sender: SyncSender<Request>,
     model: String,
+    name: String,
 }
 
 impl BatchingClient {
@@ -60,6 +61,9 @@ impl BatchingClient {
 impl Evaluator for BatchingClient {
     fn model_id(&self) -> &str {
         &self.model
+    }
+    fn network_name(&self) -> &str {
+        &self.name
     }
     fn value(&mut self, game: &Game) -> Result<f64, String> {
         match self.query(game, false)? {
@@ -95,6 +99,7 @@ impl BatchingWorker {
         let client = BatchingClient {
             sender,
             model: evaluator.model_id().to_owned(),
+            name: evaluator.network_name().to_owned(),
         };
         Ok((
             Self {
@@ -213,7 +218,10 @@ mod tests {
         let mut client = BatchingClient {
             sender,
             model: "test".into(),
+            name: "named-test".into(),
         };
+        assert_eq!(client.network_name(), "named-test");
+        assert_eq!(client.model_id(), "test");
         drop(receiver);
         let game = Game::new(Board::new(9).unwrap());
         assert!(client.value(&game).unwrap_err().contains("stopped"));
@@ -226,6 +234,7 @@ mod tests {
         let mut client = BatchingClient {
             sender,
             model: "test".into(),
+            name: "test".into(),
         };
         std::thread::scope(|scope| {
             scope.spawn(move || {

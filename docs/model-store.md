@@ -16,7 +16,7 @@ models/
   STORE.pt                     store ownership/format marker
   LATEST-ACCEPTED               text: accepted/<dated-bundle-name>
   LATEST-TRAINING               text: training/<dated-bundle-name>
-  accepted/YYYYMMDD-HHMMSS-0001-ID/
+  accepted/YYYYMMDD-HHMMSS-0001-NAME-ID/
     encoder.onnx
     policy.onnx
     checkpoint.pt              exact original trainable checkpoint
@@ -24,7 +24,7 @@ models/
     evaluation/*.sgf            accepted candidate's match records, when applicable
     recovery.pt                hashed file manifest + context/report
     README.md                  per-bundle recovery instructions
-  training/YYYYMMDD-HHMMSS-0001-ID/  checkpoint/replay pack for every candidate
+  training/YYYYMMDD-HHMMSS-0001-NAME-ID/  checkpoint/replay pack for every candidate
   sgf-blobs/                   immutable store-owned copies, shared via hardlinks
 ```
 
@@ -36,8 +36,10 @@ model/replay directories are made read-only. Existing packs are checked, not
 rewritten. The loop never automatically deletes models or recovery packs.
 
 Names use publication time in **UTC**, with seconds to distinguish short jobs, a
-four-digit sequence for same-second publications, and a 12-character checkpoint ID
-suffix. They sort by date/sequence within each category. Full SHA-256 remains the
+four-digit sequence for same-second publications, a readable network name such as
+`cg1-b4c32-s1248000-d550347`, and a 12-character checkpoint ID suffix. See
+[training counters](training.md#network-names-and-cumulative-progress) for exact
+`s`/`d` semantics; unknown legacy totals are explicitly named `unknown`. They sort by date/sequence within each category. Full SHA-256 remains the
 identity in `recovery.pt`; short prefixes are never trusted as identity. Republishing
 the same checkpoint reuses its original dated folder rather than giving an old
 model a misleading new date. The full ISO timestamp is also saved in the manifest
@@ -62,7 +64,8 @@ An accepted bundle preserves everything needed to **continue learning from that
 accepted checkpoint**:
 
 - Weights and BatchNorm buffers, architecture and feature semantics/density.
-- SGD momentum/settings, local epoch/step counters, RNG states and metrics.
+- SGD momentum/settings, local epoch/step counters, cumulative lineage sample/data
+  counters when known, RNG states and metrics.
 - Full current corpus/split manifest and ancestral holdout ledger.
 - Exact SGFs, allowing strict corpus validation after relocation.
 - Both inference graphs, with matching source-checkpoint identity.
@@ -110,8 +113,8 @@ inside a read-only recovery bundle. Legacy checkpoints without board-mixture
 options retain their original uniform sampling on strict resume; warm-start/new
 loops default to the new 40/40/20 mixture.
 
-Existing v1 loop control checkpoints are intentionally not resumed under the new
-v2 gate/mixture semantics. Fork from their newest immutable epoch checkpoint into
+Existing v1/v2 loop control checkpoints are intentionally not resumed under the
+v3 naming/progress protocol. Fork from their newest immutable epoch checkpoint into
 a new loop rather than silently changing a frozen experiment. Old files are not
 overwritten. The earlier smoke runs and old sibling archive were explicitly deleted
 at the user's request for a clean start. Historical benchmark numbers do not imply

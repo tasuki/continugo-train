@@ -152,6 +152,8 @@ fn generate_inner<const PROFILE: bool>(
     }
     let model = evaluator.as_ref().map(|e| e.model_id().to_owned());
     let opponent_id = opponent.as_ref().map(|e| e.model_id().to_owned());
+    let name = evaluator.as_ref().map(|e| e.network_name().to_owned());
+    let opponent_name = opponent.as_ref().map(|e| e.network_name().to_owned());
     let evaluation_game = opponent.is_some();
     let started = PROFILE.then(Instant::now);
     let mut profile = GameProfile::default();
@@ -276,15 +278,14 @@ fn generate_inner<const PROFILE: bool>(
     let player = match config.engine {
         Engine::Random => "random".to_owned(),
         Engine::Mcts => "mcts".to_owned(),
-        Engine::Neural => format!("neural-{}", metadata.model.as_deref().unwrap()),
+        Engine::Neural => format!("neural-{}", name.as_deref().unwrap()),
     };
     record.root.extend([
         ("PB".into(), vec![player.clone()]),
         (
             "PW".into(),
             vec![
-                metadata
-                    .opponent
+                opponent_name
                     .as_ref()
                     .map_or(player, |id| format!("neural-{id}")),
             ],

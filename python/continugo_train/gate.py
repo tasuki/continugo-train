@@ -101,8 +101,8 @@ def evaluate(runner, iteration):
                     not isinstance(root, dict)
                     or root.get("model") != black["checkpoint_sha256"]
                     or root.get("opponent") != white["checkpoint_sha256"]
-                    or info.get("black_player") != f"neural-{black['checkpoint_sha256']}"
-                    or info.get("white_player") != f"neural-{white['checkpoint_sha256']}"
+                    or info.get("black_player") != f"neural-{black['network_name']}"
+                    or info.get("white_player") != f"neural-{white['network_name']}"
                     or root.get("seed") != seed
                     or root.get("search") != search
                     or info["board_size"] != size

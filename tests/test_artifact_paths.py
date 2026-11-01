@@ -35,8 +35,12 @@ class ArtifactPathsTests(helpers.LoopHarness):
             saved["run_id"] = "different checkpoint"
             atomic_checkpoint(other, saved)
             second = archive.publish(store, "training", other)
-        self.assertRegex(Path(first["directory"]).name, r"^20261101-123456-0001-[0-9a-f]{12}$")
-        self.assertRegex(Path(second["directory"]).name, r"^20261101-123456-0002-[0-9a-f]{12}$")
+        self.assertRegex(
+            Path(first["directory"]).name, r"^20261101-123456-0001-test1-b1c4-s1-d8-[0-9a-f]{12}$"
+        )
+        self.assertRegex(
+            Path(second["directory"]).name, r"^20261101-123456-0002-test1-b1c4-s1-d8-[0-9a-f]{12}$"
+        )
         self.assertEqual(archive.verify_bundle(first)["created_at"], moment.isoformat())
         with patch.object(archive, "utc_now", return_value=moment + timedelta(days=1)):
             reused = archive.publish(store, "training", self.source)

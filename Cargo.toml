@@ -12,6 +12,7 @@ reference-eyes = ["continugo-analysis/reference"]
 [dependencies]
 continugo-rules = { path = "../continugo/backend/rules" }
 continugo-analysis = { path = "../continugo/backend/analysis" }
+continugo-rating = { path = "../continugo/backend/rating" }
 clap = { version = "4", features = ["derive"] }
 rand = "0.9"
 rayon = "1.11"

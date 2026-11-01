@@ -15,6 +15,7 @@ from pathlib import Path
 import torch
 
 from .paths import bundle_directory, utc_now
+from .progress import checkpoint_progress, network_name
 from .train import atomic_checkpoint
 
 
@@ -132,7 +133,7 @@ def publish(
         if not overview.exists():
             overview.write_text(
                 "# ContinuGo durable model store\n\n"
-                "accepted/YYYYMMDD-HHMMSS-SEQ-ID/ contains accepted encoder.onnx + policy.onnx, plus a full "
+                "accepted/YYYYMMDD-HHMMSS-SEQ-NAME-ID/ contains accepted encoder.onnx + policy.onnx, plus a full "
                 "checkpoint.pt and replay/ snapshot for recovery. training/ uses the same UTC-dated names and preserves "
                 "every completed training candidate, even when rejected or inconclusive.\n\n"
                 "LATEST-ACCEPTED and LATEST-TRAINING are convenience pointers to the most "
@@ -159,8 +160,9 @@ def publish(
             latest_pointer(store, kind, destination)
             return reference
         created = utc_now()
-        destination = bundle_directory(parent, checksum, created)
         saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        name = network_name(saved)
+        destination = bundle_directory(parent, checksum, created, name)
         fallbacks = {digest(path): Path(path) for path in game_candidates}
         files = []
         blobs = store / "sgf-blobs"
@@ -231,7 +233,8 @@ def publish(
             readme.write_text(
                 "# Immutable model recovery bundle\n\n"
                 f"Published (UTC): {created.isoformat()}\n\n"
-                f"Kind: {kind}\nCheckpoint SHA-256: {checksum}\n\n"
+                f"Kind: {kind}\nNetwork: {name}\nCheckpoint SHA-256: {checksum}\n\n"
+                f"Cumulative progress: {checkpoint_progress(saved)}\n\n"
                 f"Epoch: {saved['epoch']}; local optimizer step: {saved['global_step']}\n\n"
                 f"Loop target mix: {(context or {}).get('config', {}).get('size_weights', 'see checkpoint')}\n\n"
                 f"Checkpoint sampling: {saved['options'].get('size_weights', 'uniform (legacy)')}\n\n"
@@ -257,6 +260,8 @@ def publish(
                     "version": 1,
                     "kind": kind,
                     "checkpoint_sha256": checksum,
+                    "network_name": name,
+                    "progress": checkpoint_progress(saved),
                     "created_at": created.isoformat(),
                     "files": files,
                     "context": context or {},

@@ -262,6 +262,10 @@ class OfflineTrainerTests(unittest.TestCase):
         actual = torch.load(resumed, weights_only=True)
         self.assertEqual(actual["epoch"], 2)
         self.assertEqual(actual["global_step"], 2)
+        self.assertEqual(actual["progress"], expected["progress"])
+        self.assertEqual(
+            actual["progress"], {"family": "cg1", "samples_seen": 2, "data_positions": 8}
+        )
         self.assertEqual(actual["corpus_fingerprint"], expected["corpus_fingerprint"])
         self.assertEqual(actual["optimizer"]["param_groups"], expected["optimizer"]["param_groups"])
         for name in expected["model"]:
@@ -297,6 +301,8 @@ class OfflineTrainerTests(unittest.TestCase):
         )
         adjusted = torch.load(resumed, weights_only=True)
         self.assertEqual(adjusted["global_step"], 4)
+        self.assertEqual(adjusted["progress"]["samples_seen"], 6)  # Two two-row minibatches.
+        self.assertEqual(adjusted["progress"]["data_positions"], 8)
         self.assertEqual(adjusted["optimizer"]["param_groups"][0]["lr"], 0.005)
         self.assertEqual(adjusted["options"]["batch_size"], 2)
         self.assertEqual(adjusted["config"]["chunk_size"], 32768)
@@ -386,6 +392,10 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertNotEqual(actual["run_id"], parent["run_id"])
         self.assertEqual(actual["epoch"], 1)
         self.assertEqual(actual["global_step"], 1)
+        self.assertEqual(
+            actual["progress"]["samples_seen"], 3
+        )  # Includes the parent, despite SGD reset.
+        self.assertEqual(actual["progress"]["data_positions"], 16)
         self.assertEqual(actual["config"]["channels"], parent["config"]["channels"])
         self.assertEqual(actual["config"]["chunk_size"], 32768)
         self.assertNotEqual(actual["corpus_fingerprint"], parent["corpus_fingerprint"])
@@ -419,6 +429,9 @@ class OfflineTrainerTests(unittest.TestCase):
         resumed = torch.load(warmed, weights_only=True)
         continuous = torch.load(continuous, weights_only=True)
         self.assertEqual(resumed["global_step"], 2)
+        self.assertEqual(resumed["progress"], continuous["progress"])
+        self.assertEqual(resumed["progress"]["samples_seen"], 4)
+        self.assertEqual(resumed["progress"]["data_positions"], 16)
         self.assertEqual(resumed["initialization"], origin)
         self.assertEqual(resumed["split_history"], actual["split_history"])
         for name in continuous["model"]:

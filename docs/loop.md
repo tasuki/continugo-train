@@ -34,10 +34,11 @@ one iteration, ten self-play games, one training epoch capped at 20 batches, and
 
 Resume uses the saved total target and frozen settings; explicit conflicting
 overrides fail. The target may increase, never decrease. Keep the loop at the same
-absolute path and compatible code/rules/runtime versions. **v1 automatic-promotion
-loops are not silently migrated**: their files remain untouched; start a new v2
-loop from their latest immutable training checkpoint. Standalone legacy training
-checkpoints remain loadable.
+absolute path and compatible code/rules/runtime versions. **v1/v2 loops are not
+silently migrated** to the v3 naming/progress protocol: their files remain
+untouched; fork a new loop from their latest immutable training checkpoint.
+Standalone legacy training checkpoints remain loadable with unknown cumulative
+totals where provenance is missing.
 
 ## The 40/40/20 board budget
 
@@ -73,7 +74,10 @@ Warm-start defaults to `--warm-start-optimizer keep`; weights and momentum conti
 from the latest training checkpoint. Epoch/step counters restart locally per run,
 not cumulatively across the loop. Learning rate can be set with `--lr`; architecture,
 feature density, momentum, weight decay and gradient clipping inherit from the
-training parent. Training seed is `seed+iteration-1`.
+training parent. Training seed is `seed+iteration-1`. Separate cumulative
+[network sample/data counters](training.md#network-names-and-cumulative-progress)
+continue across iterations: generated eligible rows count even when replay drops
+them, and adopted jobs are not counted twice after a restart.
 
 The trainer's `best.pt` remains a within-job validation-loss diagnostic. The loop
 exports the **latest completed epoch**, then gates it by actual match outcomes.
@@ -115,13 +119,13 @@ By default, models and recovery data stay **in this repository's `models/`**, no
 models/
   LATEST-ACCEPTED               relative path to an accepted bundle
   LATEST-TRAINING               latest backed-up training candidate, even if rejected
-  accepted/YYYYMMDD-HHMMSS-SEQ-ID/   ONNX + checkpoint + exact replay SGFs
-  training/YYYYMMDD-HHMMSS-SEQ-ID/   checkpoint + replay for every candidate
+  accepted/YYYYMMDD-HHMMSS-SEQ-NAME-ID/   ONNX + checkpoint + exact replay SGFs
+  training/YYYYMMDD-HHMMSS-SEQ-NAME-ID/   checkpoint + replay for every candidate
 ```
 
 Choose another disk/location with `--model-store PATH`; it must be separate from
 loop output and outside disposable `runs/`. Bundle names start with UTC publication
-time, then a same-second sequence and short checkpoint ID; full hashes remain in
+time, then a same-second sequence, readable network name and short checkpoint ID; full hashes remain in
 the metadata and republishing preserves the original name. Bundles are write-once/read-only, hashed,
 and never automatically pruned. Both initial parents and every completed candidate
 are backed up before further progress/promotion. Initial checkpoints are trusted

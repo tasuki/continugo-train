@@ -47,6 +47,9 @@ pub struct Evaluation {
 pub trait Evaluator {
     fn evaluate(&mut self, game: &Game) -> Result<Evaluation, String>;
     fn model_id(&self) -> &str;
+    fn network_name(&self) -> &str {
+        self.model_id()
+    }
     fn value(&mut self, game: &Game) -> Result<f64, String> {
         Ok(self.evaluate(game)?.value)
     }
@@ -67,6 +70,7 @@ struct Config {
 #[derive(Deserialize)]
 struct Metadata {
     checkpoint_sha256: String,
+    network_name: Option<String>,
     config: Config,
     feature_spec: FeatureSpec,
 }
@@ -243,6 +247,12 @@ impl Evaluator for OnnxEvaluator {
     }
     fn model_id(&self) -> &str {
         &self.metadata.checkpoint_sha256
+    }
+    fn network_name(&self) -> &str {
+        self.metadata
+            .network_name
+            .as_deref()
+            .unwrap_or(self.model_id())
     }
     fn value(&mut self, game: &Game) -> Result<f64, String> {
         match self.evaluate_batch(&[(game, false)])?.pop().unwrap() {

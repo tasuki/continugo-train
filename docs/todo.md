@@ -1,76 +1,38 @@
-# ContinuGo AI — Training Plan
+# ContinuGo AI — Open work
 
-Build an AlphaZero/KataGo-style AI training system.
+Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md) as the primary reference, adapting it to ContinuGo. Prioritize playing strength per unit of computation.
 
-Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md) as the primary reference. Follow its established approaches to MCTS, self-play, training, evaluation, and network scaling wherever applicable, adapting them to ContinuGo.
+This list contains outstanding work only. See [training](training.md), [inference](inference.md), [batching](batching.md), [loop](loop.md), [evaluation](evaluation.md), and [model storage](model-store.md) for implemented capabilities and operating instructions.
 
-## Technology and repositories
+## High priority
 
-- **Rust:** Game simulation, MCTS, self-play, and feature extraction. Use the existing ContinuGo Rust rules which live in `../continugo` .
-- **Python + PyTorch:** Neural network architecture and training.
-- **ONNX:** Export models for native and browser inference.
-- **Records:** Use self-contained SGF through the shared codec: `SZ` for board size, `PB`/`PW` for players, and `RE` for the scored result (one decimal place). Reserve JSON comments for seeds/search settings, move-policy targets, and optional profiling; no JSON sidecars or JSONL game records.
-- Develop experimental components in `continugo-train`. Move stable, reusable components into `../continugo` (upon my confirmation).
-- Maintain a single implementation of the rules and rule-derived features. The existing rules are authoritative; preserve their semantics when optimizing implementation.
+### 1. Persistent, baseline-anchored static Glicko ratings
 
-## Neural network architecture
+- [ ] Keep a durable, long-running table of **all accepted networks**, with readable names, acceptance dates, checkpoint identities, match counts, ratings, and **± rating deviation (RD)**. Preserve it independently of disposable `runs/`.
+- [ ] Anchor the existing **random-but-not-eye-filling bot at rating 100**. Freeze/version its reference policy. Calibrate networks through actual matches against it, connecting later network comparisons to that baseline; untested networks remain **unrated** in reports, not assigned a claimed strength.
+- [ ] Use **static-skill Glicko** for frozen bots: **no time decay, no inactivity inflation, and no volatility/process-noise inflation**, including on active updates. Ratings and uncertainty change only with new match evidence; the reference stays fixed at 100.
+- [ ] Rate neural players at a fixed, recorded **simulation budget per move**, with paired colors. Keep separate rating pools for different budgets or board-size mixes and other strength-affecting evaluation settings. Equal simulations do not imply equal wall-clock compute across architectures. Default board mix remains 40%/40%/20% for 9/13/19.
+- [ ] Retain the underlying match evidence, including rejected candidates rather than only successful promotions. Count genuine draws as half-points; report truncations explicitly and exclude unknown outcomes from rating updates. Keep evaluation games out of training replay.
+- [ ] Make evidence ingestion restart-safe and idempotent so resumed or reimported matches cannot update ratings twice. Keep rating history auditable from authoritative SGFs; do not introduce game-record JSON sidecars.
+- [ ] Wire the shared `../continugo/backend/rating` static-Glicko component and native adapter into the rating ledger; do not duplicate the math in Python. Add end-to-end tests for baseline calibration, persistent history, independent rating pools, and idempotent restart/reimport. The math and stateless adapter are implemented; see [evaluation](evaluation.md#ratings-shared-foundation-integration-pending).
 
-Train a single **ResNet with policy and value heads**, supporting the discrete stone sizes provided by the existing rules, corresponding to approximately 9×9 through 19×19 Go boards.
+### 2. Calibrate evaluation before scaling
 
-**Coarse ResNet:**
-- Scale the input resolution with stone diameter, keeping local stone formations at approximately the same scale.
-- Input planes include friendly/enemy stone positions, group sizes, group liberty area matching the UI highlight (in stone-disc units), exact one-move capturability by the opposing color on the unchanged board, and directional distances to board borders. Do not include move-history planes or exactly-one-integer-liberty flags, and do not treat area as a handcrafted moves-to-capture estimate.
-- Start small, perhaps **32 channels and 4–6 residual blocks**, with configurable architecture.
-- Increase network capacity as training progresses, guided by playing strength relative to computational cost.
+- [ ] Calibrate acceptance-match count, simulation budget, and threshold; measure actual strength gains against the reference bot and historical checkpoints, not just validation loss or gate acceptance.
+- [ ] Check rating uncertainty and per-size outcomes with sufficient completed games. A small finite-match gate is a regression guard, not statistical proof of improvement; ratings remain separate from the promotion decision.
 
-**Value head:**
-- Use global pooling to handle variable spatial dimensions.
-- Predict the position's expected outcome.
+## Performance and scaling
 
-**Cheap dense policy head:**
-- Combine spatial features from the ResNet with exact rule-derived features for each potential move.
-- Features include legality, connected groups, captures, resulting group status, and relevant geometric information.
-- Use a lightweight shared scoring network to evaluate all **1,000,000 coordinates plus pass**, without expensive full-resolution convolutions.
-- Preserve exact tactical distinctions between neighboring coordinates.
-- Consider learned group embeddings later, but don't implement them initially.
+- [ ] Improve neural self-play throughput: reduce unnecessary full-domain feature/scoring work and investigate CPU/GPU overlap without compromising independent exploration, exact tactical distinctions, or full-policy normalization. Feature extraction remains the dominant measured cost.
+- [ ] Benchmark inference concurrency, batch sizes, cache settings, and feature threads across CPU/CUDA rather than assuming batching is faster. Measure feature extraction, encoder inference, dense policy scoring, and end-to-end self-play separately.
+- [ ] Consider batching independent evaluation games after measuring its benefit.
+- [ ] Scale network capacity and training/self-play budgets only when justified by measured strength per unit of computation. Keep architecture configurable; consider learned group embeddings or more selective move evaluation only when measurements justify the added complexity.
+- [ ] Move stable reusable components into the main ContinuGo repository with confirmation.
 
-## Training
+## Constraints to preserve
 
-Follow KataGo's approach wherever applicable, with these ContinuGo-specific considerations:
-
-- **Bootstrap training from unguided MCTS self-play** (`--engine mcts`): uniform priors over admitted candidates, neutral nonterminal leaf values, and actual outcomes at terminal nodes. There is no trained network or random rollout evaluator yet. Record root visit counts as policy targets and completed-game outcomes as value targets.
-- **Direct random play** (`--engine random`) uses no tree search and supplies no search-policy targets; retain it for rules/performance diagnostics. Its narrow eye-avoidance filter rejects only an enclosed, single-friendly-group pocket that one stone would completely fill; allow larger pockets, captures and connections. Pass only after an exhaustive search finds no acceptable placement. Keep this filter separate from MCTS; do not add heuristic-guided MCTS or handcrafted value evaluations.
-- Replace the bootstrap priors/value evaluator with neural guidance in MCTS, retaining PUCT and progressive widening to handle the enormous action space.
-- Maintain sufficient independent exploration to discover moves the current policy undervalues.
-- Prioritize 9×9 and 13×13 equivalents: default to **40% / 40% / 20%** for 9/13/19 across generation, replay, actual training/validation positions and evaluation. Keep this configurable; do not let longer size-19 games dominate position extraction. Retain support for the other discrete sizes without particularly optimizing for 19 now.
-- Batch positions with similar input resolutions efficiently.
-- Train the policy from MCTS search results and the value from game outcomes.
-- Iterate through self-play, training, model export, and evaluation.
-
-## Performance and experimentation
-
-Prioritize **playing strength per unit of computation**, particularly during self-play.
-
-Benchmark the main costs independently:
-
-- Rust feature extraction across the million-coordinate board.
-- Coarse ResNet inference and training.
-- Dense policy evaluation.
-- Batched MCTS inference and overall self-play throughput.
-
-Keep the architecture configurable to compare network sizes, input features, and policy-head designs.
-
-If evaluating all million coordinates per position proves too expensive, investigate more selective approaches without sacrificing the ability to discover unexpected moves.
-
-## Iterative loop milestone
-
-The [restartable synchronous loop](loop.md) generates SGFs, freezes bounded replay, warm-starts, exports and runs a [paired-color acceptance gate](evaluation.md). It separates latest training progress from the accepted self-play model: rejection or inconclusive evaluation never rolls training back. Draws and truncations are explicitly reported; unknown outcomes are never invented draws. Generation, replay, actual position sampling and evaluation default to 40/40/20 for 9/13/19. [Durable recovery packs](model-store.md) preserve accepted ONNX plus full checkpoints and replay data in this repository's `models/`, separate from disposable `runs/`, and also back up rejected candidates. New run/model directories have UTC datetime prefixes; old smoke artifacts were explicitly cleared for a clean start. Per-game/epoch/export/gate recovery and training restoration after losing the original run are tested. These are pipeline/regression-guard milestones, not proof of stronger play.
-
-## Implementation priorities
-
-1. Calibrate acceptance-match count, search budget and threshold, and measure actual strength improvements against checkpoints/baselines before scaling runs. Prioritize 9/13, retaining 20% size-19 coverage. The current small finite-match gate is not a statistical proof of improvement.
-2. Improve neural self-play throughput before scaling runs: reduce unnecessary full-domain feature/scoring work and investigate CPU/GPU overlap without losing independent exploration or correct policy normalization. CPU/CUDA inference, bounded host context caching, parallel exact-feature extraction, and bounded cross-game inference batching are implemented; dense policy is deferred at value-only leaves and exact rows are streamed in bounded chunks. Benchmark concurrency/batch settings rather than assuming batching is faster. Feature extraction remains the dominant measured cost.
-3. Scale network capacity and training/self-play budgets only as justified by strength per unit of computation.
-4. Move stable reusable components into the main ContinuGo repository.
-
-**Guiding principle:** Keep the initial implementation simple and performant. Reuse KataGo's proven training methods, while concentrating original engineering effort on ContinuGo's unusual action space, exact geometric rules, and efficient neural policy representation.
+- Shared rules and rule-derived features in `../continugo` are authoritative; do not duplicate their semantics.
+- Default to configurable **40% / 40% / 20%** coverage for 9/13/19 across generation, replay, actual training/validation samples, and evaluation.
+- Use real search-policy targets and natural game outcomes. Never invent labels for truncated games or turn them into draws. Keep the random bot's narrow eye-avoidance filter separate from neural/unguided MCTS.
+- Rejected or inconclusive candidates retain training and optimizer progress; self-play continues with the accepted model.
+- Keep SGFs self-contained and generated artifacts inside this repository. Durable recovery must survive removal of `runs/`; ONNX alone is not a training checkpoint. Preserve exact replay data, holdout history, hashes, and store-owned deduplication when changing artifact layouts.

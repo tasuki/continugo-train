@@ -18,6 +18,7 @@ from torch import nn
 
 from .model import NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
+from .progress import checkpoint_progress, network_name
 from .train import feature_spec
 
 METADATA_KEY = "continugo"
@@ -114,6 +115,8 @@ def export_checkpoint(checkpoint, output):
         {
             "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
             "epoch": saved["epoch"],
+            "network_name": network_name(saved),
+            "progress": checkpoint_progress(saved),
             "config": saved["config"],
             "feature_spec": spec,
         },

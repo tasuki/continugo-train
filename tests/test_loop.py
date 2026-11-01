@@ -24,6 +24,8 @@ from continugo_train import train as trainer
 from continugo_train.data import scan_corpus
 from continugo_train.features import inspect_game
 from continugo_train.model import NetworkConfig, PolicyValueNet
+from continugo_train.progress import data_history, network_name
+from continugo_train.progress import initialize as initialize_progress
 from continugo_train.train import Options, atomic_checkpoint, feature_spec
 
 
@@ -33,6 +35,7 @@ class FakeJobs:
     def __init__(self):
         self.calls = []
         self.fault = None
+        self.names = {}
 
     @staticmethod
     def bundle(directory, checkpoint, _saved):
@@ -48,6 +51,7 @@ class FakeJobs:
             args = command[command.index("--checkpoint") + 1]
             output = Path(command[command.index("--output") + 1])
             output.mkdir()
+            self.names[loop.digest(args)] = network_name(loop.load_training(args))
             for name in ["encoder.onnx", "policy.onnx"]:
                 (output / name).write_text(loop.digest(args))
         elif "continugo_train.train" in command:
@@ -121,14 +125,37 @@ class FakeJobs:
                     "source": {"sha256": loop.digest(args.warm_start)},
                 },
             )
+        known_data = data_history(parent, trainer.checkpoint_splits(parent))
+        generated = (
+            torch.load(args.generated_data, weights_only=True) if args.generated_data else None
+        )
+        progress = initialize_progress(
+            parent,
+            corpus.train + corpus.validation,
+            known_data,
+            resuming=bool(args.resume),
+            family=args.network_family,
+            data_positions=generated["data_positions"] if generated else args.data_positions,
+        )
+        all_data_ids = known_data | {g.game_id for g in corpus.train + corpus.validation}
+        if generated:
+            all_data_ids |= set(generated["game_ids"])
         state.update(
             options=asdict(options),
             corpus_fingerprint=corpus.fingerprint,
             manifest=corpus.manifest(),
             split_history=corpus.split_history,
+            data_game_ids=sorted(all_data_ids),
         )
         for epoch in range(completed + 1, args.epochs + 1):
-            state.update(epoch=epoch, global_step=state["global_step"] + 1)
+            if progress["samples_seen"] is not None:
+                progress["samples_seen"] += 1
+            state.update(
+                epoch=epoch,
+                global_step=state["global_step"] + 1,
+                progress=dict(progress),
+                metrics={"train": {"samples": 1}},
+            )
             atomic_checkpoint(output / f"epoch-{epoch:04d}.pt", state)
             if self.fault == "epoch_gap":
                 # Epoch publication succeeded but aliases and supervisor commit did not.
@@ -176,6 +203,7 @@ class LoopHarness(unittest.TestCase):
                 "epoch": 1,
                 "global_step": 1,
                 "run_id": "source",
+                "progress": {"family": "test1", "samples_seen": 1, "data_positions": 8},
                 "feature_spec": feature_spec(4),
                 "corpus_fingerprint": corpus.fingerprint,
                 "manifest": corpus.manifest(),
@@ -264,6 +292,13 @@ class LoopTests(LoopHarness):
         second = state["iterations"][1]
         self.assertEqual(second["parent_checkpoint"], first["checkpoint"])
         self.assertEqual(second["parent_model"], first["model"])
+        self.assertEqual(first["data_positions"], 20)
+        self.assertEqual(second["data_positions"], 32)
+        saved = loop.load_training(output / second["checkpoint"]["path"])
+        self.assertEqual(
+            saved["progress"], {"family": "test1", "samples_seen": 3, "data_positions": 32}
+        )
+        self.assertEqual(second["model"]["network_name"], "test1-b1c4-s3-d32")
         for record in second["games"]:
             info = inspect_game(output / record["path"])
             self.assertEqual(info["root_comment"]["model"], first["checkpoint"]["sha256"])
@@ -275,6 +310,38 @@ class LoopTests(LoopHarness):
         calls = len(self.jobs.calls)
         self.run_loop(output, resume=True)
         self.assertEqual(len(self.jobs.calls), calls)
+
+    def test_generated_rows_outside_replay_are_known_to_future_offline_imports(self):
+        output = self.root / "small-replay"
+        state = self.run_loop(output, extra=["--replay-games", "2"])
+        iteration = state["iterations"][0]
+        checkpoint = output / iteration["checkpoint"]["path"]
+        saved = loop.load_training(checkpoint)
+        self.assertTrue(set(saved["data_game_ids"]) - set(saved["split_history"]))
+        self.assertEqual(saved["progress"]["data_positions"], 20)
+        with redirect_stdout(io.StringIO()):
+            imported = trainer.train(
+                trainer.parse_args(
+                    [
+                        "--warm-start",
+                        str(checkpoint),
+                        "--data",
+                        str(self.corpus),
+                        str(output / "iteration-0001/selfplay"),
+                        "--output",
+                        str(self.root / "offline-import"),
+                        "--epochs",
+                        "1",
+                        "--device",
+                        "cpu",
+                        "--threads",
+                        "1",
+                    ]
+                )
+            )
+        continued = loop.load_training(imported)
+        self.assertEqual(continued["progress"]["data_positions"], 20)
+        self.assertEqual(continued["progress"]["samples_seen"], 3)
 
     def test_partial_selfplay_only_regenerates_missing_or_invalid_uncommitted_games(self):
         output = self.root / "partial"
@@ -305,6 +372,8 @@ class LoopTests(LoopHarness):
         self.assertFalse((epoch.parent / ".train.lock").exists())
         saved = loop.load_training(output / state["iterations"][0]["checkpoint"]["path"])
         self.assertEqual(saved["epoch"], 2)
+        self.assertEqual(saved["progress"]["samples_seen"], 3)
+        self.assertEqual(saved["progress"]["data_positions"], 20)
 
     def test_resumed_epoch_cannot_drop_ancestral_splits_absent_from_its_window(self):
         output = self.root / "lost-history"

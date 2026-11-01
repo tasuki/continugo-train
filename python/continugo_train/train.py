@@ -27,6 +27,8 @@ from .features import COARSE_PLANES, MOVE_FEATURES, PASS, SCHEMA_VERSION, featur
 from .losses import policy_value_loss
 from .model import NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
+from .progress import data_history, network_name
+from .progress import initialize as initialize_progress
 from .sampling import DEFAULT_SIZE_WEIGHTS, parse_weights
 
 
@@ -261,7 +263,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--warm-start-optimizer",
         choices=["reset", "keep"],
-        help="warm-start SGD momentum: reset (default) or keep; counters/RNG still restart",
+        help="warm-start SGD momentum: reset (default) or keep; local steps/RNG restart, lineage totals persist",
     )
     parser.add_argument(
         "--epochs", type=int, help="total epochs in this run; default 3, or one more when resuming"
@@ -269,6 +271,19 @@ def parse_args(argv=None):
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--threads", type=int, default=min(4, os.cpu_count() or 1))
     parser.add_argument("--feature-binary", type=Path)
+    parser.add_argument(
+        "--network-family", help="readable training family; default cg1 or inherited"
+    )
+    parser.add_argument(
+        "--data-positions",
+        type=int,
+        help="orchestrator's cumulative eligible self-play rows, including data outside replay",
+    )
+    parser.add_argument(
+        "--generated-data",
+        type=Path,
+        help="loop's frozen generation totals/game-ID metadata, including games outside replay",
+    )
     for field in fields(Options):
         parser.add_argument("--" + field.name.replace("_", "-"), type=type(field.default))
     for name in ["channels", "blocks", "policy_hidden", "value_hidden", "chunk_size"]:
@@ -313,6 +328,20 @@ def train(args):
     ):
         raise ValueError("not an offline-training checkpoint")
     history = checkpoint_splits(saved) if saved is not None else {}
+    known_data = data_history(saved, history)
+    generated = None
+    if args.generated_data is not None:
+        generated = torch.load(args.generated_data, map_location="cpu", weights_only=True)
+        if (
+            not isinstance(generated, dict)
+            or generated.get("version") != 1
+            or not {"game_ids", "data_positions"}.issubset(generated)
+        ):
+            raise ValueError("incompatible generation progress metadata")
+        known_generated = data_history({"data_game_ids": generated.get("game_ids")}, {})
+        if args.data_positions is not None and args.data_positions != generated["data_positions"]:
+            raise ValueError("--data-positions disagrees with generation progress metadata")
+        args.data_positions = generated["data_positions"]
     restored_options = dict(saved["options"]) if saved is not None else {}
     # Old fixed-corpus checkpoints retain their original exhaustive ordering.
     # New jobs/warm-starts use the new 40/40/20 default unless explicitly set.
@@ -437,6 +466,21 @@ def train(args):
         )
         if resuming and corpus.fingerprint != saved["corpus_fingerprint"]:
             raise ValueError("eligible SGF corpus/targets changed since checkpoint")
+        progress = initialize_progress(
+            saved,
+            corpus.train + corpus.validation,
+            known_data,
+            resuming=resuming,
+            family=args.network_family,
+            data_positions=args.data_positions,
+        )
+        if generated is not None and progress["data_positions"] != generated["data_positions"]:
+            raise ValueError("generation progress conflicts with ancestral data total")
+        all_data_ids = known_data | {g.game_id for g in corpus.train + corpus.validation}
+        if generated is not None:
+            if resuming and not known_generated.issubset(known_data):
+                raise ValueError("generation history changed since checkpoint")
+            all_data_ids |= known_generated
         weights = parse_weights(options.size_weights)
         if weights is not None and any(
             not any(weights.get(g.board_size, 1) for g in games)
@@ -474,6 +518,8 @@ def train(args):
                 metrics[name] = result
                 if training:
                     step += result["steps"]
+                    if progress["samples_seen"] is not None:
+                        progress["samples_seen"] += result["samples"]
                 log(
                     f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} samples={result['samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
                 )
@@ -482,6 +528,8 @@ def train(args):
             state = {
                 "run_id": run_id,
                 "initialization": initialization,
+                "progress": dict(progress),
+                "data_game_ids": sorted(all_data_ids),
                 "split_history": corpus.split_history,
                 "epoch": epoch + 1,
                 "global_step": step,
@@ -499,6 +547,7 @@ def train(args):
                 "rng_python": random.getstate(),
                 "rng_cuda": torch.cuda.get_rng_state_all() if device.type == "cuda" else [],
             }
+            name = network_name(state)
             destination = output / f"epoch-{epoch + 1:04d}.pt"
             if destination.exists():
                 raise ValueError(f"refusing to overwrite {destination}")
@@ -509,7 +558,9 @@ def train(args):
             log(
                 f"samples_by_size: train={metrics['train']['samples_by_size']} validation={metrics['validation']['samples_by_size']}"
             )
-            log(f"saved {destination}; best_validation={best:.6f}; global_step={step}")
+            log(
+                f"saved {destination}; network={name}; best_validation={best:.6f}; global_step={step}"
+            )
     return output / "latest.pt"
 
 

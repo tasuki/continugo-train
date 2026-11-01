@@ -194,7 +194,11 @@ class NativeInferenceTests(unittest.TestCase):
         self.assertEqual(sample.visits.sum().item(), 4)
         self.assertIsNone(sample.outcome)
         identity = hashlib.sha256(self.checkpoint.read_bytes()).hexdigest()
-        self.assertIn(f"PB[neural-{identity}]", source.read_text())
+        self.assertIn('"model":"' + identity + '"', source.read_text())
+        saved = torch.load(self.checkpoint, weights_only=True)
+        from continugo_train.progress import network_name
+
+        self.assertIn(f"PB[neural-{network_name(saved)}]", source.read_text())
         self.assertEqual(len(list(output.iterdir())), 1)  # SGF only, no sidecar.
 
     def test_native_search_generates_replayable_sparse_visit_targets(self):

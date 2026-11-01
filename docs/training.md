@@ -65,6 +65,46 @@ truncated SGFs. Invalid moves, policies or scores fail rather than
 being silently skipped. At least two eligible unique games in one resolution
 bucket are needed to obtain a held-out set. Train board sizes are 9..19.
 
+## Network names and cumulative progress
+
+Checkpoints carry a `progress` record, inherited by warm-starts regardless of SGD
+reset/keep. Readable names such as `cg1-b4c32-s1248000-d550347` identify:
+
+- `cg1`: training family (`--network-family`, default `cg1`; inherited when omitted).
+- `b4c32`: four residual blocks, 32 trunk channels. Full architecture/head settings
+  remain in the checkpoint and ONNX metadata.
+- `s`: cumulative **optimized training rows**, including repeated rows across
+  epochs and warm-starts. Validation rows do not increment it. This counts actual
+  minibatch rows, not optimizer steps multiplied by an assumed batch size.
+- `d`: cumulative **eligible pre-move rows from completed policy-labeled self-play**,
+  before position caps or board-mixture downsampling, including held-out rows.
+  Bootstrap MCTS games count; random diagnostics and truncated games do not.
+
+For standalone training, `d` counts eligible imported rows from previously unseen
+canonical game IDs; copying or reintroducing ancestral games does not count again.
+The loop instead tracks each planned generation job once, including completed
+repeated games and games evicted from replay. It supplies frozen totals/game IDs
+in `generation-progress.pt` via `--generated-data`; this is orchestration metadata,
+not a game-record sidecar. Checkpoints retain `data_game_ids` even for generated
+games never selected for training, separately from the holdout ledger, so later
+offline imports of those games do not count them again. An external orchestrator
+can also supply `--data-positions`, but must use `--generated-data` to preserve
+IDs for rows outside the corpus. Totals cannot be smaller than inherited progress
+plus newly imported eligible rows. Recovery copies do not create new generation.
+This counter is not the number of unique
+board positions, raw played moves, or all rows ever generated outside the lineage.
+
+Strict resume preserves the family/data total and advances `s` only for newly
+completed training epochs. Rejection, optimizer reset, and replay eviction cannot
+reset these totals. Older checkpoints lacking counters produce names such as
+`cg1-b4c32-sunknown-dunknown`; continuation does not invent ancestral totals.
+
+Names appear in training logs, ONNX metadata, SGF `PB`/`PW`, and durable bundle
+names/manifests. SGF root comments still carry full checkpoint hashes. Names are
+for browsing, **not identity**: full hashes disambiguate checkpoints with identical
+architecture/counters. Bundle directories retain their UTC datetime prefix and
+short-hash suffix; inner epoch/checkpoint filenames stay stable.
+
 ## Data loading and validation
 
 - Rust validates **every** move/policy in each SGF and checks scored RE against
@@ -185,7 +225,8 @@ The new run gets its own lock, log, epoch snapshots, `latest.pt` and `best.pt`.
   source momentum. `keep` restores momentum/state. In either mode, selected learning
   rate, momentum and weight decay apply; explicit overrides are not silently lost
   when loading optimizer parameter groups. This flag requires `--warm-start`.
-- **Epoch and optimizer-step counters restart at zero**, even with `keep`.
+- **Local epoch and optimizer-step counters restart at zero**, even with `keep`.
+  Cumulative lineage sample/data counters are inherited, not reset.
   `--epochs` is the total target for the **new** run, default three; it is not an
   increment to the source epoch. New RNG states come from the selected seed,
   rather than restoring source RNG states. GPU backward remains nondeterministic.
