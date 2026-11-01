@@ -1,15 +1,38 @@
-//! Native CPU ONNX inference. No Python process participates in self-play.
-//! Full-domain logits are streamed in chunks; only sampled candidates survive
-//! in the tree. The library is loaded only for neural commands, not baselines.
+//! Native CPU/CUDA ONNX inference. The same graphs and rules serve both devices.
+//! CUDA registration is mandatory when requested; no silent CPU fallback.
+//! Full policy is streamed in chunks and deferred at value-only leaves.
 
 use crate::{
     action::Action,
     features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION},
 };
 use continugo_rules::{COORDINATE_ACTIONS, Game};
-use ort::{session::Session, value::TensorRef};
+use ort::{
+    execution_providers::{
+        CUDAExecutionProvider, ExecutionProvider, cuda::CUDAExecutionProviderCuDNNConvAlgoSearch,
+    },
+    session::Session,
+    value::Tensor,
+};
 use serde::Deserialize;
-use std::{path::Path, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum InferenceDevice {
+    Cpu,
+    Cuda,
+}
+impl InferenceDevice {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Cuda => "cuda",
+        }
+    }
+}
 
 pub struct Evaluation {
     pub value: f64,
@@ -33,13 +56,11 @@ struct FeatureSpec {
     moves: Vec<String>,
     samples_per_diameter: usize,
 }
-
 #[derive(Deserialize)]
 struct Config {
     chunk_size: usize,
     policy_hidden: usize,
 }
-
 #[derive(Deserialize)]
 struct Metadata {
     checkpoint_sha256: String,
@@ -61,39 +82,62 @@ pub struct OnnxEvaluator {
     scorer: Session,
     metadata: Metadata,
     actions: Vec<Action>,
+    pub device: InferenceDevice,
     pub stats: InferenceStats,
 }
 
 impl OnnxEvaluator {
-    pub fn load(directory: &Path, library: Option<&Path>, threads: usize) -> Result<Self, String> {
-        Self::load_inner(directory, library, threads).map_err(|error| format!("ONNX load: {error}"))
+    pub fn load(
+        directory: &Path,
+        library: Option<&Path>,
+        threads: usize,
+        device: InferenceDevice,
+    ) -> Result<Self, String> {
+        Self::load_inner(directory, library, threads, device)
+            .map_err(|error| format!("ONNX {} load: {error}", device.name()))
     }
 
     fn load_inner(
         directory: &Path,
         library: Option<&Path>,
         threads: usize,
+        device: InferenceDevice,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         if threads == 0 {
             return Err("ONNX thread count must be positive".into());
         }
-        // Resolve explicitly before calling ort: its lazy loader panics on a missing library.
         let library = library.map(Path::to_path_buf)
             .or_else(|| std::env::var_os("ORT_DYLIB_PATH").map(Into::into))
-            .ok_or("set ORT_DYLIB_PATH or --ort-library to an ONNX Runtime 1.22 shared library (see docs/inference.md)")?;
+            .ok_or("set ORT_DYLIB_PATH or --ort-library to an ONNX Runtime >=1.20 shared library (see docs/inference.md)")?;
         if !library.is_file() {
             return Err(format!("runtime library does not exist: {}", library.display()).into());
         }
         ort::init_from(library.to_string_lossy())
             .with_telemetry(false)
             .commit()?;
-        let load = |name| -> ort::Result<Session> {
-            Session::builder()?
+        if device == InferenceDevice::Cuda && !CUDAExecutionProvider::default().is_available()? {
+            return Err("CUDA requested but this ONNX Runtime has no CUDA execution provider; use setup-gpu or explicitly select cpu".into());
+        }
+        let load = |name: &str| -> ort::Result<Session> {
+            let mut builder = Session::builder()?
                 .with_intra_threads(threads)?
                 .with_inter_threads(1)?
                 .with_config_entry("session.intra_op.allow_spinning", "0")?
-                .with_config_entry("session.inter_op.allow_spinning", "0")?
-                .commit_from_file(directory.join(name))
+                .with_config_entry("session.inter_op.allow_spinning", "0")?;
+            if device == InferenceDevice::Cuda {
+                builder = builder.with_execution_providers([CUDAExecutionProvider::default()
+                    .with_device_id(0)
+                    .with_tf32(false)
+                    .with_conv_algorithm_search(CUDAExecutionProviderCuDNNConvAlgoSearch::Heuristic)
+                    .with_conv_max_workspace(false)
+                    .with_memory_limit(2 * 1024 * 1024 * 1024)
+                    .build()
+                    .error_on_failure()])?;
+            }
+            if let Some(path) = std::env::var_os("CONTINUGO_ORT_PROFILE") {
+                builder = builder.with_profiling(PathBuf::from(path).join(name))?;
+            }
+            builder.commit_from_file(directory.join(name))
         };
         let encoder = load("encoder.onnx")?;
         let scorer = load("policy.onnx")?;
@@ -128,6 +172,7 @@ impl OnnxEvaluator {
             encoder,
             scorer,
             metadata,
+            device,
             actions: (0..COORDINATE_ACTIONS)
                 .map(|i| Action::from_index(i).unwrap())
                 .collect(),
@@ -144,9 +189,9 @@ impl OnnxEvaluator {
         let tick = Instant::now();
         let encoded = self
             .encoder
-            .run(ort::inputs!["coarse" => TensorRef::from_array_view(
-            ([1, COARSE_PLANES.len(), resolution, resolution], extractor.coarse.as_slice()))?])?;
-        let (_, value) = encoded["value"].try_extract_tensor::<f32>()?;
+            .run(ort::inputs!["coarse" => Tensor::from_array(
+            ([1, COARSE_PLANES.len(), resolution, resolution], extractor.coarse.as_slice()))?]?)?;
+        let (_, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
         if value.len() != 1 || !value[0].is_finite() || !(-1.0..=1.0).contains(&value[0]) {
             return Err("invalid encoder value".into());
         }
@@ -165,10 +210,10 @@ impl OnnxEvaluator {
         let tick = Instant::now();
         let encoded = self
             .encoder
-            .run(ort::inputs!["coarse" => TensorRef::from_array_view(
-            ([1, COARSE_PLANES.len(), resolution, resolution], extractor.coarse.as_slice()))?])?;
-        let (shape, spatial) = encoded["spatial"].try_extract_tensor::<f32>()?;
-        if shape.as_ref()
+            .run(ort::inputs!["coarse" => Tensor::from_array(
+            ([1, COARSE_PLANES.len(), resolution, resolution], extractor.coarse.as_slice()))?]?)?;
+        let (shape, spatial) = encoded["spatial"].try_extract_raw_tensor::<f32>()?;
+        if shape
             != [
                 1,
                 self.metadata.config.policy_hidden as i64,
@@ -178,8 +223,8 @@ impl OnnxEvaluator {
         {
             return Err("bad encoder spatial shape".into());
         }
-        let (_, pass) = encoded["pass_logit"].try_extract_tensor::<f32>()?;
-        let (_, value) = encoded["value"].try_extract_tensor::<f32>()?;
+        let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;
+        let (_, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
         if pass.len() != 1
             || value.len() != 1
             || !pass[0].is_finite()
@@ -201,14 +246,13 @@ impl OnnxEvaluator {
             let end = (start + chunk).min(COORDINATE_ACTIONS as usize);
             let ids: Vec<i64> = (start as i64..end as i64).collect();
             let output = self.scorer.run(ort::inputs![
-                "spatial" => &encoded["spatial"],
-                "exact" => TensorRef::from_array_view(([1, end-start, MOVE_FEATURES.len()],
+                "spatial" => Tensor::from_array(([1, self.metadata.config.policy_hidden, resolution, resolution], spatial))?,
+                "exact" => Tensor::from_array(([1, end-start, MOVE_FEATURES.len()],
                     &moves.exact[start*MOVE_FEATURES.len()..end*MOVE_FEATURES.len()]))?,
-                "actions" => TensorRef::from_array_view(([end-start], ids.as_slice()))?
-            ])?;
-            let (shape, scores) = output["logits"].try_extract_tensor::<f32>()?;
-            if shape.as_ref() != [1, (end - start) as i64] || scores.iter().any(|v| !v.is_finite())
-            {
+                "actions" => Tensor::from_array(([end-start], ids.as_slice()))?
+            ]?)?;
+            let (shape, scores) = output["logits"].try_extract_raw_tensor::<f32>()?;
+            if shape != [1, (end - start) as i64] || scores.iter().any(|v| !v.is_finite()) {
                 return Err("invalid scorer outputs".into());
             }
             logits.extend_from_slice(scores);
@@ -234,11 +278,9 @@ impl Evaluator for OnnxEvaluator {
         self.evaluate_inner(game)
             .map_err(|error| format!("ONNX evaluation: {error}"))
     }
-
     fn model_id(&self) -> &str {
         &self.metadata.checkpoint_sha256
     }
-
     fn value(&mut self, game: &Game) -> Result<f64, String> {
         self.value_inner(game)
             .map_err(|error| format!("ONNX value: {error}"))

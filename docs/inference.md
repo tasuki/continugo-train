@@ -1,10 +1,10 @@
 # ONNX export and native neural MCTS
 
-The trained network can now guide native Rust self-play. The tested backend is
-**ONNX Runtime 1.22.1 on CPU**, FP32, one synchronous query at a time. Training can
-still use CUDA; exporting a CUDA-trained checkpoint does not require GPU inference.
-GPU providers, batched search and browser integration are **not implemented/tested**
-here. This is a working integration, not a claim of competitive playing strength.
+The trained network guides native Rust self-play through one **CPU/CUDA ONNX
+interface**, using the same model and features. CUDA is the default for the
+`neural-selfplay` and `infer` tasks; CPU remains available for tests, debugging and
+machines without a GPU. Queries are currently synchronous and unbatched. Browser
+integration is still pending. This is not a claim of competitive playing strength.
 
 ## Run
 
@@ -12,27 +12,52 @@ here. This is a working integration, not a claim of competitive playing strength
 
 ```sh
 .venv/bin/python -m pip install -e '.[inference]'
+mise run setup-gpu
 mise run export -- --checkpoint runs/offline-training/best.pt --output runs/onnx-initial
 mise run neural-selfplay -- --model runs/onnx-initial --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --inference-threads 4 --output runs/neural-initial
 ```
 
 Use fresh export/game directories. `neural-selfplay` supplies `--engine neural`
-and locates the CPU runtime library from the Python wheel. The actual search and
-inference are **in-process Rust/native code**; Python only locates the library
-before launching Cargo. Baseline `mise run selfplay` needs no runtime library.
+and defaults to `--device cuda`. To use CPU, pass `--device cpu`; it needs no
+`setup-gpu` step. The actual search and inference are **in-process Rust/native
+code**. Python only selects the runtime and library paths before launching Cargo.
+Baseline `mise run selfplay` needs no inference runtime.
+
+### Both backends, without changing the training environment
+
+`setup-gpu` installs the official **ONNX Runtime GPU 1.20.1 CUDA 11.8 build** and
+**cuDNN 8.9.6** into `.venv/ort-gpu/`. It reuses CUDA 11 libraries from the existing
+PyTorch cu118 installation. It does **not** replace PyTorch, its cuDNN 9.1, or the
+CPU ONNX Python package (1.22.1). Installation currently targets Linux; other
+platforms can supply their own compatible native library.
+
+The Rust binding targets **API 1.20**, which also works with the newer CPU 1.22.1
+runtime. This older ABI is deliberate: official CUDA 11.8 GPU wheels stop at 1.20,
+while newer GPU wheels target newer CUDA versions. This configuration supports the
+local Pascal GTX 1080 and driver 550 without a driver or training-stack upgrade.
+See the [official CUDA compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
+
+An explicit CUDA request **fails** if the runtime lacks CUDA or provider setup
+fails; there is no automatic whole-session fallback to CPU. Shape/control
+operators may still run on CPU, but tests inspect runtime profiles to require
+convolutions, matrix multiplies and GridSample on CUDA. FP32 is used with TF32
+disabled, heuristic convolution selection, and a 2-GiB arena limit per CUDA session
+(not a limit on total process/device usage). CPU thread spinning stays disabled.
+MCTS, rule-derived feature extraction, normalization and sampling remain on CPU.
 
 For a standalone release binary, set `ORT_DYLIB_PATH` or pass `--ort-library`:
 
 ```sh
 export ORT_DYLIB_PATH="$(.venv/bin/python -m continugo_train.export --runtime-path)"
-cargo run --locked --release -- --engine neural --model runs/onnx-initial --sizes 9 --simulations 8
+cargo run --locked --release -- --engine neural --device cpu --model runs/onnx-initial --sizes 9 --simulations 8
 ```
 
-The dynamic Rust `ort` binding is pinned to the ONNX Runtime 1.22 API. Use a
-compatible shared library with its dependencies installed; merely pointing at an
-arbitrary `.so` is not supported. There is no silent switch to a baseline evaluator
-if model loading or inference fails. Thread spinning is disabled so idle runtime
-workers do not contend with Rust feature extraction.
+Both the standalone binaries and task launcher default to CUDA. Use
+`--device cpu` explicitly for CPU inference. For a custom GPU runtime, supply
+`--device cuda --ort-library PATH` and its dependency library paths. The
+`ORT_DYLIB_PATH` environment variable is also respected. Merely pointing at an
+arbitrary `.so` is not supported. No backend silently switches to an unguided
+baseline if model loading or inference fails.
 
 ## Model bundle and verification
 
@@ -62,14 +87,19 @@ One-position native diagnostics (stdout is a JSON numeric report, not a game
 record; no file is written):
 
 ```sh
-cargo run --locked --release --bin infer -- --model runs/onnx-initial --sgf FILE --ply 1
+mise run infer -- --model runs/onnx-initial --sgf FILE --ply 1
 # Cheap leaf-value path; no million-coordinate extraction/scoring:
-cargo run --locked --release --bin infer -- --model runs/onnx-initial --sgf FILE --ply 1 --value-only
+mise run infer -- --model runs/onnx-initial --sgf FILE --ply 1 --value-only
+# CPU backend, or repeated warm measurements (timers exclude warmup):
+mise run infer -- --device cpu --model runs/onnx-initial --sgf FILE --ply 1 --warmup 1 --iterations 3
 ```
 
-Set the runtime environment as above. Diagnostic `--actions` only selects which
+The launcher sets the runtime environment. Diagnostic `--actions` only selects which
 raw logits are printed; the normal diagnostic still computes the full policy.
-Illegal scores print as null rather than invalid JSON infinity.
+Illegal scores print as null rather than invalid JSON infinity. To inspect actual
+operator placement, set `CONTINUGO_ORT_PROFILE` to an existing directory before a
+native diagnostic. ONNX Runtime writes encoder/scorer execution profiles there;
+these are optional backend diagnostics, not game records or SGF sidecars.
 
 ## Search semantics
 
@@ -128,9 +158,10 @@ runtime. Native peak memory is bounded by transient full-domain features/logits,
 not a million-action distribution retained for every tree node. See
 [benchmarks.md](benchmarks.md) for the measured three-game run and memory caveats.
 
-Full-domain extraction and CPU scoring are still expensive. GPU inference,
-parallel/batched queries and skipping unnecessary coordinate work are follow-up
-throughput work; do not infer production self-play speed from this milestone.
+Full-domain extraction is still expensive. Parallel/batched queries, retaining
+encoder context on GPU (instead of host round trips), and skipping unnecessary
+coordinate work are follow-up throughput work. GPU inference alone cannot remove
+the CPU extraction cost; do not infer production self-play speed from this milestone.
 The iterative self-play/training loop is also still pending: fixed-corpus offline
 `--resume` intentionally rejects new games, so a new replay corpus needs a separate
 warm-start training contract, not an override of that safety check.

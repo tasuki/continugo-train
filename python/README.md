@@ -51,9 +51,10 @@ offline training with game-level holdout, persistent Rust feature workers,
 resolution buckets, and atomic model/optimizer checkpoints. See
 [training.md](../docs/training.md) for generation, training, resume and model loading.
 `mise run export` verifies dynamic ONNX graphs against PyTorch;
-`mise run neural-selfplay` uses them inside native CPU Rust MCTS. See
+`mise run neural-selfplay` uses them inside native Rust MCTS with CPU or CUDA inference. See
 [inference.md](../docs/inference.md) for setup, sampled-action priors and limitations.
-GPU/batched inference and the iterative training loop remain future work.
+CUDA inference is the default after `mise run setup-gpu`; `--device cpu` remains
+available. Batched inference and the iterative training loop remain future work.
 
 The trainer's checkpoints store `config`, weights under `model`, optimizer/RNG
 state, feature definitions and the immutable corpus/split manifest. Resume rejects

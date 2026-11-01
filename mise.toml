@@ -49,9 +49,17 @@ run = ".venv/bin/python -m continugo_train.train"
 description = "Export and verify a checkpoint as portable ONNX graphs"
 run = ".venv/bin/python -m continugo_train.export"
 
+[tasks.setup-gpu]
+description = "Install isolated Pascal-compatible ONNX CUDA 11.8 inference dependencies"
+run = ".venv/bin/python -m continugo_train.runtime setup"
+
 [tasks.neural-selfplay]
-description = "Native CPU ONNX-guided MCTS (runtime from the Python wheel by default)"
-run = 'ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$(.venv/bin/python -m continugo_train.export --runtime-path)}" cargo run --locked --release -- --engine neural'
+description = "Native ONNX-guided MCTS (CUDA by default; --device cpu for CPU)"
+run = ".venv/bin/python -m continugo_train.runtime selfplay"
+
+[tasks.infer]
+description = "Native ONNX diagnostics (CUDA by default; --device cpu for CPU)"
+run = ".venv/bin/python -m continugo_train.runtime infer"
 
 [tasks.model-bench]
 description = "Benchmark synthetic coarse/dense inference and training (FP32)"

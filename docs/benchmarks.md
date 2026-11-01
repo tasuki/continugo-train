@@ -721,7 +721,7 @@ coordinate work are follow-ups before large runs.
 
 ```sh
 mise run export -- --checkpoint runs/offline-training/best.pt --output runs/onnx-initial
-mise run neural-selfplay -- --model runs/onnx-initial --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --inference-threads 4 --output runs/neural-initial
+mise run neural-selfplay -- --device cpu --model runs/onnx-initial --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --inference-threads 4 --output runs/neural-initial
 ```
 
 Use fresh directories. Artifacts: `runs/onnx-initial/encoder.onnx`,
@@ -729,4 +729,81 @@ Use fresh directories. Artifacts: `runs/onnx-initial/encoder.onnx`,
 log under `runs/neural-initial/`. The source checkpoint SHA-256 is
 `d4d466ccee0ecfa0c2bf0862a87229e29440eaf1eceb07799c995ac095afcad0`.
 The iterative training loop, warm-start on changing replay data, GPU inference,
-batching and playing-strength evaluation are still pending.
+batching and playing-strength evaluation are still pending at this measurement.
+GPU inference was added next, as measured below.
+
+## CUDA inference on GTX 1080 — 2026-11-01
+
+Both CPU and CUDA now use the same Rust evaluator interface and the same exported
+model. CUDA is the default; `--device cpu` selects CPU explicitly. CUDA requests
+fail if provider setup fails, rather than silently running the network on CPU.
+
+The Pascal-compatible GPU runtime is **ONNX Runtime 1.20.1 / CUDA 11.8 / cuDNN
+8.9.6**, installed in `.venv/ort-gpu`. The Rust binding targets API 1.20, also
+compatible with the existing CPU 1.22.1 runtime. PyTorch remains **2.7.1+cu118 /
+cuDNN 9.1**, unchanged. No driver upgrade or training-stack replacement was needed.
+Native CUDA uses FP32, TF32 disabled, heuristic convolution selection and bounded
+workspace. GPU kernel profiling tests require Conv/Gemm/MatMul/GridSample on CUDA;
+small shape/control operators may remain on CPU. All 31 Python tests (including
+the GPU tests), Rust suites and checks pass on the local machine.
+
+### Fixed-position CPU/GPU comparison
+
+Same checkpoint, same nonempty source positions, **same runtime 1.20.1**, four CPU
+threads, one warmup followed by the mean of three full-domain queries per device.
+Each query computes all million placement logits plus pass and applies the
+legality mask. The diagnostic returns raw logits, not a visited-action softmax;
+MCTS normalization/sampling is outside these timings. Times below are milliseconds per query. GPU timers include transfers and wait for
+host outputs; model loading, replay and warmup are excluded.
+
+| Size / ply | CPU features | CUDA-run features (CPU) | CPU encoder | CUDA encoder | CPU dense scorer | CUDA dense scorer |
+|---|---:|---:|---:|---:|---:|---:|
+| 9 / 6 | 237.295 | 236.175 | 1.115 | 0.818 | 166.701 | 21.587 |
+| 13 / 9 | 333.999 | 351.011 | 1.810 | 0.864 | 166.444 | 21.875 |
+| 19 / 14 | 426.045 | 488.784 | 3.199 | 0.938 | 167.465 | 22.363 |
+
+The dense stage is about **7.5–7.7x faster**, but extraction is unchanged CPU work
+and has timing noise. Thus the whole query does not improve by that factor.
+Maximum selected real-position logit difference was **4.77e-7**. Tests additionally
+check values, value-only queries, legality and chunk boundaries at all three sizes.
+
+### Neural self-play
+
+Same search settings and seeds as the CPU run above: eight simulations, widening
+2*sqrt(visits), independent exploration 0.25, 64-move cap, one game/query at a time.
+
+| Size / seed | CPU moves | CUDA moves | CPU generation | CUDA generation | Identical decoded plays? |
+|---|---:|---:|---:|---:|---|
+| 9 / 200 | 13 | 13 | 11.912 s | 7.909 s | yes |
+| 13 / 201 | 18 | 14 | 21.231 s | 10.481 s | **no** |
+| 19 / 202 | 28 | 28 | 46.469 s | 29.011 s | yes |
+
+All three CUDA games completed naturally and passed authoritative replay,
+policy-target and scored-RE validation: **55 eligible positions in 47.402 s**
+(**1.16 moves/s**). Size 13 changed trajectory, so combined totals are **not a
+controlled whole-game speedup claim**. Floating-point backend differences can
+change search choices even though network outputs agree closely. These remain
+individual diagnostics and weak-network smoke tests, not strength results.
+
+CUDA-run totals: **125 full-policy queries / 432 value-only queries**. Rust feature
+extraction took **42.302 s (89.2%)**, encoder **0.546 s**, dense scorer **2.748 s**.
+Feature extraction is now overwhelmingly dominant. This is why GPU inference is
+useful but not sufficient: next throughput work should reduce/parallelize feature
+work and batch queries, not merely enlarge the network.
+
+Once-per-second `nvidia-smi` samples of the native process ranged from **146 to
+258 MiB**, including its CUDA context/allocations but excluding desktop processes.
+258 MiB is the **largest sampled value**, not a guaranteed instantaneous peak.
+The configured CUDA arena limit is per session and does not bound total GPU use.
+
+```sh
+mise run setup-gpu
+mise run infer -- --model runs/onnx-initial --sgf FILE --ply 1 --warmup 1 --iterations 3
+mise run infer -- --device cpu --model runs/onnx-initial --sgf FILE --ply 1 --warmup 1 --iterations 3
+mise run neural-selfplay -- --model runs/onnx-initial --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --inference-threads 4 --output runs/neural-cuda
+```
+
+Fresh output directories are required. Raw measurements are in
+`runs/cuda-inference/timing.txt`, `runs/cuda-inference/gpu-memory.txt`, and
+`runs/neural-cuda/run.log`; neural games are self-contained SGFs in
+`runs/neural-cuda/`. Batched inference and the iterative training loop remain next.

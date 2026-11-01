@@ -1,7 +1,7 @@
 use clap::Parser;
 use continugo_rules::Board;
 use continugo_train::{
-    inference::{Evaluator, OnnxEvaluator},
+    inference::{Evaluator, InferenceDevice, OnnxEvaluator},
     search::SearchConfig,
     selfplay::{Engine, GameRecord, SelfplayConfig, generate, generate_neural, generate_profiled},
 };
@@ -45,11 +45,13 @@ struct Args {
     /// ONNX model directory containing encoder.onnx and policy.onnx (neural engine).
     #[arg(long)]
     model: Option<PathBuf>,
-    /// Native ONNX Runtime 1.22 shared library; otherwise use ORT_DYLIB_PATH.
+    /// Native ONNX Runtime >=1.20 shared library; otherwise use ORT_DYLIB_PATH.
     #[arg(long)]
     ort_library: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     inference_threads: usize,
+    #[arg(long, value_enum, default_value = "cuda")]
+    device: InferenceDevice,
     /// Time random-engine stages and moves; embed diagnostics in SGF comments.
     #[arg(long)]
     profile: bool,
@@ -81,6 +83,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             path,
             args.ort_library.as_deref(),
             args.inference_threads,
+            args.device,
         )?),
         (Engine::Neural, None) => return Err("--engine neural requires --model".into()),
         (_, Some(_)) => return Err("--model requires --engine neural".into()),
@@ -88,7 +91,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     if let Some(evaluator) = &evaluator {
         eprintln!(
-            "ONNX CPU model={} threads={}",
+            "ONNX device={} model={} threads={}",
+            evaluator.device.name(),
             evaluator.model_id(),
             args.inference_threads
         );
