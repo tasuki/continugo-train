@@ -6,16 +6,19 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use clap::Parser;
 use continugo_rules::Board;
 use continugo_train::{
-    inference::{Evaluator, InferenceDevice, OnnxEvaluator},
+    inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
     search::SearchConfig,
-    selfplay::{Engine, GameRecord, SelfplayConfig, generate, generate_neural, generate_profiled},
+    selfplay::{
+        Engine, GameRecord, SelfplayConfig, generate, generate_neural, generate_profiled,
+        parallel::{ParallelConfig, generate_parallel},
+    },
 };
 use std::{
     error::Error,
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[derive(Parser)]
@@ -55,6 +58,15 @@ struct Args {
     ort_library: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     inference_threads: usize,
+    /// Active independent neural games, sharing one model and feature pool (1..=64).
+    #[arg(long, default_value_t = 1)]
+    concurrent_games: usize,
+    /// Maximum inference batch, bucketed by resolution (1..=32).
+    #[arg(long, default_value_t = 8)]
+    inference_batch_size: usize,
+    /// Maximum collection delay; partial batches always run (0..=1000 ms).
+    #[arg(long, default_value_t = 2)]
+    inference_batch_wait_ms: u64,
     /// Bounded CPU pool for exact coordinate features (1 = serial).
     #[arg(long, default_value_t = 4)]
     feature_threads: usize,
@@ -75,6 +87,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     if args.profile && !matches!(args.engine, Engine::Random) {
         return Err("--profile currently requires --engine random".into());
+    }
+    let parallel = ParallelConfig {
+        games: args.games,
+        seed: args.seed,
+        concurrent_games: args.concurrent_games,
+        batching: BatchingConfig {
+            max_batch: args.inference_batch_size,
+            max_wait: Duration::from_millis(args.inference_batch_wait_ms),
+        },
+    };
+    parallel.validate()?;
+    if !matches!(args.engine, Engine::Neural)
+        && (args.concurrent_games != 1
+            || args.inference_batch_size != 8
+            || args.inference_batch_wait_ms != 2)
+    {
+        return Err("concurrent games/inference batching require --engine neural".into());
     }
     let config = SelfplayConfig {
         engine: args.engine,
@@ -103,12 +132,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(evaluator) = &mut evaluator {
         evaluator.configure_features(args.feature_threads, args.cache_positions)?;
         eprintln!(
-            "ONNX device={} model={} threads={} feature_threads={} cache_positions={}",
+            "ONNX device={} model={} threads={} feature_threads={} cache_positions={} concurrent_games={} batch_size={} batch_wait_ms={}",
             evaluator.device.name(),
             evaluator.model_id(),
             args.inference_threads,
             args.feature_threads,
-            args.cache_positions
+            args.cache_positions,
+            args.concurrent_games,
+            args.inference_batch_size,
+            args.inference_batch_wait_ms
         );
     }
     let boards: Vec<_> = args
@@ -131,44 +163,61 @@ fn main() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let mut total_moves = 0;
     let mut completed = 0;
-    for index in 0..args.games {
-        let board = boards[index as usize % boards.len()];
-        let seed = args.seed.wrapping_add(u64::from(index));
-        let game_started = Instant::now();
-        let record = if args.profile {
-            generate_profiled(board, &config, seed)?
-        } else if let Some(evaluator) = &mut evaluator {
-            generate_neural(board, &config, seed, evaluator)?
-        } else {
-            generate(board, &config, seed)?
-        };
-        let generation_seconds = game_started.elapsed().as_secs_f64();
+    let mut emit = |index: u32,
+                    record: GameRecord,
+                    generation_seconds: f64|
+     -> Result<(), String> {
         total_moves += record.metadata.policies.len();
         completed += usize::from(record.metadata.result.is_some());
         let output_started = Instant::now();
         if preview {
-            writeln!(stdout, "{}", record.sgf)?;
-            stdout.flush()?;
+            writeln!(stdout, "{}", record.sgf).map_err(|e| e.to_string())?;
+            stdout.flush().map_err(|e| e.to_string())?;
         } else {
-            save_record(&args.output, index + 1, &record)?;
+            save_record(&args.output, index + 1, &record).map_err(|e| e.to_string())?;
         }
         let output_seconds = output_started.elapsed().as_secs_f64();
         eprintln!(
             "game {}/{}: size={}, seed={}, moves={}, finished={}, {:.3}s (generation={:.3}s, output={:.6}s)",
             index + 1,
             args.games,
-            board.size(),
-            seed,
+            record.metadata.board_size,
+            record.metadata.seed,
             record.metadata.policies.len(),
             record.metadata.result.is_some(),
-            game_started.elapsed().as_secs_f64(),
+            generation_seconds + output_seconds,
             generation_seconds,
             output_seconds,
         );
         if let Some(profile) = &record.metadata.profile {
             eprintln!("{}", profile.summary());
         }
-    }
+        Ok(())
+    };
+    let parallel_stats = if args.concurrent_games > 1 {
+        Some(generate_parallel(
+            &boards,
+            &config,
+            evaluator.take().unwrap(),
+            parallel,
+            &mut emit,
+        )?)
+    } else {
+        for index in 0..args.games {
+            let board = boards[index as usize % boards.len()];
+            let seed = args.seed.wrapping_add(u64::from(index));
+            let game_started = Instant::now();
+            let record = if args.profile {
+                generate_profiled(board, &config, seed)?
+            } else if let Some(evaluator) = &mut evaluator {
+                generate_neural(board, &config, seed, evaluator)?
+            } else {
+                generate(board, &config, seed)?
+            };
+            emit(index, record, game_started.elapsed().as_secs_f64())?;
+        }
+        None
+    };
     let elapsed = started.elapsed().as_secs_f64();
     eprintln!(
         "{} games ({} completed), {} moves in {:.3}s ({:.2} moves/s)",
@@ -178,7 +227,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         elapsed,
         total_moves as f64 / elapsed
     );
-    if let Some(evaluator) = &evaluator {
+    if let Some(stats) = &parallel_stats {
+        eprintln!("native inference: {stats:?}");
+    } else if let Some(evaluator) = &evaluator {
         eprintln!("native inference: {:?}", evaluator.stats);
     }
     Ok(())

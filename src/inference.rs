@@ -2,12 +2,15 @@
 //! CUDA registration is mandatory when requested; no silent CPU fallback.
 //! Full policy is streamed in chunks and deferred at value-only leaves.
 
+mod batch;
+pub mod batching;
 mod cache;
-use cache::{Context, ContextCache};
+pub use batch::InferenceOutput;
+use cache::ContextCache;
 
 use crate::{
     action::Action,
-    features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION},
+    features::{COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION},
 };
 use continugo_rules::{COORDINATE_ACTIONS, Game};
 use ort::{
@@ -15,14 +18,9 @@ use ort::{
         CUDAExecutionProvider, ExecutionProvider, cuda::CUDAExecutionProviderCuDNNConvAlgoSearch,
     },
     session::Session,
-    value::Tensor,
 };
 use serde::Deserialize;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Instant,
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum InferenceDevice {
@@ -38,6 +36,7 @@ impl InferenceDevice {
     }
 }
 
+#[derive(Debug)]
 pub struct Evaluation {
     pub value: f64,
     /// Raw logits in shared action-ID order, including pass at 1,000,000.
@@ -82,6 +81,15 @@ pub struct InferenceStats {
     pub encoder_seconds: f64,
     pub scorer_seconds: f64,
     pub encoder_positions: u64,
+    pub encoder_batches: u64,
+    pub encoder_max_batch: usize,
+    pub scorer_batches: u64,
+    pub scorer_positions: u64,
+    pub scorer_max_batch: usize,
+    /// Worker queue/collection delay and end-to-end request latency, summed.
+    pub queue_seconds: f64,
+    pub request_seconds: f64,
+    pub requests: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub cache_evictions: u64,
@@ -224,133 +232,22 @@ impl OnnxEvaluator {
             stats: InferenceStats::default(),
         })
     }
-
-    fn context(&mut self, game: &Game) -> Result<Arc<Context>, Box<dyn std::error::Error>> {
-        // Reject terminals even if a cache lookup would otherwise be possible.
-        if game.is_finished() {
-            return Err("cannot evaluate a finished game".into());
-        }
-        if let Some(context) = self.cache.get(game) {
-            self.stats.cache_hits += 1;
-            self.stats.cache_entries = self.cache.len();
-            self.stats.cache_bytes = self.cache.bytes;
-            return Ok(context);
-        }
-        self.stats.cache_misses += 1;
-        let tick = Instant::now();
-        let extractor =
-            FeatureExtractor::new(game, self.metadata.feature_spec.samples_per_diameter)?;
-        let resolution = extractor.resolution;
-        let seconds = tick.elapsed().as_secs_f64();
-        self.stats.feature_seconds += seconds;
-        self.stats.coarse_seconds += seconds;
-        let tick = Instant::now();
-        let encoded = self
-            .encoder
-            .run(ort::inputs!["coarse" => Tensor::from_array(
-            ([1, COARSE_PLANES.len(), resolution, resolution], extractor.coarse.as_slice()))?]?)?;
-        let (shape, spatial) = encoded["spatial"].try_extract_raw_tensor::<f32>()?;
-        if shape
-            != [
-                1,
-                self.metadata.config.policy_hidden as i64,
-                resolution as i64,
-                resolution as i64,
-            ]
-        {
-            return Err("bad encoder spatial shape".into());
-        }
-        let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;
-        let (_, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
-        if pass.len() != 1
-            || value.len() != 1
-            || !pass[0].is_finite()
-            || !value[0].is_finite()
-            || !(-1.0..=1.0).contains(&value[0])
-            || spatial.iter().any(|v| !v.is_finite())
-        {
-            return Err("invalid encoder outputs".into());
-        }
-        let context = Arc::new(Context {
-            resolution,
-            spatial: spatial.to_vec(),
-            pass: pass[0],
-            value: f64::from(value[0]),
-        });
-        self.stats.encoder_seconds += tick.elapsed().as_secs_f64();
-        self.stats.encoder_positions += 1;
-        self.stats.cache_evictions += self.cache.insert(game, Arc::clone(&context)) as u64;
-        self.stats.cache_entries = self.cache.len();
-        self.stats.cache_bytes = self.cache.bytes;
-        Ok(context)
-    }
-
-    fn value_inner(&mut self, game: &Game) -> Result<f64, Box<dyn std::error::Error>> {
-        let context = self.context(game)?;
-        self.stats.value_calls += 1;
-        Ok(context.value)
-    }
-
-    fn evaluate_inner(&mut self, game: &Game) -> Result<Evaluation, Box<dyn std::error::Error>> {
-        let context = self.context(game)?;
-        let resolution = context.resolution;
-        let tick = Instant::now();
-        let extractor = FeatureExtractor::for_moves(game)?;
-        let moves = match &self.feature_pool {
-            Some(pool) => extractor.moves_parallel(&self.actions, pool)?,
-            None => extractor.moves(&self.actions)?,
-        };
-        let seconds = tick.elapsed().as_secs_f64();
-        self.stats.feature_seconds += seconds;
-        self.stats.move_seconds += seconds;
-        let tick = Instant::now();
-        let mut logits = Vec::with_capacity(COORDINATE_ACTIONS as usize + 1);
-        let chunk = self
-            .metadata
-            .config
-            .chunk_size
-            .min(COORDINATE_ACTIONS as usize);
-        for start in (0..COORDINATE_ACTIONS as usize).step_by(chunk) {
-            let end = (start + chunk).min(COORDINATE_ACTIONS as usize);
-            let ids: Vec<i64> = (start as i64..end as i64).collect();
-            let output = self.scorer.run(ort::inputs![
-                "spatial" => Tensor::from_array(([1, self.metadata.config.policy_hidden, resolution, resolution], context.spatial.as_slice()))?,
-                "exact" => Tensor::from_array(([1, end-start, MOVE_FEATURES.len()],
-                    &moves.exact[start*MOVE_FEATURES.len()..end*MOVE_FEATURES.len()]))?,
-                "actions" => Tensor::from_array(([end-start], ids.as_slice()))?
-            ]?)?;
-            let (shape, scores) = output["logits"].try_extract_raw_tensor::<f32>()?;
-            if shape != [1, (end - start) as i64] || scores.iter().any(|v| !v.is_finite()) {
-                return Err("invalid scorer outputs".into());
-            }
-            logits.extend_from_slice(scores);
-        }
-        for (logit, legal) in logits.iter_mut().zip(&moves.legal) {
-            if *legal == 0 {
-                *logit = f32::NEG_INFINITY;
-            }
-        }
-        logits.push(context.pass);
-        self.stats.scorer_seconds += tick.elapsed().as_secs_f64();
-        self.stats.calls += 1;
-        Ok(Evaluation {
-            value: context.value,
-            logits,
-            legal: moves.legal,
-        })
-    }
 }
 
 impl Evaluator for OnnxEvaluator {
     fn evaluate(&mut self, game: &Game) -> Result<Evaluation, String> {
-        self.evaluate_inner(game)
-            .map_err(|error| format!("ONNX evaluation: {error}"))
+        match self.evaluate_batch(&[(game, true)])?.pop().unwrap() {
+            InferenceOutput::Policy(evaluation) => Ok(evaluation),
+            InferenceOutput::Value(_) => unreachable!(),
+        }
     }
     fn model_id(&self) -> &str {
         &self.metadata.checkpoint_sha256
     }
     fn value(&mut self, game: &Game) -> Result<f64, String> {
-        self.value_inner(game)
-            .map_err(|error| format!("ONNX value: {error}"))
+        match self.evaluate_batch(&[(game, false)])?.pop().unwrap() {
+            InferenceOutput::Value(value) => Ok(value),
+            InferenceOutput::Policy(_) => unreachable!(),
+        }
     }
 }

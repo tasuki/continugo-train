@@ -1,6 +1,8 @@
 import hashlib
 import importlib.util
 import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -197,6 +199,130 @@ class NativeInferenceTests(unittest.TestCase):
 
     def test_native_search_generates_replayable_sparse_visit_targets(self):
         self.check_search()
+
+    def check_batches(self, device="cpu", library=None, environment=None):
+        environment = dict(environment or os.environ)
+        environment.update(
+            CONTINUGO_TEST_MODEL=str(self.bundle),
+            CONTINUGO_TEST_DEVICE=device,
+            ORT_DYLIB_PATH=str(library or self.library),
+        )
+        result = subprocess.run(
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "--release",
+                "--test",
+                "batching",
+                "--",
+                "--ignored",
+                "--nocapture",
+            ],
+            check=False,
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_native_batched_outputs_and_worker_lifecycle(self):
+        self.check_batches()
+
+    @unittest.skipUnless(GPU_READY, "requires setup-gpu and an NVIDIA GPU")
+    def test_cuda_batched_outputs_and_worker_lifecycle(self):
+        library, environment = inference_environment("cuda", gpu_library())
+        self.check_batches("cuda", library, environment)
+
+    def test_concurrent_games_keep_stable_seeds_and_replayable_records(self):
+        def run(name, concurrency, batch):
+            output = self.root / name
+            result = subprocess.run(
+                [
+                    str(ROOT / "target/release/continugo-train"),
+                    "--engine",
+                    "neural",
+                    "--model",
+                    str(self.bundle),
+                    "--ort-library",
+                    str(self.library),
+                    "--device",
+                    "cpu",
+                    "--games",
+                    "7",
+                    "--sizes",
+                    "9,13,19",
+                    "--seed",
+                    "300",
+                    "--simulations",
+                    "4",
+                    "--max-moves",
+                    "3",
+                    "--concurrent-games",
+                    str(concurrency),
+                    "--inference-batch-size",
+                    str(batch),
+                    "--inference-batch-wait-ms",
+                    "20",
+                    "--output",
+                    str(output),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            files = {path.name: path.read_text() for path in output.glob("*.sgf")}
+            self.assertEqual(len(files), 7)
+            self.assertEqual(len(list(output.iterdir())), 7)
+            return output, files, result.stderr
+
+        _, sequential, _ = run("sequential", 1, 1)
+        _, concurrent, _ = run("concurrent-single", 6, 1)
+        self.assertEqual(sequential, concurrent)
+        output, batched, stats = run("concurrent-batched", 6, 6)
+        self.assertEqual(sequential.keys(), batched.keys())
+        self.assertGreater(int(re.search(r"scorer_max_batch: (\d+)", stats)[1]), 1)
+        for name in batched:
+            sample = load_position(output / name, 0)
+            self.assertEqual(sample.visits.sum().item(), 4)
+        # Output failure cancels new games but drains in-flight queries and joins.
+        failure = subprocess.run(
+            [
+                str(ROOT / "target/release/continugo-train"),
+                "--engine",
+                "neural",
+                "--model",
+                str(self.bundle),
+                "--ort-library",
+                str(self.library),
+                "--device",
+                "cpu",
+                "--games",
+                "7",
+                "--sizes",
+                "9,13,19",
+                "--seed",
+                "300",
+                "--simulations",
+                "1",
+                "--max-moves",
+                "1",
+                "--concurrent-games",
+                "4",
+                "--output",
+                str(output),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertNotEqual(failure.returncode, 0)
+        self.assertIn("exists", failure.stderr.lower())
 
     def test_cuda_request_fails_instead_of_falling_back_on_cpu_runtime(self):
         source = self.root / "no-cuda.sgf"

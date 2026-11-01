@@ -876,3 +876,85 @@ Use fresh output directories. Raw results: `runs/parallel-features/timing-mimall
 `runs/neural-cached-parallel-ort4/run.log`, and the corresponding SGFs. The default
 ONNX-thread run is under `runs/neural-cached-parallel/`. Earlier benchmark sections
 are historical pipeline snapshots; allocator/cache defaults now differ.
+
+## Bounded cross-game inference batching — 2026-11-01
+
+Neural self-play now supports concurrent independent games through one bounded
+model-owning worker. Both ONNX graphs batch positions of matching resolution;
+value-only queries remain encoder-only. Exact move rows are streamed in chunks
+(at most 262,144 rows across a batch), instead of allocating one full-domain move
+matrix per game. The shared four-thread feature pool handles positions/chunks;
+CPU feature extraction and GPU execution still alternate, without pipelining.
+See [batching.md](batching.md) for controls, limits and failure handling.
+
+Same i5-8400 / GTX 1080, CUDA ONNX Runtime 1.20.1, unchanged epoch-2 model and
+features. FP32, one ONNX CPU helper thread, four feature workers, 64 cached contexts,
+and mimalloc. Eight simulations per move, seeds 200..205, unchanged search settings.
+Batch collection waits at most 2 ms; batch-one controls do not wait. All cases use
+six games, with either one active game or six. Timings are the CLI's whole-run
+wall timer, including thread startup and SGF output, excluding model/runtime load
+and compilation. Per-game concurrent latencies are not summed.
+
+| Corpus / move cap | Active games | Batch limit | Moves | Whole run | Moves/s | Native peak RSS MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| Sizes 9/13/19 / 64 | 1 | 1 | 165 | 57.333 s | 2.88 | 536.0 |
+| Sizes 9/13/19 / 64 | 6 | 1 | 165 | 54.121 s | 3.05 | 644.7 |
+| Sizes 9/13/19 / 64 | 6 | 6 | 165 | 52.678 s | 3.13 | 684.7 |
+| Size 9 / 16 | 1 | 1 | 63 | 13.399 s | 4.70 | 518.7 |
+| Size 9 / 16 | 6 | 1 | 63 | 11.973 s | 5.26 | 587.2 |
+| Size 9 / 16 | 6 | 6 | 63 | 10.753 s | 5.86 | 716.8 |
+
+Within each corpus, **all six SGFs are byte-for-byte identical across all three
+configurations**, including visits and RE. Authoritative inspection validated all
+36 files. Five games per corpus finished naturally. The mixed-size seed-205 game
+hit 64 moves; the size-9 seed-201 game hit 16. Those truncated games have policies
+but **no outcome labels**; the completed games supply 101 and 47 eligible positions
+respectively. These remain weak-network pipeline/throughput diagnostics, not
+playing-strength results.
+
+These individual measurements show about **1.09x mixed-size / 1.25x size-9**
+throughput versus sequential execution. Concurrent batch one isolates some benefit
+from overlapping independent tree/policy-sampling work with the inference worker.
+The additional batching benefit over that concurrent control was only about
+**1.03x / 1.11x**, not a multiple-fold gain. Runs were sequential, not randomized
+multi-seed repetitions; small differences may be timing noise. Concurrency remains
+opt-in, rather than assuming one configuration is universally faster.
+
+The mixed-size batched run reached actual encoder/scorer batch sizes of only **2**:
+there were two game slots per resolution and many queries were value-only. It
+encoded 1,288 positions in 1,016 encoder calls, versus 1,288 calls for concurrent
+batch one. Full policies: 347; value requests: 1,285. Feature time was **43.122 s**
+(coarse 10.028 s, exact rows 33.095 s), about **82%** of runtime; encoder 1.103 s,
+scorer 6.294 s. Mean worker request latency was **97.4 ms**, including queueing,
+collection and execution. It is not the 2-ms collection bound.
+
+The size-9 batched run reached encoder/scorer batches of **6**. It encoded 491
+positions in 182 encoder calls; concurrent batch one used 491 calls. Full policies:
+123; value requests: 490. Coarse extraction fell from **2.845 s** in the concurrent
+control to **1.450 s** with batching, while exact rows stayed essentially unchanged
+(**6.402 / 6.519 s**). The shared pool can parallelize coarse extraction across
+positions; that, not just GPU batching, contributes to the measured gain. Batched
+encoder/scorer time was **0.299 / 2.050 s**. Mean worker request latency: **81.1 ms**.
+Features still account for about 74% of total runtime.
+
+RSS is `/usr/bin/time -v` on the **native executable directly**, not the Python/Cargo
+launcher. It includes runtime/model initialization and host allocations, but not
+GPU VRAM. No instantaneous CUDA peak is claimed here. More game state, batched
+contexts and allocator/runtime buffers raise RSS even though exact rows are now
+streamed. The 32-MiB cache payload ceiling is not a total process-memory limit.
+
+```sh
+mise run neural-selfplay -- --model runs/onnx-initial --games 6 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --concurrent-games 6 --inference-batch-size 6 --inference-batch-wait-ms 2 --output runs/batch-measure-001
+# Concurrent control: --inference-batch-size 1
+# Sequential control: --concurrent-games 1 --inference-batch-size 1
+# Single-resolution experiment: --sizes 9 --max-moves 16
+```
+
+Use fresh output directories for each case. Final measurements and SGFs are under
+`runs/batched-inference-final/{mixed,same}-{serial,concurrent-single,batch6}/`, with
+native resource/timing reports in each `run.log`. CPU/CUDA integration tests compare
+all logits, values and legality rows against single-position execution on nonempty
+sizes 9/13/19, including a six-policy batch that exercises the aggregate row cap.
+They also cover duplicate contexts, disabled caching, encoder-only batches,
+partial batches, terminal errors, worker disconnect/shutdown, stable seeds and
+output-error cleanup. All 35 Python tests, shared/local Rust tests and checks pass.

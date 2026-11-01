@@ -4,6 +4,8 @@
 //! are omitted. Truncated games have no RE. Generation/export timings finish
 //! after annotation serialization, so those remain stderr-only.
 
+pub mod parallel;
+
 use crate::{
     action::random_move,
     inference::Evaluator,

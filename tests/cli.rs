@@ -273,6 +273,12 @@ fn invalid_settings_fail_and_existing_sgf_is_not_overwritten() {
         vec!["--simulations", "0"],
         vec!["--proposal-attempts", "0"],
         vec!["--profile"],
+        vec!["--concurrent-games", "0"],
+        vec!["--concurrent-games", "65"],
+        vec!["--concurrent-games", "2"], // neural only
+        vec!["--inference-batch-size", "0"],
+        vec!["--inference-batch-size", "33"],
+        vec!["--inference-batch-wait-ms", "1001"],
     ] {
         let output = cli().args(args).output().unwrap();
         assert!(!output.status.success());

@@ -3,8 +3,9 @@
 The trained network guides native Rust self-play through one **CPU/CUDA ONNX
 interface**, using the same model and features. CUDA is the default for the
 `neural-selfplay` and `infer` tasks; CPU remains available for tests, debugging and
-machines without a GPU. Queries are currently synchronous and unbatched. Browser
-integration is still pending. This is not a claim of competitive playing strength.
+machines without a GPU. Queries remain synchronous within each tree; optional
+[cross-game batching](batching.md) shares one model across concurrent games.
+Browser integration is still pending. This is not a claim of competitive playing strength.
 
 ## Run
 
@@ -199,9 +200,10 @@ not a million-action distribution retained for every tree node. See
 [benchmarks.md](benchmarks.md) for the measured three-game run and memory caveats.
 
 Full-domain extraction is still expensive despite the CPU pool and host context
-cache. Batched queries across independent games, retaining encoder context on GPU
-(instead of host round trips), and skipping unnecessary
-coordinate work are follow-up throughput work. GPU inference alone cannot remove
+cache. Cross-game inference batching and bounded concurrent games are now available;
+see [batching.md](batching.md). Retaining encoder context on GPU (instead of host
+round trips), overlapping CPU extraction with GPU execution, and skipping
+unnecessary coordinate work remain follow-up throughput work. GPU inference alone cannot remove
 the CPU extraction cost; do not infer production self-play speed from this milestone.
 The iterative self-play/training loop is also still pending: fixed-corpus offline
 `--resume` intentionally rejects new games, so a new replay corpus needs a separate
