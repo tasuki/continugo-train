@@ -3,7 +3,7 @@
 No dense target distribution is needed, but the policy normalization must still
 include ALL legal logits plus pass. A candidate-only batch instead trains a
 conditional policy and must not be confused with full-action training.
-Targets/outcomes are supplied by the SGF/Rust pipeline in a later stage. Exclude
+Targets/outcomes are supplied by the validated SGF/Rust training loader. Exclude
 truncated games from outcome training, and flip RE to the pre-move player's view.
 """
 

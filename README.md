@@ -23,10 +23,12 @@ mise run check
 mise run selfplay -- --engine random --games 3 --output runs/random
 mise run selfplay -- --help
 mise run model-bench -- --device cuda
+mise run train -- --help
 ```
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
 
-See [FEATURES.md](FEATURES.md) for real Rust inputs and SGF loading,
-[python/README.md](python/README.md) for the network, [TODO.md](TODO.md) for the plan,
-and [BENCHMARKS.md](BENCHMARKS.md) for measurements.
+See [features.md](docs/features.md) for real Rust inputs and SGF loading,
+[training.md](docs/training.md) for offline training and resume, [python/README.md](python/README.md)
+for the network, [todo.md](docs/todo.md) for the plan, and [benchmarks.md](docs/benchmarks.md)
+for measurements.

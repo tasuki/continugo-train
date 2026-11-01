@@ -38,8 +38,9 @@ Train a single **ResNet with policy and value heads**, supporting the discrete s
 
 Follow KataGo's approach wherever applicable, with these ContinuGo-specific considerations:
 
-- **Bootstrap from random self-play**. Avoid only filling an enclosed, single-friendly-group pocket that one stone would completely fill; allow larger pockets, captures and connections. Pass only after an exhaustive search finds no acceptable placement for the current player. Keep this narrow eye-avoidance filter separate from MCTS; do not add heuristic-guided MCTS or handcrafted value evaluations.
-- Use neural-guided MCTS with PUCT and progressive widening to handle the enormous action space.
+- **Bootstrap training from unguided MCTS self-play** (`--engine mcts`): uniform priors over admitted candidates, neutral nonterminal leaf values, and actual outcomes at terminal nodes. There is no trained network or random rollout evaluator yet. Record root visit counts as policy targets and completed-game outcomes as value targets.
+- **Direct random play** (`--engine random`) uses no tree search and supplies no search-policy targets; retain it for rules/performance diagnostics. Its narrow eye-avoidance filter rejects only an enclosed, single-friendly-group pocket that one stone would completely fill; allow larger pockets, captures and connections. Pass only after an exhaustive search finds no acceptable placement. Keep this filter separate from MCTS; do not add heuristic-guided MCTS or handcrafted value evaluations.
+- Replace the bootstrap priors/value evaluator with neural guidance in MCTS, retaining PUCT and progressive widening to handle the enormous action space.
 - Maintain sufficient independent exploration to discover moves the current policy undervalues.
 - Train across the supported discrete stone sizes, with good coverage of 9×9, 13×13, and 19×19 equivalents.
 - Batch positions with similar input resolutions efficiently.
@@ -63,10 +64,9 @@ If evaluating all million coordinates per position proves too expensive, investi
 
 ## Implementation priorities
 
-1. Build offline PyTorch training from saved SGFs: efficient resolution-bucketed data loading, MCTS visit-count policy targets, completed-game outcome targets, validation split by game, and schema-versioned resumable checkpoints. Use the real Rust feature bridge; do not require ONNX for this stage.
-2. Export trained models to ONNX and integrate native inference into Rust MCTS.
-3. Build the iterative neural self-play training loop.
-4. Evaluate playing strength across board sizes and scale the network as justified.
-5. Move stable reusable components into the main ContinuGo repository.
+1. Export trained models to ONNX and integrate native inference into Rust MCTS.
+2. Build the iterative neural self-play training loop, including warm-start training on a changing replay corpus (separate from fixed-corpus offline resume).
+3. Evaluate playing strength across board sizes and scale the network as justified.
+4. Move stable reusable components into the main ContinuGo repository.
 
 **Guiding principle:** Keep the initial implementation simple and performant. Reuse KataGo's proven training methods, while concentrating original engineering effort on ContinuGo's unusual action space, exact geometric rules, and efficient neural policy representation.

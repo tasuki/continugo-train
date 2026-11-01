@@ -2,9 +2,10 @@
 
 SGF remains the source game record. CGFEAT01 is an ephemeral single-position
 training/inference tensor packet, carried via stdout or an optional cache file.
-See FEATURES.md for feature names, normalization and binary layout.
+See docs/features.md for feature names, normalization and binary layout.
 """
 
+import json
 import os
 import struct
 import subprocess
@@ -203,6 +204,115 @@ def decode_sample(data: bytes) -> PositionFeatures:
     )
 
 
+def feature_binary(binary: str | Path | None = None) -> Path:
+    default = Path(__file__).resolve().parents[2] / "target/release/features"
+    path = Path(binary or os.environ.get("CONTINUGO_FEATURE_BIN", default)).resolve()
+    if not path.is_file():
+        raise FileNotFoundError("feature binary missing; run `mise run build-features`")
+    return path
+
+
+def inspect_game(sgf: str | Path, density: int = 4, binary: str | Path | None = None) -> dict:
+    """Ask Rust for validated metadata/eligible plies, never parse SGF in Python."""
+    result = subprocess.run(
+        [
+            str(feature_binary(binary)),
+            "--inspect",
+            "--sgf",
+            str(sgf),
+            "--samples-per-diameter",
+            str(density),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise ValueError(f"{sgf}: {result.stderr.decode(errors='replace').strip()}")
+    return json.loads(result.stdout)
+
+
+class FeatureClient:
+    """One Rust process, one cached validated game, arbitrary pre-move requests.
+
+    Each response is status u8 + length u64 + a CGFEAT01 packet or UTF-8 error.
+    The feature schema is unchanged; JSON lines are IPC commands, not game records.
+    """
+
+    def __init__(self, binary: str | Path | None = None):
+        self.process = subprocess.Popen(
+            [str(feature_binary(binary)), "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self):
+        if self.process.stdin and not self.process.stdin.closed:
+            try:
+                self.process.stdin.close()
+            except BrokenPipeError:
+                pass
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        self.process.stdout.close()
+        self.process.stderr.close()
+
+    def _read(self, length: int) -> bytes:
+        chunks = []
+        remaining = length
+        while remaining:
+            chunk = self.process.stdout.read(remaining)
+            if not chunk:
+                try:
+                    self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait()
+                error = self.process.stderr.read().decode(errors="replace")
+                raise RuntimeError(f"Rust feature server stopped: {error.strip()}")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def load(
+        self, sgf: str | Path, ply: int, *, density: int = 4, file_sha256: str | None = None
+    ) -> PositionFeatures:
+        request = {
+            "sgf": str(Path(sgf).resolve()),
+            "ply": ply,
+            "samples_per_diameter": density,
+            "file_sha256": file_sha256,
+        }
+        try:
+            self.process.stdin.write(json.dumps(request).encode() + b"\n")
+            self.process.stdin.flush()
+        except (BrokenPipeError, ValueError) as error:
+            raise RuntimeError(
+                "feature server unavailable; rebuild with `mise run build-features`"
+            ) from error
+        status, length = struct.unpack("<BQ", self._read(9))
+        if length > 1_000_000_000:
+            raise RuntimeError("invalid feature-server response length")
+        data = self._read(length)
+        if status == 1:
+            raise ValueError(data.decode(errors="replace"))
+        if status != 0:
+            raise RuntimeError("invalid feature-server status")
+        sample = decode_sample(data)
+        if sample.ply != ply or sample.samples_per_diameter != density or not sample.full_domain:
+            raise RuntimeError("feature-server response does not match the request")
+        return sample
+
+
 def load_position(
     sgf: str | Path,
     ply: int,
@@ -216,10 +326,7 @@ def load_position(
     This simple subprocess bridge is for initial offline wiring. It replays the
     SGF per request, not a persistent high-throughput training data service.
     """
-    default = Path(__file__).resolve().parents[2] / "target/release/features"
-    binary = Path(binary or os.environ.get("CONTINUGO_FEATURE_BIN", default))
-    if not binary.is_file():
-        raise FileNotFoundError("feature binary missing; run `mise run build-features`")
+    binary = feature_binary(binary)
     if ply < 0 or samples_per_diameter <= 0:
         raise ValueError("ply must be nonnegative and sample density positive")
     command = [

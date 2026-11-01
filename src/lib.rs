@@ -1,5 +1,6 @@
 //! Experimental training infrastructure; game semantics live in continugo-rules.
 pub mod action;
+pub mod feature_io;
 pub mod features;
 mod liberty_area;
 pub mod profile;

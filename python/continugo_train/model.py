@@ -11,7 +11,7 @@ scorer; their softmax is conditional unless every legal placement is included.
 Output columns follow the supplied IDs, with pass appended at column N. Values
 are expected outcomes in [-1,1] from the current player's perspective.
 
-Defaults match the versioned real Rust feature schema in FEATURES.md. Alternate
+Defaults match the versioned real Rust feature schema in docs/features.md. Alternate
 feature widths remain configurable for experiments. No game rules live here.
 """
 

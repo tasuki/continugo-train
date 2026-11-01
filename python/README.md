@@ -28,7 +28,7 @@ on the unchanged board, not forced capture after replies.
 Group liberty area uses the UI's swept-region geometry, normalized by stone-disc
 area without clipping. There are no history planes, capped liberty-coordinate
 counts, or exactly-one-liberty flags. Area is computed per existing group, not
-for every hypothetical move. See [FEATURES.md](../FEATURES.md) for channel definitions,
+for every hypothetical move. See [features.md](../docs/features.md) for channel definitions,
 normalization, SGF replay, and `continugo_train.features.load_position`. Python
 neither guesses legality nor implements any rules. The random bootstrap's eye
 filter does NOT enter neural policy legality or MCTS.
@@ -46,14 +46,16 @@ all supplied legal logits plus pass) and value MSE, with equal initial weights.
 Zero-count target padding is allowed; positive counts on illegal moves are rejected.
 Outcome labels must come from completed games and be flipped to the pre-move
 player's perspective. Real SGFs can now be replayed/validated in Rust and loaded
-as tensors, including sparse visits and outcome labels. A full offline training
-CLI, ONNX export, and replacement of the Rust baseline evaluator are still next.
+as tensors, including sparse visits and outcome labels. `mise run train` now runs
+offline training with game-level holdout, persistent Rust feature workers,
+resolution buckets, and atomic model/optimizer checkpoints. See
+[training.md](../docs/training.md) for generation, training, resume and model loading.
+ONNX export and replacement of the Rust baseline evaluator are still next.
 
-Checkpoints can store the feature schema version, `dataclasses.asdict(model.config)`
-and `model.state_dict()` in a single `torch.save` file, restoring with
-`NetworkConfig(**saved["config"])` and `load_state_dict`; the tests cover configuration
-and BatchNorm-state round trips. Reject mismatched feature schemas when training
-checkpoints are loaded.
+The trainer's checkpoints store `config`, weights under `model`, optimizer/RNG
+state, feature definitions and the immutable corpus/split manifest. Resume rejects
+mismatched features or changed data. CPU continuation is tested against an
+uninterrupted run, including BatchNorm and SGD momentum state.
 
 ## Synthetic benchmarks
 

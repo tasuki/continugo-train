@@ -40,6 +40,11 @@ run = "cargo build --locked --release --bin features"
 description = "Extract real position tensors from SGF (binary stdout by default)"
 run = "cargo run --locked --release --bin features --"
 
+[tasks.train]
+description = "Offline PyTorch training from completed MCTS SGFs"
+depends = ["build-features"]
+run = ".venv/bin/python -m continugo_train.train"
+
 [tasks.model-bench]
 description = "Benchmark synthetic coarse/dense inference and training (FP32)"
 run = ".venv/bin/python -m continugo_train.benchmark"

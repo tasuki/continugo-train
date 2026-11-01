@@ -172,9 +172,13 @@ mkdir -p runs
 mise run features -- --sgf FILE --ply 0 --actions 200200,500500 --output runs/position.cfeat
 ```
 
-This initial bridge replays the SGF per request and materializes one full sample.
-It is working real-data plumbing, **not a persistent/batched data-loader service
-or an offline training CLI yet**. Full packets are about 45 MB; do not precompute
+The one-shot `load_position` convenience helper replays the SGF per request.
+The offline trainer instead uses `FeatureClient` / `features --serve`: each worker
+keeps one fully validated game's pre-move snapshots and samples positions without
+replaying/scoring each request. `features --inspect` exposes validated metadata
+and eligible plies without implementing a Python SGF parser. See
+[training.md](training.md) for the bounded loader, game-level holdout and checkpoints.
+The tensor packet layout below is unchanged. Full packets are about 45 MB; do not precompute
 an entire corpus of dense per-position files. SGFs remain the sole primary game
 records. Binary packets/cache files are derived, disposable tensors, not JSON
 sidecars or another game-record format.

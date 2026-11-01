@@ -420,20 +420,20 @@ mise run model-bench -- --channels 64 --blocks 6 --policy-hidden 32
 ```
 
 Raw logs: `runs/network/cuda.txt` and `runs/network/cpu.txt`. See
-[python/README.md](python/README.md) for the input contract and benchmark options.
+[python/README.md](../python/README.md) for the input contract and benchmark options.
 
 ## Real Rust feature extraction — 2026-10-31
 
 These measurements describe schema 1 (16 planes / 12 move fields). Schema 2
 subsequently removed all four history planes and the exactly-one-liberty flags
 (10 planes / 11 fields); it was not separately rebenchmarked here. Schema 3
-implements UI-style area; its measurements are below. See FEATURES.md.
+implements UI-style area; its measurements are below. See features.md.
 
 Version-1 inputs contained real stone/group/liberty/history/border planes and
 exact move legality, connections, captures, resulting group size and capped exact
 liberties. Rule facts use the shared validator and shared integer liberty search;
 normalization/rasterization remain experimental code in `continugo-train`. Schema,
-label semantics and the binary bridge are documented in [FEATURES.md](FEATURES.md).
+label semantics and the binary bridge are documented in [features.md](features.md).
 
 The following are sequential, single-position diagnostics from the same three
 completed random SGFs (sizes 9/13/19, seeds 0/1/2), using the i5-8400 and Rust release
@@ -603,3 +603,64 @@ changes, float32 0/1 encoding and painting on group stones. Normal search/self-p
 receives no handcrafted value bonus or policy filter from these features.
 
 Raw diagnostics: `runs/capture-flags/timing.txt`.
+
+## First offline training job — 2026-10-31
+
+Real completed MCTS SGFs, not synthetic inputs: **24 games**, sizes 9/13/19,
+seeds 100–123, 32 simulations per move, **630 eligible pre-move positions**.
+All finished naturally. The canonical-game split held out six games (226 eligible
+positions); the other 18 games supplied 404 eligible positions. No duplicates or
+unlabeled games were skipped. SGFs remain the only primary game records.
+
+Same i5-8400 / GTX 1080 / PyTorch 2.7.1+cu118 stack. Current 12-plane / 10-column
+features, **80,099 parameters**, FP32, batch size 2, two persistent Rust feature
+workers, shuffle buffer 8, four PyTorch CPU threads. SGD lr 0.01, momentum 0.9,
+weight decay 1e-4, gradient clipping at norm 5. Every forward/loss normalizes over
+**all legal coordinates plus pass**, not just visited/proposed actions.
+
+This short sanity run capped training at eight sampled positions per game and
+20 batches per epoch (**40 optimized positions**). Validation used a fixed seeded
+four-position subset from each held-out game (**24 positions**). Three epochs
+therefore performed 60 optimizer updates; this was not a full-corpus fitting run.
+
+| Epoch | Train policy CE | Train value MSE | Train total | Validation policy CE | Validation value MSE | Validation total |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 12.373528 | 1.194239 | 13.567767 | 12.064493 | 1.184399 | 13.248892 |
+| 2 | 11.996482 | 1.080416 | 13.076898 | 12.077291 | 0.984017 | **13.061308** |
+| 3 | 11.490949 | 1.000858 | 12.491807 | 12.208189 | 0.985361 | 13.193550 |
+
+Training loss falls, but held-out loss is **not monotonic**. `best.pt` correctly
+selects epoch 2 rather than the latest epoch. These noisy, weak-teacher data and
+small validation subsets verify the learning/checkpoint pipeline, **not playing
+strength**, generalization, or a reason to prolong baseline fitting.
+
+End-to-end training throughput was **4.01–4.30 positions/s**; validation was
+**4.79–4.81 positions/s**. The six phases totaled about 44 seconds, excluding
+initial process/model/corpus setup and checkpoint writes. Training loader wait
+was 7.41–8.27 seconds per epoch, versus 1.25–1.59 seconds for compute plus transfer.
+Full-domain extraction/decoding/transport dominates; these are not neural-only
+throughput measurements. Timings include shuffle fill and worker shutdown.
+
+Peak live CUDA allocation was **495.1 MiB training / 145.0 MiB validation**;
+parent peak RSS reached **1,793.5 MiB**, stable over the final two epochs. CUDA
+figures exclude allocator reservation/context/desktop use; parent RSS excludes
+Rust child processes. Each checkpoint was about 683 KiB, including optimizer,
+RNG, architecture, feature compatibility and embedded corpus/split metadata.
+
+A separate short GPU job resumed successfully from epoch 1 to epoch 2, preserving
+optimizer progress. Tests compare unchanged single-thread CPU resume against an
+uninterrupted run **bit-for-bit**, including BatchNorm and SGD momentum buffers.
+GPU backward is not promised bitwise deterministic. Tests also cover changed-data
+and feature rejection, duplicate-game holdout, sparse target padding, resolution
+bucket leftovers, ordered worker errors/cleanup, and runtime resume overrides.
+
+```sh
+mise run selfplay -- --engine mcts --games 24 --sizes 9,13,19 --seed 100 --simulations 32 --output runs/offline-bootstrap
+mise run train -- --data runs/offline-bootstrap --output runs/offline-training --epochs 3 --steps-per-epoch 20 --positions-per-game 8 --validation-positions-per-game 4 --device cuda
+```
+
+Use fresh output directories to reproduce. Artifacts: `runs/offline-bootstrap/`,
+`runs/offline-training/training.log`, `runs/offline-training/best.pt` (epoch 2),
+and `runs/offline-training/latest.pt` (epoch 3). The separate resume check is in
+`runs/offline-smoke/`. See [training.md](training.md) for normal uncapped training,
+loading and resume. No feature-schema revision was introduced for this command.
