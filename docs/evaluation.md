@@ -1,25 +1,25 @@
-# Candidate acceptance matches
+# Experimental matches and manual acceptance
 
-**Current operating policy:** [every promotion requires explicit user approval](training-policy.md),
+**Every promotion requires [explicit user approval](training-policy.md#approval-operation),**
 and none are authorized until convincingly much stronger than the fixed reference.
-A favorable gate verdict is evidence, not approval. Experimental self-play actors
-may advance without becoming accepted. This separation is not implemented in the
-supervisor yet; the automatic gate/promotion mechanics below describe existing
-code, not the newly agreed publication policy.
+The v5 loop never publishes acceptance, including initialization and disabled-match
+paths. A favorable match verdict, rating or loss is evidence, not permission.
 
-The loop gates a trained/exported candidate against the **last accepted model**.
-It does not use training or validation loss for promotion. This follows KataGo's
-optional [gatekeeper](https://github.com/lightvector/KataGo/blob/master/cpp/command/gatekeeper.cpp)
-pattern: head-to-head win points, with a configurable required proportion (default
-50%, candidate wins ties). A finite match is a regression guard, not statistical
-proof that the network improved.
+Head-to-head matches compare a trained candidate against its **frozen experimental
+self-play parent**, independently of the official accepted network. This adapts
+KataGo's optional [gatekeeper](https://github.com/lightvector/KataGo/blob/master/cpp/command/gatekeeper.cpp)
+pattern: configurable win-point proportion (default 50%, candidate wins ties).
+Verdicts are `passed`, `failed`, `inconclusive` or `disabled`, not accepted models.
+With `--actor-policy latest` they measure progress; optional `--actor-policy gate`
+uses them only to guard experimental actor updates. A finite match is not proof
+of improvement. `--evaluation-interval N` schedules matches every N iterations.
 
 ## Budget and board mix
 
 Loop controls:
 
 - `--gate-games 20`: even number of games, paired by candidate color. Zero explicitly
-  disables gating. Defaults give ten pairs, split **40% size 9 / 40% size 13 / 20%
+  disables the experimental actor match. Defaults give ten pairs, split **40% size 9 / 40% size 13 / 20%
   size 19**: 8/8/4 games. Ten games give 4/4/2.
 - `--gate-simulations 32`: same MCTS simulation budget for each competitor per move.
 - `--gate-max-moves 512`: a safety cap, **not a forced-scoring rule**.
@@ -53,11 +53,13 @@ Let `P` be candidate points from completed games, `T` the number of truncated ga
 and `N` the planned match count. The possible final match score is bounded by
 `P/N .. (P+T)/N`:
 
-- Accept only if the **lower** bound reaches the configured threshold.
-- Reject if even the **upper** bound cannot reach it.
-- Otherwise mark the test **inconclusive** and retain the incumbent.
+- The match **passes** only if the lower bound reaches the configured threshold.
+- It **fails** if even the upper bound cannot reach it.
+- Otherwise the match is **inconclusive**. Optional gated actor selection holds
+  its actor on failure/inconclusiveness; default latest-actor selection may advance.
+- No result authorizes an accepted publication.
 
-Thus missing outcomes cannot manufacture acceptance or rejection. A test may still
+Thus missing outcomes cannot manufacture a decisive match verdict. A test may still
 be decided when it is mathematically guaranteed regardless of the unknown games,
 similar to KataGo's mathematically-decided early-stop logic. This implementation
 still plays the full planned match rather than stopping early.
@@ -70,12 +72,14 @@ when naturally scored; model/search/seed metadata and actual visits are comments
 
 ## Training is not rolled back
 
-Accepted model and latest training checkpoint are separate pointers. Rejected or
-inconclusive candidates keep their weights and optimizer progress for the next
-training phase. Self-play remains on the accepted model until a later candidate
-passes. Every candidate checkpoint/replay corpus is also backed up in the durable
-[model store](model-store.md), not just the accepted ones. Gate SGFs are excluded
-from the training replay selection.
+Training, experimental actor and accepted publication are three independent
+roles. Failed/inconclusive candidates retain weights and optimizer progress.
+Default experimental self-play advances to each latest completed/exported candidate;
+optional gated actor selection can hold its actor without rewinding training.
+Neither changes the accepted head. Every candidate has durable training and frozen
+experimental recovery data in the [model store](model-store.md). Evaluation SGFs
+remain outside training replay. Approval can select an older specific candidate
+without changing either current training or actor state.
 
 ## Manual matches
 
@@ -86,7 +90,7 @@ mise run arena -- --candidate PATH/TO/CANDIDATE --incumbent PATH/TO/ACCEPTED --g
 Use a fresh output directory, or omit `--output` in this launcher for
 `runs/YYYYMMDD-HHMMSS-arena` here automatically (UTC). Explicit paths are literal;
 add `--device cpu` for CPU inference. Inputs can be
-plain ONNX bundles or durable accepted bundles containing the two ONNX graphs.
+plain ONNX bundles or durable experimental/accepted bundles containing both graphs.
 `--game-offset` exists for the supervisor's missing-game recovery; even global
 ordinals put the candidate on black. Each pair advances the seed once.
 The standalone binary writes records and raw outcome totals; it does not move
@@ -100,12 +104,14 @@ random policy and narrow eye filter as random diagnostics, not MCTS. Only neural
 turns have search-policy targets. Both colors are exercised; reference matches
 use maximum-visit neural play and the same `--gate-simulations` budget per move.
 
-The loop plays `--reference-games 10` (4/4/2 by board size) for the initial accepted
-network and each newly accepted candidate. `--reference-max-moves 2048` allows
+The loop plays `--reference-games 10` (4/4/2 by board size) for the initial
+experimental actor and each candidate scheduled by `--evaluation-interval`,
+including candidates failing the head-to-head match. `--reference-max-moves 2048` allows
 longer natural completion than the default gate cap; zero reference games disables
 calibration, not gating. These can be expensive: use zero explicitly for plumbing
-runs. Reference results **do not affect promotion**. Gate matches, including rejected
-and inconclusive candidates, also contribute completed outcomes to ratings.
+runs. Reference results **do not authorize promotion**: they inform the user's
+manual strength review. Actor matches, including failed and inconclusive candidates,
+also contribute completed outcomes to ratings.
 All evaluation records stay out of training replay and the training data counter.
 
 `../continugo/backend/rating` supplies the original Glicko update with **no time
@@ -141,7 +147,10 @@ ratings/
 `accepted` (1/0), acceptance dates/bundle paths, status, rating, deviation, `rating ± RD`,
 and completed W/D/L/truncation counts. **Filter `accepted=1` for all accepted networks**;
 rejected candidates remain in the same table. The reference has `accepted=0`.
-Numbers may be negative for bots weaker than the 100 reference.
+Numbers may be negative for bots weaker than the 100 reference. Newly evaluated
+or selected experimental actors remain `accepted=0` until explicit approval;
+historical accepted entries are preserved. Match `decision` values now describe
+experimental verdicts; legacy CSV rows are not silently rewritten.
 
 `matches.csv` records raw SGF hashes, players, actual results (blank means unknown),
 board size, protocol columns, audit dates, batch IDs and each player's **post-batch**

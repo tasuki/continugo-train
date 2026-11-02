@@ -146,7 +146,9 @@ early epoch termination closes readers and reaps Rust processes.
 
 An epoch produces `epoch-0001.pt`, etc., plus atomic `latest.pt` and `best.pt`.
 Best means the lowest held-out **policy CE + value MSE**, not playing strength.
-The [loop acceptance gate](evaluation.md) uses head-to-head results instead.
+The [loop's experimental matches](evaluation.md) measure playing strength;
+[accepted publication requires explicit user approval](training-policy.md), never
+just a lower loss or a favorable match verdict.
 Checkpoints contain weights and BatchNorm buffers, SGD momentum/state, optimizer
 step count, completed epochs, RNG states, architecture/options, feature names,
 existing compatibility marker/density, and an embedded corpus/split manifest.

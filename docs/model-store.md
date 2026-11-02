@@ -1,122 +1,144 @@
-# Durable accepted models and training recovery
+# Durable models, recovery and explicit acceptance
 
-**ONNX alone is not a training checkpoint.** It contains inference graphs/weights
-and compatibility/source metadata, but not the original SGD momentum, RNG, corpus,
-split history or full trainable PyTorch state. There is no supported ONNX-to-trainer
-resume path. The loop now preserves those separately alongside the graphs.
+**ONNX alone cannot resume training.** Recovery bundles retain the exact full
+checkpoint and replay SGFs. Training, experimental actor selection and accepted
+publication are independent; see [policy](training-policy.md) and [loop](loop.md).
 
-## Location and protection
+## Layout and protection
 
-Default location is **`models/` inside this repository**, separate from disposable
-`runs/`. There is no sibling model directory:
+Default: this repository's **`models/`**, outside disposable `runs/`:
 
 ```text
 models/
   README.md
-  STORE.pt                     store ownership/format marker
-  LATEST-ACCEPTED               text: accepted/<dated-bundle-name>
-  LATEST-TRAINING               text: training/<dated-bundle-name>
-  accepted/YYYYMMDD-HHMMSS-0001-NAME-ID/
+  STORE.pt                      ownership/format marker
+  LATEST-TRAINING                latest backed-up training candidate
+  LATEST-EXPERIMENTAL            selected self-play actor, not acceptance
+  LATEST-ACCEPTED                only explicit approval or preserved historical head
+  training/<UTC-dated-name>/
+    checkpoint.pt
+    replay/<raw-file-SHA>.sgf
+    recovery.pt
+    README.md
+  experimental/<UTC-dated-name>/
+    checkpoint.pt
     encoder.onnx
     policy.onnx
-    checkpoint.pt              exact original trainable checkpoint
-    replay/<raw-file-SHA>.sgf   exact current corpus used by that checkpoint
-    evaluation/*.sgf            accepted candidate's match records, when applicable
-    recovery.pt                hashed file manifest + context/report
-    README.md                  per-bundle recovery instructions
-  training/YYYYMMDD-HHMMSS-0001-NAME-ID/  checkpoint/replay pack for every candidate
-  sgf-blobs/                   immutable store-owned copies, shared via hardlinks
-  ratings/networks.csv         all networks; accepted flag, progress, per-pool rating ±RD
-  ratings/matches.csv          processed SGF hashes, protocols and rating-update history
-  ratings/games/*.sgf          all rating evidence, including rejected candidates
+    replay/<raw-file-SHA>.sgf
+    evaluation/*.sgf             available candidate match evidence
+    recovery.pt
+    README.md
+  accepted/<UTC-dated-name>/
+    checkpoint.pt
+    encoder.onnx
+    policy.onnx
+    replay/<raw-file-SHA>.sgf
+    evaluation/*.sgf
+    approval.pt                  embedded exact user authorization (new format)
+    recovery.pt
+    README.md
+  approvals/
+    SEQUENCE-APPROVAL_ID.pt       immutable authorization for one checkpoint
+    SEQUENCE-APPROVAL_ID.receipt.pt
+  sgf-blobs/                     immutable store-owned data, shared by hardlinks
+  ratings/networks.csv
+  ratings/matches.csv
+  ratings/games/*.sgf
 ```
 
-`--model-store PATH` can select another disk, but not the loop output or `runs/`.
-A nonempty foreign directory without the ownership marker is rejected rather than
-clobbered. The store has its own writer lock. Dated bundles are **write-once**:
-files are hashed and fsynced, staged directories are atomically published, and
-model/replay directories are made read-only. Existing packs are checked, not
-rewritten. The loop never automatically deletes models or recovery packs.
+`--model-store PATH` may select another location, but not disposable `runs/` or a
+path overlapping loop output. Nonempty foreign stores without the ownership
+marker are rejected. `LATEST-ACCEPTED` need not exist in a new experiment. These
+pointers are indexes across experiments, not a global strength ranking: a live
+loop freezes its own training/actor parents in `loop.pt`.
 
-Names use publication time in **UTC**, with seconds to distinguish short jobs, a
-four-digit sequence for same-second publications, a readable network name such as
-`cg1-b4c32-s1248000-d550347`, and a 12-character checkpoint ID suffix. See
-[training counters](training.md#network-names-and-cumulative-progress) for exact
-`s`/`d` semantics; unknown legacy totals are explicitly named `unknown`. They sort by date/sequence within each category. Full SHA-256 remains the
-identity in `recovery.pt`; short prefixes are never trusted as identity. Republishing
-the same checkpoint reuses its original dated folder rather than giving an old
-model a misleading new date. The full ISO timestamp is also saved in the manifest
-and README. Stable filenames inside each bundle (`encoder.onnx`, `checkpoint.pt`,
-`replay/`, etc.) are intentionally not timestamped.
+Training backup precedes candidate evaluation, retaining progress even if export
+or matching fails. A frozen experimental pack precedes actor selection. Exporting,
+backing up, choosing an actor or passing a match does **not** create acceptance.
+Initial v5 checkpoints are experimental, not implicitly accepted baselines.
 
-SGF blobs are actual copies, **not hardlinks to disposable run files**. Only links
-between files owned by the durable store are shared. Deleting a run cannot delete
-or mutate its archived data. Each bundle is self-contained even if copied without
-the shared blob directory. Read-only mode resists accidental edits/deletion, but
-the owner can deliberately chmod/delete it; it is not an access-control guarantee.
+Names start with UTC `YYYYMMDD-HHMMSS`, a same-second sequence, readable
+[network name](training.md#network-names-and-cumulative-progress) and a short
+checkpoint hash. Full hashes determine identity; short names/counters do not.
+Republishing reuses an existing verified pack and its original name/date. All
+weights, optimizer/RNG state, exact corpus, holdout history and cumulative progress
+are preserved. Recovery manifests hash each file; ONNX graphs retain matching
+checkpoint/config/feature metadata.
 
-Pointers are convenience indexes to the most recently selected publication of each
-kind, not a cross-experiment strength ranking. The loop's accepted state is its
-own `loop.pt` pointer. A newly selected initial checkpoint is a trusted baseline,
-not a model proven stronger by a match. Historical v1 auto-accepted models can be
-kept as historical baselines; that does not retroactively qualify them by gating.
+Packs are write-once/read-only, staged and fsynced before atomic publication, and
+never automatically pruned. Store SGFs are **copies**, not hardlinks to disposable
+run-owned files. Hardlinks only connect store-owned blobs, bundle replay/evidence
+and rating evidence. Deleting `runs/` cannot mutate or delete those retained SGFs.
+Owners can chmod/delete local data deliberately; read-only mode is not access
+control or a substitute for backups.
 
-The [rating tables](evaluation.md#two-csvs-no-database-or-rating-json-files) are
-store-level **CSV files**, not a database or JSON state. `networks.csv` includes
-all archived/evaluated networks; filter `accepted=1` for the accepted history.
-`matches.csv` is the committed evidence/update ledger and rebuilds the current
-numeric rating view after a crash. The initial trusted network can be unrated;
-acceptance does not itself establish playing strength. Ratings do not replace the gate.
+## Accepted publication is a separate manual operation
 
-`ratings/games/` is self-contained via store-owned hardlinks and survives losing
-`runs/`. It includes reference and gate records even for rejected candidates.
-Accepted bundles also contain available evaluation SGFs, but a single bundle does
-**not** preserve the global rating table/history. Back up both CSVs and the evidence;
-quiesce writers when copying them as a pair. Never discard the match ledger just
-to rebuild a view, and do not edit processed hashes or rating snapshots by hand.
+See the [approval procedure](training-policy.md#approval-operation). Direct
+`archive.publish(..., "accepted", ...)` without a matching explicit intent fails,
+even for an existing accepted pack. There is no automatic gate-disabled shortcut
+or startup baseline publication. No new promotion is authorized until the user
+judges the checkpoint convincingly much stronger than the reference and approves
+its full immutable hash.
 
-## What survives loss of `runs/`?
+The approval intent records source pack/graph/checkpoint identities, approving
+user, reason, UTC time and reference-strength confirmation. Accepted packs embed
+it. File/manifest verification, export provenance/parity checks, writer locking,
+immutable receipts and latest-receipt validation protect publication/retry paths.
+Duplicate or concurrent requests do not mint multiple publications; retrying an
+older approval cannot replace a newer accepted head.
 
-An accepted bundle preserves everything needed to **continue learning from that
-accepted checkpoint**:
-
-- Weights and BatchNorm buffers, architecture and feature semantics/density.
-- SGD momentum/settings, local epoch/step counters, cumulative lineage sample/data
-  counters when known, RNG states and metrics.
-- Full current corpus/split manifest and ancestral holdout ledger.
-- Exact SGFs, allowing strict corpus validation after relocation.
-- Both inference graphs, with matching source-checkpoint identity.
-
-But training may have advanced beyond the last accepted model. To retain rejected
-or inconclusive training progress too, preserve **training/** and `LATEST-TRAINING`,
-not only accepted ONNX. Completed iteration candidates are backed up before gating;
-in-flight/partial epochs are not durable candidate checkpoints.
-
-The original loop's attempt/control history, exact future trajectory and software
-installation are **not** reconstructed from one model pack. Keep the code/rules
-repositories and a compatible environment. GPU continuation is not promised
-bit-for-bit; unchanged single-thread CPU continuation from a relocated recovery
-pack is tested against the original corpus after deleting the original run.
-
-## Restart learning after losing a loop
-
-Find the directories named by `LATEST-TRAINING` and `LATEST-ACCEPTED`, then use a
-**new** output directory:
+A publication interrupted after explicit consent can be completed with:
 
 ```sh
-mise run loop -- --checkpoint models/training/TRAINING_BUNDLE/checkpoint.pt --incumbent-checkpoint models/accepted/ACCEPTED_BUNDLE/checkpoint.pt --bootstrap-data models/training/TRAINING_BUNDLE/replay --seed NEXT_UNUSED_SEED --warm-start-optimizer keep
+mise run promote -- --model-store models --recover
 ```
 
-Use a suitable next seed and budgets (`recovery.pt` stores the old configuration,
-iteration and suggested next generation seed). Training starts from the newest
-checkpoint, while self-play keeps the accepted model even if they differ. Omitting
-`--incumbent-checkpoint` intentionally trusts the training checkpoint as the initial
-accepted baseline; don't omit it when restoring rejected training progress.
-Original paths inside the checkpoint manifest may no longer exist: the archiver
-and loader can use the exact relocated `replay/` files instead.
+This cannot issue new permission. It only finishes existing authorizations and
+repairs accepted bundle/rating/head commit gaps. Neither approval nor its recovery
+changes training or experimental actor pointers. Keep `approvals/` intact and do
+not edit authorizations/receipts by hand. The workflow is an explicit operator
+control, not remote-user cryptographic authentication.
 
-For **strict offline continuation**, copy—not move—the checkpoint into a fresh
-working run directory and resume it with the archived corpus:
+Historical v1 recovery bundles remain readable, including old accepted baselines.
+They are not rewritten to fabricate retroactive approval. New accepted bundles
+use recovery format v2 with embedded authorization. Old v1–v4 automatic-promotion
+**loop control files** are not resumed by the v5 supervisor; fork from their data
+instead. A source checkpoint can be reused without granting a new acceptance.
+
+## Ratings and evidence
+
+`ratings/networks.csv` contains all registered networks; `accepted=1` identifies
+manual publications or preserved historical accepted entries. Unaccepted training
+and experimental packs register as `accepted=0`; actor updates never change it.
+Ratings measure strength and remain separate from permission to publish.
+
+`matches.csv` is the committed rating/evidence ledger; current numeric ratings
+are reconstructed from its snapshots, not by inventing fresh observations.
+Store-owned `ratings/games/` retains authoritative SGFs even after runs disappear.
+Accepted/experimental packs include their available match evidence, but no single
+pack preserves the global rating history. Keep both CSVs and all referenced SGFs.
+Never edit ratings, processed hashes or audit snapshots by hand. See
+[evaluation](evaluation.md) for static Glicko, protocol pools and censored results.
+
+## Restart learning after losing `runs/`
+
+Choose the packs named by `LATEST-TRAINING` and `LATEST-EXPERIMENTAL`. Fork into a
+new output with an unused seed:
+
+```sh
+mise run loop -- --checkpoint models/training/TRAINING_BUNDLE/checkpoint.pt --actor-checkpoint models/experimental/ACTOR_BUNDLE/checkpoint.pt --bootstrap-data models/training/TRAINING_BUNDLE/replay --seed NEXT_UNUSED_SEED --warm-start-optimizer keep
+```
+
+Omit `--actor-checkpoint` only when intentionally using the training checkpoint
+as the initial experimental actor. Neither form accepts it. `--incumbent-checkpoint`
+is a compatibility alias for actor selection, not promotion. Recovery contexts
+record prior settings/iteration and a suggested next generation seed; do not reuse
+dead `runs/` executable paths from old configurations verbatim. Build compatible
+binaries or deliberately fork a new search protocol.
+
+For strict offline continuation, copy—not move—the checkpoint into a new writable
+run directory and use the archived corpus:
 
 ```sh
 mkdir -p runs/recovered-training
@@ -124,30 +146,23 @@ cp models/training/TRAINING_BUNDLE/checkpoint.pt runs/recovered-training/checkpo
 mise run train -- --data models/training/TRAINING_BUNDLE/replay --resume runs/recovered-training/checkpoint.pt --epochs NEXT_TOTAL_EPOCH
 ```
 
-The target epoch must exceed the saved epoch. Resume keeps optimizer/RNG/options
-and the same corpus fingerprint; data paths may relocate. Never train directly
-inside a read-only recovery bundle. Legacy checkpoints without board-mixture
-options retain their original uniform sampling on strict resume; warm-start/new
-loops default to the new 40/40/20 mixture.
+The target must exceed the saved epoch. Source game paths may relocate: exact
+hashes/replay provide recovery. Never train inside a sealed pack. Legacy checkpoints
+retain unknown cumulative totals and original sampling defaults rather than
+inventing history. GPU backward/changed batch/backend trajectories are not promised
+bitwise reproducible; unchanged single-thread CPU continuation is tested.
 
-Existing v1/v2/v3 loop control checkpoints are intentionally not resumed under the
-v4 rating/evaluation protocol. Evaluation/rating executable fingerprints are also
-frozen for an active v4 loop; changing them requires a fork. Fork from their newest immutable epoch checkpoint into
-a new loop rather than silently changing a frozen experiment. Old files are not
-overwritten. The earlier smoke runs and old sibling archive were explicitly deleted
-at the user's request for a clean start. Historical benchmark numbers do not imply
-those model/game files still exist.
+A pack preserves learning state, not the original loop attempt history or software
+installation. Keep code/rules/runtime versions compatible. Approval journal recovery
+uses the original store identity; copying a pack off-machine preserves its embedded
+audit, but does not grant permission to create new publications in another store.
 
-## Real backups still matter
+## Backups still matter
 
-`models/` is Git-ignored to avoid committing binary/data archives. Normal source
-work and removing `runs/` do not remove it, but **`git clean -fdx` / `-fdX` can target
-ignored data**: explicitly exclude `models/` and keep a backup before cleanup.
-Read-only mode does not replace a backup or make deletion impossible.
+Back up the **whole store** off-machine, including approvals, both rating CSVs,
+immutable evidence and data blobs. Quiesce writers while copying the CSV pair;
+`rsync -aH` can preserve store-owned hardlink deduplication. Local read-only files
+do not protect against disk loss, root access or deliberate deletion.
 
-A local directory does not protect against **disk loss, ransomware, user root access
-or deliberate recursive chmod/deletion**. Back up the
-whole store (plus code/rules) to another device/service; for example, an operator
-can use `rsync -aH` to preserve deduplication. These backups are not uploaded or
-scheduled automatically. Do not delete/unlink live lock files or prune bundles
-referenced by an active loop. There is no automatic archive garbage collector.
+`models/` is Git-ignored. `git clean -fdx` / `-fdX` can destroy it: explicitly exclude
+it and keep backups. There is no automatic garbage collector or automatic upload.

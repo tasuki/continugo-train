@@ -145,10 +145,13 @@ placement by maximum visits: pass had 0 visits on size 9 and 2 visits on sizes
 not ten completed games. The played one-ply sampling itself is not the evaluation
 chooser; the comparison uses its recorded root visits.
 
-The reference batch is still in progress. Its first three completed games were
-124 / 149 / 175 moves, with **1 win / 2 losses**, no draws or truncations. Do not
-interpret this partial small sample as an established strength gain or compare
-its ratings with the old executable's pool. No model has been promoted.
+The reference batch finished at **11:37:35 UTC**: **1 win / 7 losses / 0 draws /
+2 truncated games** out of 10 planned. Both size-19 games hit the 512-move cap and
+remain unknown; the other eight naturally completed. The batch ran for about
+34 minutes, or 53m 40s including bootstrap/training/export. No model was promoted.
+This small, partially censored sample does not establish a strength gain; do not
+combine its ratings with the old executable's pool. Continued experimentation
+uses the [v5 manual-approval policy](training-policy.md), not automatic acceptance.
 
 Read progress from the repository root:
 

@@ -1,8 +1,8 @@
 # Training and promotion policy
 
-Agreed with the user on 2026-11-02. This is the intended operating policy, not a
-claim that the current supervisor implements it. This policy supersedes the
-previous plan to rely on automatic gating or a daily promotion limit alone.
+Agreed with the user on 2026-11-02 and implemented by the v5 loop and separate
+manual approval operation. This policy supersedes the previous plan to rely on
+automatic gating or a daily promotion limit alone.
 
 ## Three independent model roles
 
@@ -68,23 +68,70 @@ Preserve the existing 40/40/20 board mix, shared authoritative rules, real searc
 visits, natural outcome labels, holdout history and durable recovery. Never turn
 capped games into draws or synthetic labels. Keep evaluation evidence out of replay.
 
-## Implementation status — not implemented yet
+## Implemented loop behaviour
 
-The current [`mise run loop` supervisor](loop.md) still couples its self-play actor
-to the accepted model, automatically promotes passing candidates, and publishes
-its initial checkpoint as accepted. **Do not launch it unattended under this
-policy yet.** `--gate-games 0` is not a manual-approval mode; it bypasses gating
-rather than preventing promotion. Standalone arena matches do not promote models.
+The [v5 supervisor](loop.md) separates all three roles. It starts with no accepted
+network unless the store already has a historical/approved head, which it only
+reads. Initial actors and subsequent candidates are backed up unaccepted. Default
+`--actor-policy latest` advances experimental self-play independently of match
+verdicts; optional `--actor-policy gate` guards only that actor selection.
+`--gate-games 0` disables the experimental match without publishing acceptance.
+`--evaluation-interval N` schedules periodic strength checks, not promotion.
 
-Before the long campaign:
+Each iteration freezes separate training and actor parents. SGFs carry the exact
+actor checkpoint identity. Training and actor recovery packs preserve all exact
+data, hashes, holdouts and optimizer progress independently of accepted publication.
+`mise run loop-status -- --output PATH` is read-only and reports roles and progress.
+Old v1–v4 automatic-promotion loops must be forked, not silently resumed/migrated.
 
-- Separate training, experimental-actor and accepted identities, including an
-  experiment with no accepted model. Record actor provenance in generated SGFs.
-- Make acceptance fail closed without explicit approval, including initialization,
-  resume, archive publication, rating flags and all gate-disabled paths.
-- Add a hash-pinned, auditable approval/publication operation. It must not reset
-  training, silently switch the actor, or authorize a different/newer checkpoint.
-- Test actor advancement without acceptance, withheld/failed gates, continued
-  optimizer progress, startup/restart/recovery, duplicate approvals and races.
-- Keep progress inspection and checkpoint/replay recovery usable throughout a
-  long run. Preserve old experiments rather than silently migrating their policy.
+## Approval operation
+
+**Only run this after the user explicitly approves the specific full checkpoint
+hash and judges the network convincingly much stronger than the reference.**
+Permission to implement software, start training, or inspect results is not that
+approval. The assistant must not issue this command on its own initiative.
+
+```sh
+mise run promote -- --model-store PATH/TO/STORE --candidate PATH/TO/STORE/experimental/BUNDLE --checkpoint-sha256 FULL_64_CHARACTER_HASH --approved-by USER --reason "Specific user approval and reviewed reference-strength evidence" --confirm-much-stronger-than-reference
+```
+
+The candidate must be an immutable experimental recovery bundle owned by that
+store. The command checks its full checkpoint hash, replay/inference file hashes,
+ONNX provenance and eager/export parity. User identity/reason and qualitative
+reference-strength confirmation are mandatory. There is intentionally no invented
+numeric threshold for "much stronger". This is an explicit operator-approval
+workflow, **not cryptographic authentication of a remote human**; anyone with
+permission to invoke this command/write the store is inside the trust boundary.
+
+A sealed, fsynced approval intent pins the source bundle, exact checkpoint and
+both ONNX graphs, approved-by/reason/time and explicit strength confirmation.
+Accepted bundles embed that approval. Store-owned intents and publication receipts
+survive removal of `runs/`; writer locks serialize concurrent approvals. Direct
+accepted archive publication without a matching intent fails closed, including
+reuse of an already published bundle. Other checkpoint hashes need new approval.
+
+Only the latest committed approval may change `LATEST-ACCEPTED`; retrying an old
+approval is idempotent and cannot roll it back over a newer accepted head. Approval
+changes neither `LATEST-TRAINING` nor `LATEST-EXPERIMENTAL`, and never grants
+permission for later candidates. Ratings mark only the explicitly published
+checkpoint accepted; old historical accepted metadata remains readable.
+
+If interrupted after authorization but before complete publication:
+
+```sh
+mise run promote -- --model-store PATH/TO/STORE --recover
+```
+
+Recovery may finish **only previously recorded explicit authorizations** and repair
+their publication/CSV/head commit gaps. With no intents it accepts nothing. It
+cannot issue fresh permission. Changed intents, graphs or checkpoint identities
+are rejected rather than silently substituted. Preserve and back up the entire
+store, including `approvals/`, both rating CSVs and SGF evidence; never edit these
+files or receipts by hand.
+
+Tests cover all startup/gate-disabled paths, advancement after failed matches,
+optional actor holding, continued optimizer/replay progress, periodic evaluation,
+read-only status, lost-run recovery, real export verification, changed artifacts,
+duplicate and concurrent approval processes, and publication/pointer commit gaps.
+A week-long campaign is still a separate launch decision, not an effect of approval
+or of running tests.

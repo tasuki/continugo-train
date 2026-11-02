@@ -54,6 +54,14 @@ description = "Restartable neural self-play, bounded replay, warm-start and expo
 depends = ["build-loop"]
 run = ".venv/bin/python -m continugo_train.loop"
 
+[tasks.loop-status]
+description = "Read-only training, experimental actor, accepted identity and live loop progress"
+run = ".venv/bin/python -m continugo_train.status"
+
+[tasks.promote]
+description = "Explicit user-approved publication of one hash-pinned experimental checkpoint"
+run = ".venv/bin/python -m continugo_train.promote"
+
 [tasks.export]
 description = "Export and verify a checkpoint as portable ONNX graphs"
 run = ".venv/bin/python -m continugo_train.export"

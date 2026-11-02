@@ -1,211 +1,189 @@
-# Restartable gated neural self-play loop
+# Restartable experimental neural self-play loop
 
 `mise run loop` runs native self-play → bounded SGF replay → warm-start training →
-ONNX export → paired-color acceptance matches. The structure follows
-[KataGo's synchronous training pattern](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md),
-with a game-result gate rather than loss-based promotion. This is still a small
-single-machine implementation, not an asynchronous distributed trainer.
+ONNX export, with periodic experimental/reference matches and durable recovery.
+It follows [KataGo's synchronous training pattern](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md),
+but **never automatically promotes a network**. See the agreed
+[training and promotion policy](training-policy.md).
 
-## Operating policy: manual approval (implementation pending)
+## Three independent roles (v5)
 
-The agreed [training and promotion policy](training-policy.md) separates the latest
-training checkpoint, an unaccepted experimental self-play actor, and the accepted
-network. Every promotion requires explicit user approval of the exact checkpoint;
-there are to be no promotions until convincingly much stronger than the reference.
-Experimental actor updates and training may continue without acceptance.
+| Role | Behaviour | Durable pointer |
+|---|---|---|
+| Training | Latest completed candidate; weights/optimizer progress survive failed or inconclusive matches | `LATEST-TRAINING` |
+| Experimental actor | Frozen model generating the next self-play batch; not accepted merely by being selected | `LATEST-EXPERIMENTAL` |
+| Accepted | User-approved publication, or an existing historical accepted model; may be absent | `LATEST-ACCEPTED` |
 
-**The supervisor described below does not yet implement that separation or
-approval requirement.** It still automatically accepts passing candidates and
-publishes an initial accepted baseline. Do not start it unattended under the new
-policy until those paths are changed and tested. `--gate-games 0` does not prevent
-promotion. Examples below document existing mechanics, not authorization to run
-a week-long experiment with automatic acceptance. See [outstanding work](todo.md).
+Initialization exports and backs up an **unaccepted** experimental actor. No
+accepted baseline is implicitly created. Starting/resuming a loop, disabling
+matches, passing a match, or advancing an actor never grants promotion permission.
+Approval is a [separate hash-pinned operation](training-policy.md#approval-operation).
+It changes neither training nor actor selection. The loop only reads the accepted
+head, refreshing its saved view at startup and iteration boundaries.
 
-## Small run
+`--actor-policy latest` is the default: after each candidate is trained, exported,
+verified and archived, use it as the next experimental actor regardless of match
+verdict. `--actor-policy gate` optionally holds the actor unless its head-to-head
+match passes; rejected/inconclusive candidates still retain training progress.
+With this optional policy, unevaluated iterations hold the actor; explicitly
+zero gate games disables that actor guard. Neither policy publishes acceptance.
+An actor checkpoint might already have been approved separately; its actor role
+itself neither grants nor removes acceptance.
 
-Requires an existing full training checkpoint, inference dependencies and the
-CPU/CUDA setup in [inference.md](inference.md). The task builds native binaries.
-The supervisor requires POSIX process groups and `flock`.
+## Start, resume, inspect
+
+Requires a full training checkpoint, inference dependencies and the CPU/CUDA setup
+in [inference](inference.md). The task builds native binaries. The supervisor
+requires POSIX process groups and `flock`.
 
 ```sh
-mise run loop -- --checkpoint runs/TRAIN_RUN/best.pt --bootstrap-data runs/BOOTSTRAP_RUN --iterations 2 --games-per-iteration 5 --seed 400 --simulations 8 --max-moves 64 --train-epochs 1 --steps-per-epoch 5 --positions-per-game 1 --validation-positions-per-game 1 --batch-size 1 --workers 1 --gate-games 10 --gate-simulations 8 --gate-max-moves 512
-# Use the dated output path printed by the first command:
+# Small bounded example; zero matches does NOT accept anything:
+mise run loop -- --checkpoint PATH/TO/checkpoint.pt --bootstrap-data PATH/TO/replay --iterations 2 --games-per-iteration 10 --train-epochs 1 --steps-per-epoch 20 --gate-games 0 --reference-games 0
+# Use the dated path printed by the first command:
 mise run loop -- --output runs/YYYYMMDD-HHMMSS-loop --resume
-# Increase the total target, not an additional iteration count:
+# Increase the TOTAL iteration target, not an additional count:
 mise run loop -- --output runs/YYYYMMDD-HHMMSS-loop --resume --iterations 3
+mise run loop-status -- --output runs/YYYYMMDD-HHMMSS-loop
 ```
 
-New loops automatically reserve `runs/YYYYMMDD-HHMMSS-loop` in this repository
-(UTC; same-second collisions get a counter). An explicit `--output` is used literally;
-`--resume` must always identify the existing output. Inner iteration/game/epoch names
-stay stable beneath that dated run. Example input paths above are placeholders:
-the old smoke artifacts were removed for a clean start.
+New loops reserve `runs/YYYYMMDD-HHMMSS-loop` here (UTC, collision-safe). Explicit
+`--output` paths are literal; resume must name the existing output. Status is
+read-only and reports the three roles, cumulative progress, latest committed
+metrics, current phase, available disk space and live training/self-play log tails.
+Detailed warnings/matches remain in `loop.log` and stage logs.
 
-CUDA is the default; `--device cpu` selects CPU explicitly. Export verification is
-CPU. Native play, training and export are supervised **separate processes**, so
-GPU inference libraries do not replace the training stack. New loops default to
-one iteration, ten self-play games, one training epoch capped at 20 batches, and
-20 gate games, and 10 reference games for each accepted network (including the
-initial one). Reference matches can be costly; `--reference-games 0` disables only
-rating calibration. These are setup budgets, not strength-tuned settings.
+Defaults: CUDA, one iteration, ten self-play games, one training epoch capped at
+20 batches, 20 head-to-head games and 10 reference games. These are setup budgets,
+not calibrated strength settings. `--device cpu` selects CPU. Play, training and
+export are separate supervised processes; export verification uses CPU.
 
-Resume uses the saved total target and frozen settings; explicit conflicting
-overrides fail. The target may increase, never decrease. Keep the loop at the same
-absolute path and compatible code/rules/runtime versions. **v1/v2/v3 loops are not
-silently migrated** to the v4 rating/evaluation protocol: their files remain
-untouched; fork a new loop from their latest immutable training checkpoint.
-Standalone legacy training checkpoints remain loadable with unknown cumulative
-totals where provenance is missing.
+Resume restores frozen configuration. Explicit conflicting overrides fail; the
+total iteration target may increase, never decrease. Keep the same absolute path
+and compatible Python/rules/runtime versions. Self-play/feature executable hashes
+are frozen even with matches disabled; arena/rating hashes are additionally
+frozen when evaluation is enabled. They are checked on resume and around child
+stages. Do not rebuild/replace active binaries; use frozen executable paths for
+long experiments. Changed executables require a new loop/fork.
 
-## The 40/40/20 board budget
+**v1–v4 automatic-promotion loops are not migrated or resumed.** Their artifacts
+remain available. Fork a v5 experiment from the latest full checkpoint and exact
+replay; specify `--actor-checkpoint` if its previous actor differs from the latest
+training checkpoint. `--incumbent-checkpoint` remains an alias for that flag, but
+no longer means “accept this checkpoint.” Historical accepted bundles stay intact.
 
-`--sizes 9,13,19 --size-weights 9:2,13:2,19:1` is the default. Integer weights
-`9:40,13:40,19:20` are equivalent. The deterministic smooth cycle is
-`9,13,19,9,13`: four size-9 and four size-13 games for every two size-19 games.
-Generation continues the cycle across iteration boundaries, even when an iteration
-contains fewer than five games. Weights are configurable; `uniform` restores
-literal size cycling. Zero weights exclude a size; unlisted sizes have weight one.
+## Periodic evaluation, not automatic publication
 
-The same policy drives:
+`--evaluation-interval N` runs candidate-vs-parent-actor and candidate-vs-reference
+batches every N iterations (default 1). The initial actor gets one reference batch
+when reference games are enabled. Every evaluated candidate gets reference games,
+including candidates failing the actor match. Unscheduled rounds are explicitly
+`not-evaluated`; match verdicts are `passed`, `failed`, `inconclusive`, or `disabled`.
+None means accepted. Reference matches are never an automatic promotion threshold.
 
-- Self-play game planning (default ten games = 4/4/2).
-- Bounded replay selection, preferring newer unique games within each size.
-- **Actual training and validation position selection**, not just loss multipliers.
-  Surplus positions from long games are removed before exact-feature extraction.
-- Evaluation **pairs**, so both colors on each board get the same budget. Default
-  20 gate games = 8/8/4; ten games = 4/4/2.
+Set `--gate-games 0` and/or `--reference-games 0` to disable those match types, not
+to authorize publication. Periodic evaluation lets training/experimental actor
+updates continue without human review after every phase. Matches still take time
+when scheduled; approval itself does not block the learning loop.
 
-Tiny budgets round, missing sizes renormalize, and insufficient data can prevent
-an exact ratio. `samples_by_size` reports actual optimized/validated counts. These
-are game/sample fractions, **not wall-clock fractions**: a size-19 position can
-still cost more. Shape/parity tests continue to cover all three sizes.
+See [evaluation](evaluation.md) for paired colors, conservative missing-outcome
+bounds, per-size breakdown, natural draws, caps and ratings. Preserve all evaluation
+SGFs outside replay. Ratings remain in `models/ratings/networks.csv` and
+`matches.csv`, with immutable SGF evidence. Unapproved networks stay `accepted=0`,
+even if well-rated or selected for self-play. `mise run ratings -- --accepted-only`
+shows only user-approved or preserved historical accepted networks.
 
-## Training progress and accepted models are different
+## Training and replay
 
-Each iteration freezes two independent parents:
-
-- **Training parent:** the latest completed training candidate, even if rejected.
-- **Self-play/evaluation incumbent:** the last accepted ONNX model.
-
-Warm-start defaults to `--warm-start-optimizer keep`; weights and momentum continue
-from the latest training checkpoint. Epoch/step counters restart locally per run,
-not cumulatively across the loop. Learning rate can be set with `--lr`; architecture,
-feature density, momentum, weight decay and gradient clipping inherit from the
-training parent. Training seed is `seed+iteration-1`. Separate cumulative
+`--warm-start-optimizer keep` is the default. SGD settings, architecture, feature
+density and clipping inherit from the training parent; `--lr` may override the
+learning rate. Local epoch/step counters restart per job, while cumulative
 [network sample/data counters](training.md#network-names-and-cumulative-progress)
-continue across iterations: generated eligible rows count even when replay drops
-them, and adopted jobs are not counted twice after a restart.
+continue across the lineage. Seeds and generated-row accounting are frozen per
+iteration; recovery/reimports never double-count completed work.
 
-The trainer's `best.pt` remains a within-job validation-loss diagnostic. The loop
-exports the **latest completed epoch**, then gates it by actual match outcomes.
-Rejection or an inconclusive test **does not roll training back**. The next round
-continues training from that candidate while self-play keeps the incumbent.
-`--incumbent-checkpoint` optionally supplies a different initially accepted model
-when restoring a newer, unaccepted training checkpoint.
+The trainer's `best.pt` is a within-job validation diagnostic. The loop exports the
+**latest completed epoch**, not a loss-selected promotion. Every next training
+phase starts from the latest candidate, regardless of actor policy or match result.
 
-See [evaluation.md](evaluation.md) for match settings, draw/truncation handling and
-conservative acceptance bounds. `--gate-games 0` explicitly disables gating; it is
-not the default and is useful only for plumbing diagnostics. Also pass
-`--reference-games 0` to skip reference work in such a run. Otherwise the loop
-calibrates the initial accepted network, then each newly accepted candidate,
-against the fixed-100 random-but-not-eye-filling reference. The neural budget is
-`--gate-simulations`; the reference move cap is `--reference-max-moves 2048`.
-Reference results never determine promotion, and all rating games stay out of replay.
+`--replay-iterations` (default 4) admits current/previous N−1 generated rounds.
+`--replay-games` (default 256) limits unique labeled games, including older bootstrap
+fallback data. Newest copies win duplicate canonical-game identities; weighted
+round-robin chooses sizes. Source checkpoint manifests do not implicitly import
+the original corpus: supply suitable `--bootstrap-data`.
 
-Ratings and processed evidence survive in `models/ratings/networks.csv` and
-`matches.csv`, with immutable SGFs alongside them. The first CSV includes all
-networks with an `accepted` flag; the second makes restarts/reimports idempotent.
-Run `mise run ratings -- --accepted-only` to view accepted networks and their
-current rating ±RD. See [evaluation](evaluation.md#baseline-anchored-static-glicko).
-A loop also pins native arena/rating executable hashes: resume refuses changed
-binaries rather than silently combining incompatible match protocols.
+Whole-game ancestral train/validation assignments remain pinned across windows.
+The selected corpus must contain both splits; insufficient data fails rather than
+moving trained games into validation. Truncated actual games have no invented
+outcome and are excluded. Each generation round needs at least one completed
+policy-labeled game. Rust validates every move, policy, score and job/model identity.
+See [training](training.md) for exact labeling, loading and warm-start semantics.
 
-## Replay and labels
+### 40/40/20 coverage
 
-`--replay-iterations` (default 4) admits the current and previous N-1 generated
-iterations. Eligible bootstrap snapshots are older fallback candidates, not a
-protected quota. `--replay-games` (default 256) caps the selected **unique labeled
-games**, including bootstrap data. Newest records win duplicate decoded-play
-identities; weighted round-robin chooses sizes. This is game-based windowing, not
-KataGo's adaptive row reservoir.
+Default `--sizes 9,13,19 --size-weights 9:2,13:2,19:1` drives generation, replay,
+actual training/validation samples and evaluation pairs. The smooth generation
+cycle is `9,13,19,9,13`, continued across iteration boundaries. Ten generated games
+are 4/4/2; twenty paired match games are 8/8/4. Both colors get the same size budget.
 
-Rust validates every move, policy, score and generation/model identity. Truncated
-SGFs retain real visit targets but no invented outcome and are excluded from replay.
-Draws and truncations produce explicit warnings, including when inspecting a corpus.
-Each iteration must produce at least one completed policy-labeled game.
+Tiny budgets round, missing sizes renormalize, and insufficient data may prevent
+exact proportions. `samples_by_size` reports actual optimized/validated counts.
+These are sample/game fractions, not wall-time fractions. Weights are configurable;
+`uniform` restores literal cycling and zero weights exclude a size. All three
+sizes remain covered by rule/feature/inference parity tests.
 
-Ancestral train/validation assignments remain pinned even after games leave the
-window. The selected corpus must have both splits; include enough new unique games
-or suitable `--bootstrap-data`. A source checkpoint's manifest does not implicitly
-load its original SGFs into replay. Gate games are **not** used as training data.
-Corpora remain immutable within each job. See [training.md](training.md).
+## Durable recovery
 
-## Durable model store
-
-By default, models and recovery data stay **in this repository's `models/`**, not in
-`runs/` and not in a sibling directory:
+Default store: `models/` inside this repository, outside disposable `runs/`:
 
 ```text
 models/
-  LATEST-ACCEPTED               relative path to an accepted bundle
-  LATEST-TRAINING               latest backed-up training candidate, even if rejected
-  accepted/YYYYMMDD-HHMMSS-SEQ-NAME-ID/   ONNX + checkpoint + exact replay SGFs
-  training/YYYYMMDD-HHMMSS-SEQ-NAME-ID/   checkpoint + replay for every candidate
+  LATEST-TRAINING
+  LATEST-EXPERIMENTAL
+  LATEST-ACCEPTED                 absent until approval, unless already historical
+  training/<dated-name>/         checkpoint + exact replay for every candidate
+  experimental/<dated-name>/     checkpoint + replay + frozen ONNX + match evidence
+  accepted/<dated-name>/         only explicitly approved publications
+  approvals/                    immutable user approval intents and receipts
+  sgf-blobs/                    deduplicated store-owned SGFs
+  ratings/                      both CSVs and authoritative evaluation SGFs
 ```
 
-Choose another disk/location with `--model-store PATH`; it must be separate from
-loop output and outside disposable `runs/`. Bundle names start with UTC publication
-time, then a same-second sequence, readable network name and short checkpoint ID; full hashes remain in
-the metadata and republishing preserves the original name. Bundles are write-once/read-only, hashed,
-and never automatically pruned. Both initial parents and every completed candidate
-are backed up before further progress/promotion. Initial checkpoints are trusted
-baselines, not magically gate-tested. Accepted bundles can be used directly with
-native `--model` inference.
+Training backup precedes export/evaluation; experimental backup precedes actor
+selection. Bundles are write-once/read-only, hashed and never automatically pruned.
+Accepted bundles also retain their exact approval record. New accepted publications
+require explicit consent pinned to the full checkpoint hash, not a moving alias.
 
-**ONNX alone cannot resume training.** The adjacent `checkpoint.pt` and `replay/`
-provide model/BatchNorm, optimizer/RNG, options, holdout history and exact corpus
-state. See [model-store.md](model-store.md) for recovery and backup commands. Keep
-an off-machine backup: local read-only files do not protect against disk loss.
-`models/` is Git-ignored; exclude it from destructive Git-clean operations.
+To fork after losing `runs/`, use `LATEST-TRAINING`'s checkpoint/replay and, if
+different, `LATEST-EXPERIMENTAL`'s checkpoint as `--actor-checkpoint`, with a fresh
+seed and output. Store pointers are convenience indexes across experiments; a live
+loop's frozen parents are in `loop.pt`. Approval does not alter those parents.
+See [model storage](model-store.md) for backup and strict offline continuation.
 
-## Process interruption and immutable artifacts
+**ONNX alone cannot resume training.** Checkpoints preserve optimizer/BatchNorm,
+RNG, options, cumulative progress, holdout history and corpus identities. Keep the
+whole model store, source/rules and a compatible environment backed up off-machine.
+`models/` is Git-ignored; destructive Git-clean commands can delete it.
 
-`loop.pt` is an atomic control checkpoint containing frozen config, artifact hashes,
-replay metadata, accepted pointer, candidates and gate decisions. SGFs are the game
-records; no JSON/JSONL game sidecars are written. Completed epochs, exports and
-committed SGFs are verified rather than overwritten.
+## Interruption semantics
 
-- **Input snapshots:** source checkpoint/eligible bootstrap files are copied exactly.
-  Initial source files must keep matching their hashes until copying finishes;
-  afterward the originals need not remain.
-- **Self-play:** game `j` in iteration `i` uses seed
-  `seed+(i-1)*games_per_iteration+j`. On restart, adopt valid finished SGFs and
-  regenerate only missing/invalid partial files into new attempts.
-- **Training:** reuse the newest compatible contiguous epoch snapshot, including
-  publication gaps before `latest.pt`/`best.pt` aliases. A failed first epoch starts
-  a fresh attempt. Partial epochs are not resumed; durable candidate backups occur
-  once the requested training phase is complete.
-- **Export:** verify and adopt an atomically published bundle if the supervisor
-  checkpoint lagged behind publication.
-- **Gate:** resume missing paired games without rerunning training. Preserve every
-  completed match and its authoritative result. A durable accepted bundle must be
-  complete before the accepted pointer advances.
-- **Recovery publication:** stage and fsync checkpoint/data/models, then atomically
-  publish a read-only bundle. Already published packs are verified and reused.
+`loop.pt` is an atomic control checkpoint, not an alternate game format. SGFs are
+the authoritative records. Stable iteration/attempt names and hashes let resume:
 
-Ctrl-C interrupts the active child process group, waits for cleanup, and escalates
-if needed. An inherited OS lock prevents a new supervisor racing a still-live child
-if the old supervisor is killed. Never unlink `.loop.lock` to bypass it. A stale
-trainer lock in an owned resumable attempt is removed only when its PID is absent.
-Live, malformed or permission-inaccessible locks are not blindly deleted.
+- Adopt immutable input snapshots, completed self-play SGFs and published exports.
+- Regenerate only missing/invalid partial games into new attempts, keeping valid
+  completed games and each frozen actor/seed assignment.
+- Resume the newest compatible contiguous completed epoch; retain weights,
+  momentum, holdouts and counters. A partial epoch is not saved; a failed first
+  epoch gets a new attempt. Stale trainer locks are removed only for absent PIDs.
+- Resume missing evaluation games without retraining, reexporting or rerating
+  already committed evidence.
+- Reuse durable training/experimental bundles and repair an actor-pointer commit
+  gap without generating another batch. Never derive consent from these steps.
 
-This is process-interruption safety, not an end-to-end power-loss guarantee. Batch
-shape/backend changes can alter regenerated games; GPU backward is not bitwise
-deterministic. Idempotent resume reuses committed work, not interrupted trajectories.
-The replay cap bounds active selection, not archive disk usage or the holdout ledger.
-
-Tests cover board ratios, model separation on rejection, unknown outcomes, gate
-restart, recovery publication, complete-run loss, and strict CPU continuation from
-archived data after deleting the original run. Real CPU and CUDA smokes are recorded
-in [benchmarks.md](benchmarks.md). Next is calibrated strength evaluation and budget
-tuning—not claiming that a small acceptance match proves improvement.
+Ctrl-C interrupts the active child process group and waits/escalates for cleanup.
+An inherited OS lock prevents another supervisor racing an in-flight child. Never
+unlink `.loop.lock` or a live/malformed/inaccessible `.train.lock` to bypass it.
+This is process-interruption safety, not end-to-end power-loss or bitwise GPU
+reproducibility. Completed approval intents/receipts have additional fsync-backed
+publication recovery, documented separately. Replay limits bound active selection,
+not total archive disk use or the ancestral holdout ledger.

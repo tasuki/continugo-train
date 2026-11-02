@@ -1,8 +1,8 @@
 """Restartable native self-play -> bounded replay -> warm-start -> ONNX loop.
 
 SGFs remain the game records. loop.pt is an atomic orchestration checkpoint, not
-an alternate game format. Training progress and accepted self-play models are
-separate; paired-color matches gate promotion, and recovery bundles live outside runs/.
+an alternate game format. Training, experimental actors and accepted networks
+are independent. Matches never promote: publication needs explicit user approval.
 """
 
 import argparse
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from . import archive, gate, ratings
+from . import archive, gate, promote, ratings
 from .data import inspect_corpus, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
@@ -33,7 +33,7 @@ from .runtime import inference_environment
 from .sampling import DEFAULT_SIZE_WEIGHTS, weighted_sizes
 from .train import Options, atomic_checkpoint, checkpoint_splits, feature_spec
 
-VERSION = 4
+VERSION = 5
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -81,6 +81,8 @@ class LoopConfig:
     gate_simulations: int = 32
     gate_max_moves: int = 512
     acceptance_rate: float = 0.5
+    actor_policy: str = "latest"
+    evaluation_interval: int = 1
     model_store: str = str(ROOT / "models")
 
     def validate(self):
@@ -114,6 +116,7 @@ class LoopConfig:
             "train_epochs",
             "batch_size",
             "threads",
+            "evaluation_interval",
         ]
         if any(getattr(self, name) <= 0 for name in positive) or self.replay_games < 2:
             raise ValueError(
@@ -146,6 +149,8 @@ class LoopConfig:
             and (not math.isfinite(self.lr) or self.lr <= 0)
         ):
             raise ValueError("invalid search, validation fraction or learning rate")
+        if self.actor_policy not in {"latest", "gate"}:
+            raise ValueError("actor-policy must be latest or gate")
         if self.device not in {"cpu", "cuda"} or self.warm_start_optimizer not in {"keep", "reset"}:
             raise ValueError("invalid device or warm-start optimizer policy")
 
@@ -345,8 +350,28 @@ class LoopRunner:
     def save(self):
         atomic_checkpoint(self.root / "loop.pt", self.state)
 
+    def verify_runtime(self):
+        expected = self.state["runtime_fingerprints"]
+        current = {
+            "selfplay": digest(self.config.selfplay_binary),
+            "features": digest(self.config.feature_binary),
+        }
+        if current != expected:
+            raise ValueError(
+                "generation/feature executable changed; fork a new loop instead of mixing protocols"
+            )
+        if (
+            self.state["rating_protocol"] is not None
+            and ratings.protocol(self.config) != self.state["rating_protocol"]
+        ):
+            raise ValueError(
+                "evaluation/rating executable changed; fork a new loop instead of mixing protocols"
+            )
+
     def execute(self, command, logfile, environment=None):
+        self.verify_runtime()
         run_process(command, logfile, self.lock_fd, environment)
+        self.verify_runtime()
 
     def log(self, text):
         print(text, flush=True)
@@ -376,7 +401,7 @@ class LoopRunner:
     def snapshots(self):
         records = [
             self.state["initial_checkpoint"],
-            self.state["initial_accepted_checkpoint"],
+            self.state["initial_actor_checkpoint"],
             *self.state["bootstrap"],
         ]
         for record in records:
@@ -413,7 +438,7 @@ class LoopRunner:
                     for record in iteration[key]["games"]:
                         if record:
                             self.check(record)
-            for key in ["training_archive", "accepted_archive"]:
+            for key in ["training_archive", "experimental_archive"]:
                 if iteration[key]:
                     archive.verify_bundle(iteration[key])
         initial_reference = self.state.get("initial_reference")
@@ -421,9 +446,19 @@ class LoopRunner:
             for record in initial_reference["reference"]["games"]:
                 if record:
                     self.check(record)
-        for key in ["initial_training_archive", "initial_archive"]:
+        for key in [
+            "initial_training_archive",
+            "initial_actor_training_archive",
+            "initial_experimental_archive",
+        ]:
             if self.state[key]:
                 archive.verify_bundle(self.state[key])
+        for role in ["training", "actor"]:
+            if self.state[role]:
+                self.check(self.state[role]["checkpoint"])
+                archive.verify_bundle(self.state[role]["archive"])
+                if role == "actor":
+                    self.check_model(self.state[role]["model"])
 
     def recovery(self, checkpoint, kind, *, model=None, iteration=None):
         candidates = [str(self.check(record)) for record in self.state["bootstrap"]]
@@ -466,7 +501,7 @@ class LoopRunner:
         output = self.path(directory)
         if not output.exists():
             self.log(f"export {checkpoint['path']} -> {directory}")
-            run_process(
+            self.execute(
                 [
                     sys.executable,
                     "-m",
@@ -479,7 +514,6 @@ class LoopRunner:
                     str(self.config.threads),
                 ],
                 output.parent / f"{output.name}-export.log",
-                self.lock_fd,
             )
         # Covers interruption after atomic directory rename, before loop commit.
         verify_export(output, self.check(checkpoint), saved)
@@ -626,7 +660,7 @@ class LoopRunner:
                 f"iteration {iteration['number']}: self-play {len(indices)} missing games, seed={seed}"
             )
             try:
-                run_process(command, directory / "selfplay.log", self.lock_fd, environment)
+                self.execute(command, directory / "selfplay.log", environment)
             except BaseException:
                 attempt["status"] = "interrupted"
                 self.save()
@@ -818,7 +852,7 @@ class LoopRunner:
             self.log(
                 f"iteration {iteration['number']}: train from epoch {len(snapshots)} to {self.config.train_epochs}"
             )
-            run_process(command, directory.with_suffix(".log"), self.lock_fd)
+            self.execute(command, directory.with_suffix(".log"))
             snapshots = self.epoch_snapshots(iteration, attempt, parent, options)
             if len(snapshots) != self.config.train_epochs:
                 raise ValueError("trainer exited without the requested completed epoch snapshots")
@@ -844,11 +878,25 @@ class LoopRunner:
         self.save()
         self.log(f"RATINGS {key}: {result}")
 
+    def actor_pointer(self):
+        archive.latest_pointer(
+            Path(self.config.model_store),
+            "experimental",
+            Path(self.state["actor"]["archive"]["directory"]),
+        )
+
     def run(self):
         self.verify_committed()
+        # Initial checkpoints are unaccepted experimental inputs, not implicit
+        # permission to publish an accepted baseline.
         if self.state["initial_model"] is None:
             self.state["initial_model"] = self.export(
-                self.state["initial_accepted_checkpoint"], "initial-model"
+                self.state["initial_actor_checkpoint"], "initial-model"
+            )
+            self.save()
+        if self.state["initial_actor_training_archive"] is None:
+            self.state["initial_actor_training_archive"] = self.recovery(
+                self.state["initial_actor_checkpoint"], "training"
             )
             self.save()
         if self.state["initial_training_archive"] is None:
@@ -856,13 +904,27 @@ class LoopRunner:
                 self.state["initial_checkpoint"], "training"
             )
             self.save()
-        if self.state["initial_archive"] is None:
-            self.state["initial_archive"] = self.recovery(
-                self.state["initial_accepted_checkpoint"],
-                "accepted",
+        if self.state["initial_experimental_archive"] is None:
+            self.state["initial_experimental_archive"] = self.recovery(
+                self.state["initial_actor_checkpoint"],
+                "experimental",
                 model=self.state["initial_model"],
             )
             self.save()
+        if self.state["training"] is None:
+            self.state["training"] = {
+                "checkpoint": self.state["initial_checkpoint"],
+                "archive": self.state["initial_training_archive"],
+            }
+        if self.state["actor"] is None:
+            self.state["actor"] = {
+                "checkpoint": self.state["initial_actor_checkpoint"],
+                "model": self.state["initial_model"],
+                "archive": self.state["initial_experimental_archive"],
+            }
+        self.state["accepted"] = promote.accepted_head(self.config.model_store)
+        self.save()
+        self.actor_pointer()
         ratings.refresh(self.config.model_store)
         if self.state.get("initial_reference") is None:
             self.state["initial_reference"] = {
@@ -874,24 +936,15 @@ class LoopRunner:
             self.save()
         initial = self.state["initial_reference"]
         gate.evaluate(self, initial, reference=True)
-        self.rate_evaluation(initial, "reference", [self.state["initial_accepted_checkpoint"]])
-        if self.state["accepted"] is None:
-            self.state["accepted"] = {
-                "checkpoint": self.state["initial_accepted_checkpoint"],
-                "model": self.state["initial_model"],
-                "archive": self.state["initial_archive"],
-            }
-            self.save()
+        self.rate_evaluation(initial, "reference", [self.state["initial_actor_checkpoint"]])
         for number in range(1, self.state["target_iterations"] + 1):
             if len(self.state["iterations"]) < number:
-                previous = self.state["iterations"][-1] if self.state["iterations"] else None
                 self.state["iterations"].append(
                     {
                         "number": number,
-                        "parent_checkpoint": previous["checkpoint"]
-                        if previous
-                        else self.state["initial_checkpoint"],
-                        "parent_model": self.state["accepted"]["model"],
+                        "parent_checkpoint": self.state["training"]["checkpoint"],
+                        "parent_actor_checkpoint": self.state["actor"]["checkpoint"],
+                        "parent_model": self.state["actor"]["model"],
                         "games": [None] * self.config.games_per_iteration,
                         "selfplay_attempts": [],
                         "replay": None,
@@ -900,14 +953,17 @@ class LoopRunner:
                         "checkpoint": None,
                         "model": None,
                         "gate": None,
+                        "reference": None,
                         "decision": None,
                         "training_archive": None,
-                        "accepted_archive": None,
+                        "experimental_archive": None,
+                        "actor_updated": None,
+                        "completed": False,
                     }
                 )
                 self.save()
             iteration = self.state["iterations"][number - 1]
-            if iteration["decision"] is not None:
+            if iteration["completed"]:
                 continue
             parent = load_training(self.check(iteration["parent_checkpoint"]))
             self.selfplay(iteration)
@@ -918,38 +974,59 @@ class LoopRunner:
                     iteration["checkpoint"], "training", iteration=iteration
                 )
                 self.save()
+            self.state["training"] = {
+                "checkpoint": iteration["checkpoint"],
+                "archive": iteration["training_archive"],
+            }
+            self.save()
             if iteration["model"] is None:
                 iteration["model"] = self.export(
                     iteration["checkpoint"], f"iteration-{number:04d}/model"
                 )
                 self.save()
-            report = gate.evaluate(self, iteration)
-            self.rate_evaluation(
-                iteration, "gate", [iteration["checkpoint"], self.state["accepted"]["checkpoint"]]
-            )
-            if report["decision"] == "accepted":
+            if number % self.config.evaluation_interval == 0:
+                report = gate.evaluate(self, iteration)
+                self.rate_evaluation(
+                    iteration,
+                    "gate",
+                    [iteration["checkpoint"], iteration["parent_actor_checkpoint"]],
+                )
                 gate.evaluate(self, iteration, reference=True)
                 self.rate_evaluation(iteration, "reference", [iteration["checkpoint"]])
-                if iteration["accepted_archive"] is None:
-                    iteration["accepted_archive"] = self.recovery(
-                        iteration["checkpoint"],
-                        "accepted",
-                        model=iteration["model"],
-                        iteration=iteration,
-                    )
-                    self.save()
-                self.state["accepted"] = {
+                decision = report["decision"]
+            else:
+                decision = "not-evaluated"
+            if iteration["experimental_archive"] is None:
+                iteration["experimental_archive"] = self.recovery(
+                    iteration["checkpoint"],
+                    "experimental",
+                    model=iteration["model"],
+                    iteration=iteration,
+                )
+                self.save()
+            update_actor = self.config.actor_policy == "latest" or decision in {
+                "passed",
+                "disabled",
+            }
+            if update_actor:
+                self.state["actor"] = {
                     "checkpoint": iteration["checkpoint"],
                     "model": iteration["model"],
-                    "archive": iteration["accepted_archive"],
+                    "archive": iteration["experimental_archive"],
                 }
-            iteration["decision"] = report["decision"]
+            iteration["actor_updated"] = update_actor
+            iteration["decision"] = decision
+            iteration["completed"] = True
+            # Reading an approved publication never switches training or actors.
+            self.state["accepted"] = promote.accepted_head(self.config.model_store)
             self.save()
+            self.actor_pointer()
             self.log(
-                f"iteration {number} complete: {iteration['decision']}; training progress retained at {iteration['checkpoint']['path']}"
+                f"iteration {number} complete: match={decision}; experimental actor {'advanced' if update_actor else 'held'}; "
+                f"training progress retained at {iteration['checkpoint']['path']}; no automatic promotion"
             )
         self.log(
-            f"loop complete: {self.state['target_iterations']} iterations; finite-match gating is not proof of improvement"
+            f"loop complete: {self.state['target_iterations']} iterations; accepted publication requires explicit user approval"
         )
         return self.state
 
@@ -965,9 +1042,11 @@ def parse_args(argv=None):
         "--checkpoint", type=Path, help="initial offline-training checkpoint (new loop only)"
     )
     parser.add_argument(
+        "--actor-checkpoint",
         "--incumbent-checkpoint",
+        dest="actor_checkpoint",
         type=Path,
-        help="optional different accepted checkpoint when restoring latest training progress",
+        help="optional different initial experimental self-play checkpoint; never marks it accepted",
     )
     parser.add_argument(
         "--bootstrap-data", nargs="+", help="optional SGFs snapshotted into a new loop"
@@ -1010,7 +1089,7 @@ def run_loop(args):
             if (
                 args.checkpoint is not None
                 or args.bootstrap_data is not None
-                or args.incumbent_checkpoint is not None
+                or args.actor_checkpoint is not None
             ):
                 raise ValueError(
                     "--checkpoint/--bootstrap-data are new-loop inputs, not resume overrides"
@@ -1022,7 +1101,7 @@ def run_loop(args):
                 or state.get("root") != str(root)
             ):
                 raise ValueError(
-                    "incompatible/relocated loop checkpoint; older loops are preserved but must be forked from their latest training checkpoint into a new v4 loop"
+                    "incompatible/relocated loop checkpoint; older automatic-promotion loops are preserved but must be forked into a new v5 manual-approval loop"
                 )
             for field in fields(LoopConfig):
                 value = getattr(args, field.name)
@@ -1061,24 +1140,24 @@ def run_loop(args):
             saved = load_training(io.BytesIO(content))
             initial_hash = hashlib.sha256(content).hexdigest()
             del content
-            accepted_source = (args.incumbent_checkpoint or args.checkpoint).resolve()
-            if accepted_source == source:
-                accepted_record = {
+            actor_source = (args.actor_checkpoint or args.checkpoint).resolve()
+            if actor_source == source:
+                actor_record = {
                     "path": "initial.pt",
                     "sha256": initial_hash,
                     "source": str(source),
                 }
             else:
-                content = accepted_source.read_bytes()
-                accepted_saved = load_training(io.BytesIO(content))
-                if accepted_saved["feature_spec"] != saved["feature_spec"]:
+                content = actor_source.read_bytes()
+                actor_saved = load_training(io.BytesIO(content))
+                if actor_saved["feature_spec"] != saved["feature_spec"]:
                     raise ValueError(
-                        "incumbent and training checkpoints need identical feature semantics/density"
+                        "actor and training checkpoints need identical feature semantics/density"
                     )
-                accepted_record = {
-                    "path": "incumbent.pt",
+                actor_record = {
+                    "path": "initial-actor.pt",
                     "sha256": hashlib.sha256(content).hexdigest(),
-                    "source": str(accepted_source),
+                    "source": str(actor_source),
                 }
                 del content
             bootstrap, skipped = (
@@ -1106,9 +1185,12 @@ def run_loop(args):
                 "initial_data_positions": initialize_progress(
                     saved, bootstrap, data_history(saved, checkpoint_splits(saved))
                 )["data_positions"],
-                "initial_accepted_checkpoint": accepted_record,
+                "initial_actor_checkpoint": actor_record,
                 "initial_training_archive": None,
-                "initial_archive": None,
+                "initial_actor_training_archive": None,
+                "initial_experimental_archive": None,
+                "training": None,
+                "actor": None,
                 "accepted": None,
                 "bootstrap": [],
                 "bootstrap_skipped": skipped,
@@ -1160,6 +1242,15 @@ def run_loop(args):
             )
         state["rating_protocol"] = current_protocol
         feature_binary(config.feature_binary)
+        fingerprints = {
+            "selfplay": digest(config.selfplay_binary),
+            "features": digest(config.feature_binary),
+        }
+        if args.resume and state.get("runtime_fingerprints") != fingerprints:
+            raise ValueError(
+                "generation/feature executable changed; fork a new loop instead of mixing protocols"
+            )
+        state["runtime_fingerprints"] = fingerprints
         torch.set_num_threads(config.threads)
         runner = LoopRunner(root, state, lock_fd)
         runner.save()

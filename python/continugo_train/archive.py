@@ -3,6 +3,8 @@
 Accepted ONNX is accompanied by the exact trainable checkpoint and replay SGFs.
 Every training candidate is backed up too, including rejected candidates. SGF
 blobs are immutable copies in this store; hardlinks only connect store-owned data.
+Experimental actors remain unaccepted. Accepted publication requires a matching
+explicit user authorization, and only committed approval receipts can move its head.
 """
 
 import fcntl
@@ -56,10 +58,20 @@ def verify_bundle(reference):
     if digest(metadata) != reference["sha256"]:
         raise ValueError(f"recovery manifest changed: {metadata}")
     saved = torch.load(metadata, map_location="cpu", weights_only=True)
-    if saved.get("version") != 1:
+    if saved.get("version") not in {1, 2} or saved.get("kind") not in {
+        "training",
+        "experimental",
+        "accepted",
+    }:
         raise ValueError("incompatible recovery bundle")
     for record in saved["files"]:
         checked_file(root, record)
+    if saved["version"] == 2:
+        if saved["kind"] != "accepted":
+            raise ValueError("approval format is only valid for accepted bundles")
+        from .promote import verify_embedded
+
+        verify_embedded(root, saved)
     return saved
 
 
@@ -71,6 +83,19 @@ def seal_directories(destination):
 
 
 def latest_pointer(store, kind, destination):
+    if kind == "accepted":
+        metadata = verify_bundle(
+            {"directory": str(destination), "sha256": digest(destination / "recovery.pt")}
+        )
+        if (
+            metadata.get("version") != 2
+            or not metadata.get("approval")
+            or destination.resolve().parent != Path(store).resolve() / "accepted"
+        ):
+            raise ValueError("accepted pointer changes require an explicitly approved bundle")
+        from .promote import validate_head_update
+
+        validate_head_update(store, destination, metadata)
     descriptor, temporary = tempfile.mkstemp(prefix=".latest-", dir=store)
     try:
         with os.fdopen(descriptor, "w") as stream:
@@ -104,17 +129,36 @@ def find_bundle(parent, kind, checksum):
 
 
 def _publish(
-    store, kind, checkpoint, *, model=None, context=None, game_candidates=(), evaluation=()
+    store,
+    kind,
+    checkpoint,
+    *,
+    model=None,
+    context=None,
+    game_candidates=(),
+    evaluation=(),
+    approval=None,
 ):
     """Return a pinned bundle reference. Existing bundles are verified, not rewritten."""
     store, checkpoint = Path(store).resolve(), Path(checkpoint).resolve()
-    if kind not in {"accepted", "training"}:
+    if kind not in {"accepted", "training", "experimental"}:
         raise ValueError("invalid archive kind")
+    if kind == "accepted" and approval is None:
+        raise ValueError("accepted publication requires explicit user approval")
+    if kind == "experimental" and model is None:
+        raise ValueError("experimental recovery requires a frozen inference model")
     store.mkdir(parents=True, exist_ok=True)
     checksum = digest(checkpoint)
+    approval_path = None
     parent = store / kind
+    if parent.is_symlink():
+        raise ValueError("archive kind directory cannot be a symlink")
     with (store / ".archive.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if kind == "accepted":
+            from .promote import validate_authorization
+
+            approval_path, _ = validate_authorization(store, approval, checksum, model)
         marker = store / "STORE.pt"
         if marker.exists():
             if torch.load(marker, weights_only=True) != {
@@ -136,6 +180,10 @@ def _publish(
                 "accepted/YYYYMMDD-HHMMSS-SEQ-NAME-ID/ contains accepted encoder.onnx + policy.onnx, plus a full "
                 "checkpoint.pt and replay/ snapshot for recovery. training/ uses the same UTC-dated names and preserves "
                 "every completed training candidate, even when rejected or inconclusive.\n\n"
+                "experimental/ contains unaccepted frozen actors with full recovery data. "
+                "LATEST-EXPERIMENTAL tracks the selected self-play actor independently of training. "
+                "Accepted publication requires a hash-pinned explicit user approval; "
+                "approvals/ retains immutable approval intents and publication receipts.\n\n"
                 "ratings/networks.csv lists all networks (filter accepted=1); "
                 "ratings/matches.csv retains processed SGF hashes and rating history. "
                 "ratings/games/ retains authoritative SGF evidence. "
@@ -160,8 +208,11 @@ def _publish(
             metadata = verify_bundle(reference)
             if metadata["checkpoint_sha256"] != checksum or metadata["kind"] != kind:
                 raise ValueError("archive checkpoint identity mismatch")
+            if kind == "accepted" and metadata.get("approval") != approval:
+                raise ValueError("existing accepted bundle has a different or historical approval")
             seal_directories(destination)
-            latest_pointer(store, kind, destination)
+            if kind == "training":
+                latest_pointer(store, kind, destination)
             return reference
         created = utc_now()
         saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -193,6 +244,10 @@ def _publish(
                 os.link(blob, target)
                 record(target)
 
+            if approval_path is not None:
+                copy(approval_path, "approval.pt")
+                if digest(stage / "approval.pt") != approval["sha256"]:
+                    raise ValueError("approval changed during publication")
             copy(checkpoint, "checkpoint.pt")
             if digest(stage / "checkpoint.pt") != checksum:
                 raise ValueError("checkpoint changed while archiving")
@@ -225,13 +280,15 @@ def _publish(
                 f"Epoch: {saved['epoch']}; local optimizer step: {saved['global_step']}\n\n"
                 f"Loop target mix: {(context or {}).get('config', {}).get('size_weights', 'see checkpoint')}\n\n"
                 f"Checkpoint sampling: {saved['options'].get('size_weights', 'uniform (legacy)')}\n\n"
-                f"Acceptance: {(context or {}).get('gate') or 'initial checkpoint / training snapshot'}\n\n"
+                f"Experimental match evidence (not approval): {(context or {}).get('gate')}\n\n"
+                f"User approval: {approval or 'NONE: unaccepted recovery artifact'}\n\n"
                 "ONNX alone is inference-only. checkpoint.pt contains weights, BatchNorm, "
                 "SGD state, RNG, options and holdout history; replay/ contains its exact SGFs.\n\n"
                 "To continue learning, start a new loop with --checkpoint checkpoint.pt "
                 "--bootstrap-data replay/ --warm-start-optimizer keep. To restore the latest "
-                "training progress while retaining a different accepted opponent, also pass "
-                "--incumbent-checkpoint PATH/TO/ACCEPTED/checkpoint.pt.\n\n"
+                "training progress while retaining a different experimental actor, also pass "
+                "--actor-checkpoint PATH/TO/EXPERIMENTAL/checkpoint.pt. "
+                "Neither operation marks a model accepted; use the separate manual approval command.\n\n"
                 "For strict offline continuation, copy checkpoint.pt into a fresh run directory "
                 "and use train --resume COPIED_CHECKPOINT --data THIS_BUNDLE/replay --epochs N. "
                 "N must exceed the checkpoint epoch. Never train directly inside this bundle.\n\n"
@@ -244,8 +301,9 @@ def _publish(
             atomic_checkpoint(
                 stage / "recovery.pt",
                 {
-                    "version": 1,
+                    "version": 2 if kind == "accepted" else 1,
                     "kind": kind,
+                    **({"approval": approval} if approval is not None else {}),
                     "checkpoint_sha256": checksum,
                     "network_name": label,
                     "progress": checkpoint_progress(saved),
@@ -267,7 +325,8 @@ def _publish(
         sync_directory(destination.parent)
         reference = {"directory": str(destination), "sha256": digest(destination / "recovery.pt")}
         verify_bundle(reference)
-        latest_pointer(store, kind, destination)
+        if kind == "training":
+            latest_pointer(store, kind, destination)
         return reference
 
 

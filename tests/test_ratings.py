@@ -46,20 +46,22 @@ class RatingsTests(helpers.LoopHarness):
             {p.name for p in self.directory.iterdir()},
             {".lock", "networks.csv", "matches.csv", "games"},
         )
-        self.assertEqual(len(matches), 6)  # Initial reference, gate, accepted candidate reference.
+        self.assertEqual(
+            len(matches), 6
+        )  # Initial reference, experimental match, candidate reference.
         self.assertEqual(len(rows), 3)
         candidate = next(
             r for r in rows if r["network_id"] == state["iterations"][0]["checkpoint"]["sha256"]
         )
         self.assertEqual((candidate["samples_seen"], candidate["data_positions"]), ("2", "20"))
-        self.assertEqual(sum(r["accepted"] == "1" for r in rows), 2)
+        self.assertEqual(sum(r["accepted"] == "1" for r in rows), 0)
         reference = next(r for r in rows if r["network_id"] == ratings.REFERENCE_ID)
         self.assertEqual(
             (reference["rating"], reference["deviation"], reference["status"]),
             ("100.0", "0.0", "fixed"),
         )
         for row in rows:
-            if row["accepted"] == "1":
+            if row["network_id"] != ratings.REFERENCE_ID:
                 self.assertEqual(row["status"], "rated")
                 self.assertEqual(float(row["rating"]), 100)
                 self.assertLess(float(row["deviation"]), 350)
@@ -70,10 +72,11 @@ class RatingsTests(helpers.LoopHarness):
             self.assertEqual(
                 path.stat().st_ino, (self.store / "sgf-blobs" / path.name).stat().st_ino
             )
-        bundle = state["accepted"]["archive"]
+        bundle = state["actor"]["archive"]
+        self.assertIsNone(state["accepted"])
         self.assertEqual(
             archive.verify_bundle(bundle)["network_name"],
-            state["accepted"]["model"]["network_name"],
+            state["actor"]["model"]["network_name"],
         )
         # Exact SGFs and CSVs do not depend on disposable runs or the source corpus.
         before = (self.directory / "networks.csv").read_bytes()
@@ -86,8 +89,7 @@ class RatingsTests(helpers.LoopHarness):
         with redirect_stdout(io.StringIO()) as result:
             ratings.main(["--model-store", str(self.store), "--accepted-only"])
         accepted = list(csv.DictReader(io.StringIO(result.getvalue())))
-        self.assertEqual(len(accepted), 2)
-        self.assertTrue(all(row["accepted"] == "1" for row in accepted))
+        self.assertEqual(accepted, [])
 
     def test_resume_reimport_and_future_clock_do_not_change_ratings(self):
         output = self.root / "loop"
@@ -133,16 +135,17 @@ class RatingsTests(helpers.LoopHarness):
     def test_rejected_candidates_are_kept_and_rated_but_not_marked_accepted(self):
         state = self.rated_loop(self.root / "loop", ["--acceptance-rate", "0.6"])
         iteration = state["iterations"][0]
-        self.assertEqual(iteration["decision"], "rejected")
-        self.assertEqual(iteration["parent_model"], state["accepted"]["model"])
+        self.assertEqual(iteration["decision"], "failed")
+        self.assertEqual(iteration["parent_model"], state["initial_model"])
+        self.assertIsNone(state["accepted"])
         candidate = next(
             r for r in self.rows() if r["network_id"] == iteration["checkpoint"]["sha256"]
         )
         self.assertEqual(
-            (candidate["accepted"], candidate["games"], candidate["status"]), ("0", "2", "rated")
+            (candidate["accepted"], candidate["games"], candidate["status"]), ("0", "4", "rated")
         )
-        self.assertEqual(len(self.matches()), 4)
-        self.assertIsNone(iteration.get("reference"))
+        self.assertEqual(len(self.matches()), 6)
+        self.assertIsNotNone(iteration.get("reference"))
 
     def test_truncations_are_unrated_not_draws_and_real_draws_are_half_points(self):
         self.jobs.reference_mode = self.jobs.arena_mode = "truncate"
@@ -162,7 +165,7 @@ class RatingsTests(helpers.LoopHarness):
         self.jobs.reference_mode = self.jobs.arena_mode = "draw"
         other = self.root / "draw-models"
         state = self.rated_loop(self.root / "draws", ["--model-store", str(other)])
-        self.assertEqual(state["iterations"][0]["decision"], "accepted")
+        self.assertEqual(state["iterations"][0]["decision"], "passed")
         for row in read_csv(other / "ratings/networks.csv"):
             self.assertEqual((row["wins"], row["losses"], row["draws"]), ("0", "0", "4"))
             self.assertEqual(float(row["rating"]), 100)
@@ -294,7 +297,7 @@ class RatingsTests(helpers.LoopHarness):
                 reference_max_moves=2,
             )
         )
-        archive.publish(self.store, "accepted", self.source, model=bundle)
+        archive.publish(self.store, "training", self.source, model=bundle)
         paths = sorted(output.glob("*.sgf"))
         for index, path in enumerate(paths):
             info = inspect_game(path)
@@ -302,7 +305,8 @@ class RatingsTests(helpers.LoopHarness):
             self.assertEqual(info["policy_visit_totals"], [1, None] if index == 0 else [None, 1])
             self.assertEqual(info["root_comment"]["evaluation"], settings["arena_sha256"])
         ratings.ingest(self.store, settings, paths)
-        network = next(r for r in self.rows() if r["accepted"] == "1")
+        network = next(r for r in self.rows() if r["network_id"] == archive.digest(self.source))
+        self.assertEqual(network["accepted"], "0")
         self.assertEqual(
             (network["status"], network["truncated"], network["draws"]), ("unrated", "2", "0")
         )

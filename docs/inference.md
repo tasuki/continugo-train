@@ -226,9 +226,10 @@ the CPU extraction cost; do not infer production self-play speed from this miles
 The [restartable synchronous loop](loop.md) now connects generation, bounded replay,
 warm-start training and export. Fixed-corpus offline `--resume` still intentionally
 rejects new games; the separate [`--warm-start` mode](training.md#warm-start-on-a-changing-replay-corpus)
-initializes each iteration without overriding that safety check. The loop promotes
-models only after a [paired-color acceptance test](evaluation.md), while training
-continues from the latest checkpoint even after rejection. Default board allocation
+initializes each iteration without overriding that safety check. The v5 loop
+advances unaccepted experimental actors independently of [periodic match results](evaluation.md),
+while training continues from the latest checkpoint. It never promotes a model;
+[accepted publication requires explicit user approval](training-policy.md). Default board allocation
 is 40%/40%/20% for 9/13/19 equivalents. Accepted ONNX bundles and full training
 recovery packs are preserved in the separate [model store](model-store.md). ONNX
 alone does not contain the optimizer/RNG/corpus state needed to resume training.

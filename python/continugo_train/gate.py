@@ -1,4 +1,4 @@
-"""Restartable fixed-budget paired-color gate. No loss-based model promotion."""
+"""Restartable experimental matches. Passing is evidence, never promotion permission."""
 
 from .features import inspect_game
 from .ratings import REFERENCE_ID
@@ -41,9 +41,9 @@ def summarize(records, threshold):
     lower = points / planned if planned else 0.0
     upper = (points + totals["truncated"]) / planned if planned else 1.0
     if planned and points + 1e-10 >= threshold * planned:
-        decision = "accepted"
+        decision = "passed"
     elif planned and points + totals["truncated"] + 1e-10 < threshold * planned:
-        decision = "rejected"
+        decision = "failed"
     else:
         decision = "inconclusive"
     return {
@@ -63,7 +63,7 @@ def evaluate(runner, iteration, *, reference=False):
     key = "reference" if reference else "gate"
     count = config.reference_games if reference else config.gate_games
     max_moves = config.reference_max_moves if reference else config.gate_max_moves
-    label = "REFERENCE" if reference else "ACCEPTANCE"
+    label = "REFERENCE" if reference else "EXPERIMENTAL MATCH"
     if iteration.get(key) is None:
         iteration[key] = {"attempts": [], "games": [None] * count, "report": None}
         runner.save()
@@ -71,7 +71,7 @@ def evaluate(runner, iteration, *, reference=False):
     if gate["report"] is not None:
         return gate["report"]
     if count == 0:
-        gate["report"] = {"decision": "accepted", "disabled": True, "draws": 0, "truncated": 0}
+        gate["report"] = {"decision": "disabled", "disabled": True, "draws": 0, "truncated": 0}
         runner.save()
         return gate["report"]
     search = {**config.search(), "simulations": config.gate_simulations}

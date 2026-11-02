@@ -188,10 +188,10 @@ class SamplingTests(unittest.TestCase):
             ]
 
         accepted = gate.summarize(records(6, 0, 4), 0.5)
-        self.assertEqual(accepted["decision"], "accepted")
+        self.assertEqual(accepted["decision"], "passed")
         self.assertEqual(accepted["planned_score_bounds"], (0.6, 1.0))
         rejected = gate.summarize(records(0, 7, 3), 0.5)
-        self.assertEqual(rejected["decision"], "rejected")
+        self.assertEqual(rejected["decision"], "failed")
         inconclusive = gate.summarize(records(2, 4, 4), 0.5)
         self.assertEqual(inconclusive["decision"], "inconclusive")
         self.assertEqual(inconclusive["draws"], 0)
@@ -236,28 +236,40 @@ class AcceptanceTests(helpers.LoopHarness):
     def test_rejection_keeps_latest_training_progress_and_incumbent_selfplay(self):
         output = self.root / "rejected"
         state = self.run_loop(
-            output, extra=["--iterations", "2", "--gate-games", "10", "--acceptance-rate", "0.6"]
+            output,
+            extra=[
+                "--iterations",
+                "2",
+                "--gate-games",
+                "10",
+                "--acceptance-rate",
+                "0.6",
+                "--actor-policy",
+                "gate",
+            ],
         )
         first, second = state["iterations"]
-        self.assertEqual(first["decision"], "rejected")
-        self.assertEqual(second["decision"], "rejected")
+        self.assertEqual(first["decision"], "failed")
+        self.assertEqual(second["decision"], "failed")
         self.assertEqual(second["parent_checkpoint"], first["checkpoint"])
         self.assertEqual(second["parent_model"], state["initial_model"])
-        self.assertEqual(state["accepted"]["model"], state["initial_model"])
+        self.assertEqual(state["actor"]["model"], state["initial_model"])
+        self.assertIsNone(state["accepted"])
         latest = Path(state["config"]["model_store"]) / "LATEST-TRAINING"
         self.assertEqual(
             latest.read_text().strip(),
             str(Path(second["training_archive"]["directory"]).relative_to(latest.parent)),
         )
         self.assertTrue(second["training_archive"])
-        self.assertIsNone(second["accepted_archive"])
+        self.assertTrue(second["experimental_archive"])
+        self.assertFalse((latest.parent / "LATEST-ACCEPTED").exists())
         for record in second["games"]:
             self.assertEqual(
                 inspect_game(output / record["path"])["root_comment"]["model"],
                 state["initial_checkpoint"]["sha256"],
             )
 
-    def test_unexpected_draws_are_visible_and_accepted_archives_are_complete(self):
+    def test_unexpected_draws_are_visible_and_experimental_archives_are_complete(self):
         output = self.root / "draws"
         self.jobs.arena_mode = "draw"
         state = self.run_loop(output, extra=["--gate-games", "10"])
@@ -265,9 +277,10 @@ class AcceptanceTests(helpers.LoopHarness):
         report = iteration["gate"]["report"]
         self.assertEqual(report["draws"], 10)
         self.assertEqual(report["score"], 0.5)
-        self.assertEqual(iteration["decision"], "accepted")
+        self.assertEqual(iteration["decision"], "passed")
+        self.assertIsNone(state["accepted"])
         self.assertIn("WARNING DRAW", (output / "loop.log").read_text())
-        reference = state["accepted"]["archive"]
+        reference = state["actor"]["archive"]
         metadata = archive.verify_bundle(reference)
         bundle = Path(reference["directory"])
         self.assertEqual(metadata["checkpoint_sha256"], iteration["checkpoint"]["sha256"])
@@ -296,7 +309,8 @@ class AcceptanceTests(helpers.LoopHarness):
         self.assertEqual(report["draws"], 0)
         self.assertIsNone(report["score"])
         self.assertEqual(iteration["decision"], "inconclusive")
-        self.assertEqual(state["accepted"]["model"], state["initial_model"])
+        self.assertIsNone(state["accepted"])
+        self.assertEqual(state["actor"]["model"], iteration["model"])
         self.assertIn("WARNING TRUNCATED", (output / "loop.log").read_text())
         self.assertTrue(iteration["training_archive"])
 
@@ -314,23 +328,23 @@ class AcceptanceTests(helpers.LoopHarness):
             state["iterations"][0]["gate"]["attempts"][1]["indices"], list(range(1, 10))
         )
 
-    def test_recovery_after_losing_runs_keeps_rejected_training_and_accepted_model_separate(self):
+    def test_recovery_after_losing_runs_keeps_training_and_experimental_actor_separate(self):
         output = self.root / "lost-run"
         state = self.run_loop(output, extra=["--gate-games", "10", "--acceptance-rate", "0.6"])
         latest = Path(state["iterations"][0]["training_archive"]["directory"])
-        accepted = Path(state["accepted"]["archive"]["directory"])
+        accepted = Path(state["initial_experimental_archive"]["directory"])
         training_hash = archive.digest(latest / "checkpoint.pt")
         accepted_hash = archive.digest(accepted / "checkpoint.pt")
         shutil.rmtree(output)
         shutil.rmtree(self.corpus)
         self.source.unlink()
-        archive.verify_bundle(state["accepted"]["archive"])
+        archive.verify_bundle(state["initial_experimental_archive"])
         resumed = self.run_loop(
             self.root / "restored",
             extra=[
                 "--checkpoint",
                 str(latest / "checkpoint.pt"),
-                "--incumbent-checkpoint",
+                "--actor-checkpoint",
                 str(accepted / "checkpoint.pt"),
                 "--bootstrap-data",
                 str(latest / "replay"),
@@ -389,9 +403,10 @@ class AcceptanceTests(helpers.LoopHarness):
             Counter(r["board_size"] for r in iteration["gate"]["games"]), {9: 4, 13: 4, 19: 2}
         )
         self.assertEqual(iteration["gate"]["report"]["draws"], 10)
-        self.assertEqual(iteration["decision"], "accepted")
-        archive.verify_bundle(state["accepted"]["archive"])
-        bundle = Path(state["accepted"]["archive"]["directory"])
+        self.assertEqual(iteration["decision"], "passed")
+        self.assertIsNone(state["accepted"])
+        archive.verify_bundle(state["actor"]["archive"])
+        bundle = Path(state["actor"]["archive"]["directory"])
         # Exact checkpoint plus relocated SGFs can feed the ordinary strict loader.
         saved = loop.load_training(bundle / "checkpoint.pt")
         corpus = data.scan_corpus(
