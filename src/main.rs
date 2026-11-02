@@ -42,7 +42,7 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = 512)]
     max_moves: usize,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 32)]
     simulations: u32,
     #[arg(long, default_value_t = 1.5)]
     cpuct: f64,

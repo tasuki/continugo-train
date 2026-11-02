@@ -27,7 +27,7 @@ pub struct SearchConfig {
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
-            simulations: 64,
+            simulations: 32,
             cpuct: 1.5,
             widening: 2.0,
             widening_exponent: 0.5,
@@ -578,7 +578,7 @@ mod tests {
             Some(-1.0)
         );
         let config = SearchConfig {
-            simulations: 64,
+            simulations: 32,
             ..SearchConfig::default()
         };
         let result = search(&game, &config, &mut rng).unwrap();
