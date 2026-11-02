@@ -2,6 +2,14 @@
 
 Rust self-play experiments using shared ContinuGo rules, plus a configurable PyTorch policy/value network.
 
+## Current operating policy
+
+See [training and promotion policy](docs/training-policy.md): experimental self-play
+checkpoints may advance, but **every accepted-network promotion needs explicit user
+approval**, and none are authorized until convincingly stronger than the reference.
+The supervisor does not implement this separation yet; its automatic acceptance
+must be changed before an unattended long training campaign.
+
 ## Requirements
 
 - [mise](https://mise.jdx.dev/)

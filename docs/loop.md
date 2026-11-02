@@ -6,6 +6,21 @@ ONNX export → paired-color acceptance matches. The structure follows
 with a game-result gate rather than loss-based promotion. This is still a small
 single-machine implementation, not an asynchronous distributed trainer.
 
+## Operating policy: manual approval (implementation pending)
+
+The agreed [training and promotion policy](training-policy.md) separates the latest
+training checkpoint, an unaccepted experimental self-play actor, and the accepted
+network. Every promotion requires explicit user approval of the exact checkpoint;
+there are to be no promotions until convincingly much stronger than the reference.
+Experimental actor updates and training may continue without acceptance.
+
+**The supervisor described below does not yet implement that separation or
+approval requirement.** It still automatically accepts passing candidates and
+publishes an initial accepted baseline. Do not start it unattended under the new
+policy until those paths are changed and tested. `--gate-games 0` does not prevent
+promotion. Examples below document existing mechanics, not authorization to run
+a week-long experiment with automatic acceptance. See [outstanding work](todo.md).
+
 ## Small run
 
 Requires an existing full training checkpoint, inference dependencies and the

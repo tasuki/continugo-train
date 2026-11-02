@@ -119,6 +119,25 @@ class ArtifactPathsTests(helpers.LoopHarness):
         self.assertRegex(latest.parent.name, r"^\d{8}-\d{6}-train$")
         self.assertTrue(latest.is_file())
 
+    def test_unguided_arena_launcher_does_not_require_inference_dependencies(self):
+        with (
+            patch.object(runtime, "inference_environment") as inference,
+            patch.object(runtime.os, "execvpe") as execute,
+        ):
+            runtime.main(
+                [
+                    "arena",
+                    "--unguided",
+                    "--reference-random",
+                    "--output",
+                    str(self.root / "matches"),
+                ]
+            )
+        inference.assert_not_called()
+        command = execute.call_args.args[1]
+        self.assertIn("--unguided", command)
+        self.assertNotIn("--ort-library", command)
+
     def test_export_and_neural_launcher_default_to_dated_outputs(self):
         def allocate(label):
             return paths.new_run_directory(label, self.root / "auto")

@@ -1,5 +1,12 @@
 # Candidate acceptance matches
 
+**Current operating policy:** [every promotion requires explicit user approval](training-policy.md),
+and none are authorized until convincingly much stronger than the fixed reference.
+A favorable gate verdict is evidence, not approval. Experimental self-play actors
+may advance without becoming accepted. This separation is not implemented in the
+supervisor yet; the automatic gate/promotion mechanics below describe existing
+code, not the newly agreed publication policy.
+
 The loop gates a trained/exported candidate against the **last accepted model**.
 It does not use training or validation loss for promotion. This follows KataGo's
 optional [gatekeeper](https://github.com/lightvector/KataGo/blob/master/cpp/command/gatekeeper.cpp)

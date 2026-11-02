@@ -569,8 +569,10 @@ class LoopTests(LoopHarness):
             "4",
             "--widening",
             "0.01",
+            # Keep this a cheap recovery test, not a search-strength match.
+            # Some games draw naturally on an empty board; others are censored.
             "--max-moves",
-            "24",
+            "2",
             "--concurrent-games",
             "6",
             "--inference-batch-size",

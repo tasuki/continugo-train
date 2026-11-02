@@ -8,7 +8,7 @@ use continugo_rules::{Board, territory};
 use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
-    search::SearchConfig,
+    search::{SearchConfig, rollout::RolloutArgs},
     selfplay::{
         Engine, GameRecord, SelfplayConfig, generate, generate_neural, generate_profiled,
         parallel::{ParallelConfig, generate_parallel},
@@ -54,6 +54,8 @@ struct Args {
     proposal_attempts: usize,
     #[arg(long, default_value_t = 0.25)]
     independent_exploration: f64,
+    #[command(flatten)]
+    rollout: RolloutArgs,
     /// ONNX model directory containing encoder.onnx and policy.onnx (neural engine).
     #[arg(long)]
     model: Option<PathBuf>,
@@ -119,6 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             widening_exponent: args.widening_exponent,
             proposal_attempts: args.proposal_attempts,
             independent_exploration: args.independent_exploration,
+            rollout: args.rollout.config(),
         },
     };
     config.validate()?;
@@ -211,6 +214,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             generation_seconds,
             output_seconds,
         );
+        if config.search.rollout.is_some() {
+            eprintln!(
+                "rollouts game {}: {:?}",
+                index + 1,
+                record.metadata.rollout_stats
+            );
+        }
         if let Some(profile) = &record.metadata.profile {
             eprintln!("{}", profile.summary());
         }

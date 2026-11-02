@@ -7,6 +7,9 @@ use rand::Rng;
 use serde::Serialize;
 use std::sync::OnceLock;
 
+pub mod rollout;
+use rollout::{RolloutConfig, RolloutStats};
+
 #[derive(Clone, Debug, Serialize)]
 pub struct SearchConfig {
     pub simulations: u32,
@@ -16,6 +19,9 @@ pub struct SearchConfig {
     pub proposal_attempts: usize,
     /// Neural placement proposal mixture: uniform legal exploration vs policy.
     pub independent_exploration: f64,
+    /// Experimental cold-start evaluation; None retains the normal leaf evaluator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<RolloutConfig>,
 }
 
 impl Default for SearchConfig {
@@ -27,12 +33,16 @@ impl Default for SearchConfig {
             widening_exponent: 0.5,
             proposal_attempts: 128,
             independent_exploration: 0.25,
+            rollout: None,
         }
     }
 }
 
 impl SearchConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(rollout) = &self.rollout {
+            rollout.validate()?;
+        }
         if self.simulations == 0
             || !self.cpuct.is_finite()
             || self.cpuct <= 0.0
@@ -62,9 +72,19 @@ pub struct Visit {
 #[derive(Debug)]
 pub struct SearchResult {
     pub policy: Vec<Visit>,
+    pub rollout_stats: RolloutStats,
 }
 
 impl SearchResult {
+    /// Evaluation play: maximum visits, with random tie breaks.
+    pub fn best(&self, rng: &mut impl Rng) -> Action {
+        self.policy
+            .iter()
+            .max_by_key(|visit| (visit.visits, rng.random::<u64>()))
+            .expect("nonempty search policy")
+            .action
+    }
+
     /// Temperature 1: sample exactly in proportion to root visit counts.
     pub fn sample(&self, rng: &mut impl Rng) -> Action {
         let total: u32 = self.policy.iter().map(|entry| entry.visits).sum();
@@ -89,11 +109,14 @@ struct Node {
     visits: u32,
     // Always from this node's side-to-move perspective, not its parent's.
     value_sum: f64,
+    value_visits: u32,
+    // Exact evidence about this node's pass action, not a positional heuristic.
+    pass_proof: Option<f64>,
     proposals: Proposals,
     prepared: OnceLock<PreparedGame>,
     children: Vec<Edge>,
     neural: Option<SampledPolicy>,
-    // Placement importance p(a)/q(a), or the full policy probability for pass.
+    // Placement importance p(a)/q(a); pass keeps its separate policy stratum.
     importance: f64,
 }
 
@@ -103,6 +126,8 @@ impl Node {
             game,
             visits: 0,
             value_sum: 0.0,
+            value_visits: 0,
+            pass_proof: None,
             proposals: Proposals::new(rng),
             prepared: OnceLock::new(),
             children: Vec::new(),
@@ -128,16 +153,32 @@ impl Node {
         evaluator: &mut dyn Evaluator,
         config: &SearchConfig,
         rng: &mut impl Rng,
-    ) -> Result<f64, String> {
+        stats: &mut RolloutStats,
+    ) -> Result<Option<f64>, String> {
         if self.game.is_finished() {
-            return Ok(self.update(black_outcome(&self.game) * color_sign(self.game.on_move())));
+            return Ok(self.update_estimate(Some(
+                black_outcome(&self.game) * color_sign(self.game.on_move()),
+            )));
+        }
+        self.expand_pass(rng)?;
+        if self.pass_proof == Some(1.0) {
+            let value = self.children[0]
+                .child
+                .simulate_neural(evaluator, config, rng, stats)?
+                .map(|v| -v);
+            return Ok(self.update_estimate(value));
         }
         if self.visits == 0 {
-            let value = evaluator.value(&self.game)?;
-            if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
-                return Err("invalid neural leaf value".into());
-            }
-            return Ok(self.update(value));
+            let value = if let Some(rollout) = &config.rollout {
+                rollout::evaluate(&self.game, rollout, config.proposal_attempts, rng, stats)
+            } else {
+                let value = evaluator.value(&self.game)?;
+                if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
+                    return Err("invalid neural leaf value".into());
+                }
+                Some(value)
+            };
+            return Ok(self.update_estimate(value));
         }
         // Most new leaves are never expanded: do not score a million moves for
         // their value queries. Materialize policy only on a subsequent visit.
@@ -145,14 +186,6 @@ impl Node {
             self.evaluate_neural(evaluator, config, rng)?;
         }
         let policy = self.neural.as_mut().expect("evaluated before expansion");
-        if self.children.is_empty() {
-            let mut child = Node::new(self.game.pass()?, rng);
-            child.importance = policy.pass;
-            self.children.push(Edge {
-                action: Action::PASS,
-                child,
-            });
-        }
         let limit = (config.widening * f64::from(self.visits).powf(config.widening_exponent)).ceil()
             as usize;
         if self.children.len() - 1 < limit
@@ -167,13 +200,14 @@ impl Node {
             self.children.push(Edge { action, child });
             // A newly proposed action always gets a real evaluation, even if the
             // network undervalues it. This preserves independent exploration.
-            let value = -self
+            let value = self
                 .children
                 .last_mut()
                 .unwrap()
                 .child
-                .simulate_neural(evaluator, config, rng)?;
-            return Ok(self.update(value));
+                .simulate_neural(evaluator, config, rng, stats)?
+                .map(|v| -v);
+            return Ok(self.update_estimate(value));
         }
         let placement_weight: f64 = self
             .children
@@ -188,6 +222,9 @@ impl Node {
             .children
             .iter()
             .enumerate()
+            .filter(|(index, _)| {
+                *index != 0 || self.pass_proof != Some(-1.0) || self.children.len() == 1
+            })
             .map(|(index, edge)| {
                 let prior = if index == 0 {
                     pass
@@ -203,41 +240,73 @@ impl Node {
             .max_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)))
             .unwrap()
             .0;
-        let value = -self.children[best]
+        let value = self.children[best]
             .child
-            .simulate_neural(evaluator, config, rng)?;
-        Ok(self.update(value))
+            .simulate_neural(evaluator, config, rng, stats)?
+            .map(|v| -v);
+        Ok(self.update_estimate(value))
     }
 
-    fn update(&mut self, value: f64) -> f64 {
+    /// Probe only legal, terminal pass continuations. Never score an unfinished
+    /// board or infer a loss from an incomplete set of sampled placement moves.
+    fn expand_pass(&mut self, rng: &mut impl Rng) -> Result<(), String> {
+        if self.children.is_empty() {
+            let next = self.game.pass()?;
+            let perspective = color_sign(self.game.on_move());
+            self.pass_proof = if next.is_finished() {
+                Some(black_outcome(&next) * perspective)
+            } else {
+                let reply = next.pass()?;
+                (black_outcome(&reply) * perspective == -1.0).then_some(-1.0)
+            };
+            self.children.push(Edge {
+                action: Action::PASS,
+                child: Node::new(next, rng),
+            });
+        }
+        Ok(())
+    }
+
+    fn update_estimate(&mut self, value: Option<f64>) -> Option<f64> {
         self.visits += 1;
-        self.value_sum += value;
+        if let Some(value) = value {
+            self.value_sum += value;
+            self.value_visits += 1;
+        }
         value
     }
 
     fn mean(&self) -> f64 {
-        if self.visits == 0 {
-            0.0
+        if self.value_visits == 0 {
+            0.0 // Explicit lack of evidence, not an observed draw.
         } else {
-            self.value_sum / f64::from(self.visits)
+            self.value_sum / f64::from(self.value_visits)
         }
     }
 
-    fn simulate(&mut self, config: &SearchConfig, rng: &mut impl Rng) -> f64 {
+    fn simulate(
+        &mut self,
+        config: &SearchConfig,
+        rng: &mut impl Rng,
+        stats: &mut RolloutStats,
+    ) -> Option<f64> {
         if self.game.is_finished() {
             let value = black_outcome(&self.game) * color_sign(self.game.on_move());
-            return self.update(value);
+            return self.update_estimate(Some(value));
+        }
+        self.expand_pass(rng).expect("unfinished game");
+        if self.pass_proof == Some(1.0) {
+            let value = self.children[0]
+                .child
+                .simulate(config, rng, stats)
+                .map(|v| -v);
+            return self.update_estimate(value);
         }
         if self.visits == 0 {
-            // Unguided baseline: neutral value, no positional heuristic or rollout.
-            // The separate neural path uses network values and sampled priors.
-            return self.update(0.0);
-        }
-        if self.children.is_empty() {
-            self.children.push(Edge {
-                action: Action::PASS,
-                child: Node::new(self.game.pass().expect("unfinished game"), rng),
+            let value = config.rollout.as_ref().map_or(Some(0.0), |rollout| {
+                rollout::evaluate(&self.game, rollout, config.proposal_attempts, rng, stats)
             });
+            return self.update_estimate(value);
         }
         let placement_limit = (config.widening
             * f64::from(self.visits).powf(config.widening_exponent))
@@ -262,6 +331,9 @@ impl Node {
             .children
             .iter()
             .enumerate()
+            .filter(|(index, _)| {
+                *index != 0 || self.pass_proof != Some(-1.0) || self.children.len() == 1
+            })
             .map(|(index, edge)| {
                 let score = -edge.child.mean() + exploration / (1.0 + f64::from(edge.child.visits));
                 (index, score, rng.random::<u64>())
@@ -269,8 +341,11 @@ impl Node {
             .max_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)))
             .unwrap()
             .0;
-        let value = -self.children[best].child.simulate(config, rng);
-        self.update(value)
+        let value = self.children[best]
+            .child
+            .simulate(config, rng, stats)
+            .map(|v| -v);
+        self.update_estimate(value)
     }
 }
 
@@ -386,11 +461,14 @@ pub fn search_neural(
     }
     let mut root = Node::new(game.clone(), rng);
     let value = root.evaluate_neural(evaluator, config, rng)?;
-    root.update(value); // Uncounted initial root evaluation, as in the baseline.
+    // In rollout mode the network supplies policy only, never leaf values.
+    root.update_estimate(config.rollout.is_none().then_some(value));
+    let mut rollout_stats = RolloutStats::default();
     for _ in 0..config.simulations {
-        root.simulate_neural(evaluator, config, rng)?;
+        root.simulate_neural(evaluator, config, rng, &mut rollout_stats)?;
     }
     Ok(SearchResult {
+        rollout_stats,
         policy: root
             .children
             .into_iter()
@@ -411,6 +489,10 @@ pub fn color_sign(color: Color) -> f64 {
 
 /// The caller must only use this as a target for naturally completed games.
 pub fn black_outcome(game: &Game) -> f64 {
+    assert!(
+        game.is_finished(),
+        "authoritative outcome requires natural completion"
+    );
     match territory::result(territory::areas(game.position().stones())) {
         territory::Outcome::Draw => 0.0,
         territory::Outcome::Win(color, _) => color_sign(color),
@@ -427,11 +509,13 @@ pub fn search(
         return Err("Cannot search a finished game".into());
     }
     let mut root = Node::new(game.clone(), rng);
-    root.update(0.0); // Initial neutral evaluation; not a counted simulation.
+    root.update_estimate(None); // Structural root visit, not outcome evidence.
+    let mut rollout_stats = RolloutStats::default();
     for _ in 0..config.simulations {
-        root.simulate(config, rng);
+        root.simulate(config, rng, &mut rollout_stats);
     }
     Ok(SearchResult {
+        rollout_stats,
         policy: root
             .children
             .into_iter()
@@ -485,7 +569,14 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(8);
         let mut terminal = Node::new(game.pass().unwrap(), &mut rng);
         // Black passes; White is to move in the finished Black win.
-        assert_eq!(terminal.simulate(&SearchConfig::default(), &mut rng), -1.0);
+        assert_eq!(
+            terminal.simulate(
+                &SearchConfig::default(),
+                &mut rng,
+                &mut RolloutStats::default()
+            ),
+            Some(-1.0)
+        );
         let config = SearchConfig {
             simulations: 64,
             ..SearchConfig::default()
@@ -543,10 +634,15 @@ mod tests {
         let value = root
             .evaluate_neural(&mut evaluator, &config, &mut rng)
             .unwrap();
-        root.update(value);
+        root.update_estimate(Some(value));
         for _ in 0..2 {
-            root.simulate_neural(&mut evaluator, &config, &mut rng)
-                .unwrap();
+            root.simulate_neural(
+                &mut evaluator,
+                &config,
+                &mut rng,
+                &mut RolloutStats::default(),
+            )
+            .unwrap();
         }
         assert_eq!(root.visits, 3);
         assert_eq!(root.value_sum, -0.75); // +root, -child, -child (side-to-move).
@@ -567,9 +663,14 @@ mod tests {
         let mut terminal = Node::new(finished, &mut rng);
         assert_eq!(
             terminal
-                .simulate_neural(&mut evaluator, &config, &mut rng)
+                .simulate_neural(
+                    &mut evaluator,
+                    &config,
+                    &mut rng,
+                    &mut RolloutStats::default()
+                )
                 .unwrap(),
-            -1.0
+            Some(-1.0)
         );
         assert_eq!(evaluator.calls, 3);
     }
@@ -608,6 +709,182 @@ mod tests {
         .ceil();
         assert_eq!(policy.candidates.len(), 2);
         assert!((policy.candidates.iter().map(|(_, w)| w).sum::<f64>() - draws).abs() < 1e-12);
+    }
+
+    #[test]
+    #[should_panic(expected = "authoritative outcome requires natural completion")]
+    fn unfinished_positions_cannot_be_used_as_authoritative_outcomes() {
+        black_outcome(&Game::default());
+    }
+
+    struct MisleadingEvaluator {
+        pass_logit: f32,
+        policy_calls: usize,
+        value_calls: usize,
+        forbid_value: bool,
+    }
+
+    impl Evaluator for MisleadingEvaluator {
+        fn evaluate(&mut self, game: &Game) -> Result<Evaluation, String> {
+            self.policy_calls += 1;
+            let count = crate::action::COORDINATE_ACTIONS as usize;
+            let mut logits = vec![f32::NEG_INFINITY; count + 1];
+            let mut legal = vec![0; count];
+            let prepared = game.prepare();
+            for index in [200_200, 500_500, 700_700] {
+                if prepared
+                    .play(Action::from_index(index).unwrap().spot().unwrap())
+                    .is_ok()
+                {
+                    logits[index as usize] = 0.0;
+                    legal[index as usize] = 1;
+                }
+            }
+            logits[count] = self.pass_logit;
+            Ok(Evaluation {
+                logits,
+                legal,
+                value: -0.99,
+            })
+        }
+        fn value(&mut self, _: &Game) -> Result<f64, String> {
+            self.value_calls += 1;
+            if self.forbid_value {
+                return Err("cold-start search must not use neural leaf values".into());
+            }
+            Ok(-0.99)
+        }
+        fn model_id(&self) -> &str {
+            "misleading-test"
+        }
+    }
+
+    fn misleading(pass_logit: f32) -> MisleadingEvaluator {
+        MisleadingEvaluator {
+            pass_logit,
+            policy_calls: 0,
+            value_calls: 0,
+            forbid_value: false,
+        }
+    }
+
+    #[test]
+    fn exact_winning_pass_overrides_bad_values_tiny_prior_and_widening() {
+        let game = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let mut evaluator = misleading(-80.0);
+        let result = search_neural(
+            &game,
+            &SearchConfig {
+                simulations: 4,
+                ..SearchConfig::default()
+            },
+            &mut evaluator,
+            &mut StdRng::seed_from_u64(8),
+        )
+        .unwrap();
+        assert_eq!(result.policy.len(), 1);
+        assert_eq!(result.policy[0].action, Action::PASS);
+        assert_eq!(result.policy[0].visits, 4);
+        assert_eq!(evaluator.value_calls, 0);
+    }
+
+    #[test]
+    fn pass_allowing_an_immediate_winning_reply_is_not_selected_by_huge_prior() {
+        let game = Game::default().play(Spot { x: 500, y: 500 }).unwrap();
+        let mut evaluator = misleading(80.0);
+        let result = search_neural(
+            &game,
+            &SearchConfig {
+                simulations: 32,
+                ..SearchConfig::default()
+            },
+            &mut evaluator,
+            &mut StdRng::seed_from_u64(8),
+        )
+        .unwrap();
+        assert_eq!(result.policy.iter().map(|v| v.visits).sum::<u32>(), 32);
+        assert_eq!(
+            result
+                .policy
+                .iter()
+                .find(|v| v.action == Action::PASS)
+                .unwrap()
+                .visits,
+            0
+        );
+        assert!(
+            result
+                .policy
+                .iter()
+                .any(|v| v.action != Action::PASS && v.visits > 0)
+        );
+    }
+
+    #[test]
+    fn rollout_mode_uses_policy_but_never_neural_leaf_values() {
+        let mut evaluator = misleading(0.0);
+        evaluator.forbid_value = true;
+        let config = SearchConfig {
+            simulations: 16,
+            widening: 0.5,
+            rollout: Some(RolloutConfig {
+                playouts: 2,
+                max_moves: 2,
+                pass_probability: 1.0,
+            }),
+            ..SearchConfig::default()
+        };
+        let result = search_neural(
+            &Game::default(),
+            &config,
+            &mut evaluator,
+            &mut StdRng::seed_from_u64(8),
+        )
+        .unwrap();
+        assert!(evaluator.policy_calls > 0);
+        assert_eq!(evaluator.value_calls, 0);
+        assert!(result.rollout_stats.completed > 0);
+        assert_eq!(result.policy.iter().map(|v| v.visits).sum::<u32>(), 16);
+    }
+
+    #[test]
+    fn leading_on_the_board_does_not_prove_a_win_if_opponent_can_reply() {
+        let game = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap()
+            .play(Spot { x: 700, y: 700 })
+            .unwrap()
+            .pass()
+            .unwrap()
+            .play(Spot { x: 200, y: 200 })
+            .unwrap()
+            .play(Spot { x: 800, y: 200 })
+            .unwrap();
+        let pass = game.pass().unwrap();
+        assert!(!pass.is_finished());
+        assert_eq!(black_outcome(&pass.pass().unwrap()), 1.0);
+        let mut node = Node::new(game, &mut StdRng::seed_from_u64(8));
+        node.expand_pass(&mut StdRng::seed_from_u64(8)).unwrap();
+        assert_eq!(
+            node.pass_proof, None,
+            "the opponent is not obliged to cooperate by passing"
+        );
+    }
+
+    #[test]
+    fn unknown_rollouts_do_not_dilute_completed_value_evidence() {
+        let mut node = Node::new(Game::default(), &mut StdRng::seed_from_u64(8));
+        node.update_estimate(None);
+        node.update_estimate(Some(1.0));
+        assert_eq!(node.visits, 2);
+        assert_eq!(node.value_visits, 1);
+        assert_eq!(node.mean(), 1.0);
     }
 
     #[test]

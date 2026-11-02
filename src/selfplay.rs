@@ -14,11 +14,11 @@ use crate::{
     action::random_move,
     inference::Evaluator,
     profile::{GameProfile, MoveProfile},
-    search::{SearchConfig, Visit, search, search_neural},
+    search::{SearchConfig, Visit, rollout::RolloutStats, search, search_neural},
 };
 use continugo_analysis::GeometricAvailability;
 use continugo_rules::{Board, Color, Game, sgf, territory};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{SeedableRng, rngs::StdRng};
 use serde::Serialize;
 use std::time::Instant;
 
@@ -40,6 +40,9 @@ pub struct SelfplayConfig {
 impl SelfplayConfig {
     pub fn validate(&self) -> Result<(), String> {
         self.search.validate()?;
+        if matches!(self.engine, Engine::Random) && self.search.rollout.is_some() {
+            return Err("rollout leaf evaluation requires a search engine".into());
+        }
         if self.max_moves == 0 {
             return Err("max_moves must be positive".into());
         }
@@ -61,6 +64,7 @@ pub struct GameMetadata {
     pub model: Option<String>,
     pub opponent: Option<String>,
     pub evaluation: Option<String>,
+    pub rollout_stats: RolloutStats,
 }
 
 #[derive(Serialize)]
@@ -76,6 +80,8 @@ struct GameComment<'a> {
     opponent: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rollout_stats: Option<&'a RolloutStats>,
 }
 
 impl GameMetadata {
@@ -87,6 +93,12 @@ impl GameMetadata {
             profile: self.profile.as_ref(),
             opponent: self.opponent.as_deref(),
             evaluation: self.evaluation.as_deref(),
+            rollout_stats: self
+                .config
+                .search
+                .rollout
+                .as_ref()
+                .map(|_| &self.rollout_stats),
         }
     }
 }
@@ -190,6 +202,25 @@ pub fn generate_reference_match(
     )
 }
 
+/// Diagnostic matches for a network-independent bootstrap search. These are
+/// evaluation SGFs, never eligible self-play data for the training supervisor.
+pub fn generate_unguided_reference_match(
+    board: Board,
+    config: &SelfplayConfig,
+    seed: u64,
+    candidate_black: bool,
+) -> Result<GameRecord, String> {
+    if !matches!(config.engine, Engine::Mcts) {
+        return Err("unguided reference matches require the MCTS engine".into());
+    }
+    let reference_color = if candidate_black {
+        Color::White
+    } else {
+        Color::Black
+    };
+    generate_inner::<false>(board, config, seed, None, None, Some(reference_color))
+}
+
 fn generate_inner<const PROFILE: bool>(
     board: Board,
     config: &SelfplayConfig,
@@ -237,6 +268,7 @@ fn generate_inner<const PROFILE: bool>(
         profile.availability_init_seconds = started.elapsed().as_secs_f64();
     }
     let mut policies = Vec::new();
+    let mut rollout_stats = RolloutStats::default();
     while !game.is_finished() && policies.len() < config.max_moves {
         let move_started = PROFILE.then(Instant::now);
         let mut move_profile = MoveProfile {
@@ -266,7 +298,13 @@ fn generate_inner<const PROFILE: bool>(
                 Engine::Random => unreachable!(),
                 Engine::Mcts => {
                     let result = search(&game, &config.search, &mut rng)?;
-                    (result.sample(&mut rng).apply(&game)?, Some(result.policy))
+                    rollout_stats.merge(&result.rollout_stats);
+                    let action = if evaluation_game {
+                        result.best(&mut rng)
+                    } else {
+                        result.sample(&mut rng)
+                    };
+                    (action.apply(&game)?, Some(result.policy))
                 }
                 Engine::Neural => {
                     let result = search_neural(
@@ -279,13 +317,9 @@ fn generate_inner<const PROFILE: bool>(
                         },
                         &mut rng,
                     )?;
+                    rollout_stats.merge(&result.rollout_stats);
                     let action = if evaluation_game {
-                        result
-                            .policy
-                            .iter()
-                            .max_by_key(|visit| (visit.visits, rng.random::<u64>()))
-                            .unwrap()
-                            .action
+                        result.best(&mut rng)
                     } else {
                         result.sample(&mut rng)
                     };
@@ -340,6 +374,7 @@ fn generate_inner<const PROFILE: bool>(
         model,
         opponent: opponent_id,
         evaluation: None,
+        rollout_stats,
     };
     let mut record = sgf::Record {
         plays: game.record().to_vec(),

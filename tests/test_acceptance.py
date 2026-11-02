@@ -373,8 +373,12 @@ class AcceptanceTests(helpers.LoopHarness):
                 "0.01",
                 "--gate-max-moves",
                 "8",
+                # Bounded plumbing fixture: this seed includes natural opening
+                # draws. Losing passes are no longer used to finish short games.
+                "--seed",
+                "600",
                 "--max-moves",
-                "24",
+                "2",
             ],
         )
         with redirect_stdout(io.StringIO()):

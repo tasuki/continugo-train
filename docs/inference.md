@@ -160,6 +160,18 @@ Most new leaves are never expanded, so computing a million logits for each would
 waste most of the inference budget. Dense policy vectors are discarded after
 candidate sampling; nodes retain only a small candidate reservoir.
 
+[Cold-start pass checks](cold-start.md) now prioritize exact terminal wins and
+avoid a pass proven to lose immediately or to an opponent's immediate winning
+pass when another action is available. They score only terminal hypothetical
+games, never assume a cooperative reply, and do not ban legal opening draws.
+Standalone self-play/arena also support experimental `--rollouts N` leaf values
+from completed legal playouts instead of neural guesses; capped playouts remain
+unknown and are reported separately. This is off by default and not exposed by
+the gated loop/rating protocol pending strength and cost measurements. The
+feature schema, full policy normalization and random reference eye filter are
+unchanged. Search changes invalidate old loop evaluation fingerprints; fork a
+new experiment rather than resuming with rebuilt binaries.
+
 ### Huge-action-space adaptation
 
 At an expanded node, Rust extracts/scores all million coordinates, masks them

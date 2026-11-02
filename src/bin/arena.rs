@@ -7,21 +7,32 @@ use continugo_rules::{Board, Color, territory};
 use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator},
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
-    search::SearchConfig,
-    selfplay::{Engine, REFERENCE_ID, SelfplayConfig, generate_match, generate_reference_match},
+    search::{SearchConfig, rollout::RolloutArgs},
+    selfplay::{
+        Engine, REFERENCE_ID, SelfplayConfig, generate_match, generate_reference_match,
+        generate_unguided_reference_match,
+    },
 };
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
+    time::Instant,
 };
 
 #[derive(Parser)]
 #[command(about = "Fixed-budget paired-color neural matches; no forced scores at move caps")]
 struct Args {
-    #[arg(long)]
-    candidate: PathBuf,
+    #[arg(
+        long,
+        required_unless_present = "unguided",
+        conflicts_with = "unguided"
+    )]
+    candidate: Option<PathBuf>,
+    /// Diagnostic network-independent MCTS versus the direct reference (not rated).
+    #[arg(long, requires = "reference_random", conflicts_with = "incumbent")]
+    unguided: bool,
     #[arg(
         long,
         required_unless_present = "reference_random",
@@ -58,6 +69,8 @@ struct Args {
     proposal_attempts: usize,
     #[arg(long, default_value_t = 0.25)]
     independent_exploration: f64,
+    #[command(flatten)]
+    rollout: RolloutArgs,
     #[arg(long)]
     ort_library: Option<PathBuf>,
     #[arg(long, value_enum, default_value = "cuda")]
@@ -82,7 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .checked_add(((end - 1) / 2) as u64)
         .ok_or("pair seed overflow")?;
     let config = SelfplayConfig {
-        engine: Engine::Neural,
+        engine: if args.unguided {
+            Engine::Mcts
+        } else {
+            Engine::Neural
+        },
         max_moves: args.max_moves,
         search: SearchConfig {
             simulations: args.simulations,
@@ -91,15 +108,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             widening_exponent: args.widening_exponent,
             proposal_attempts: args.proposal_attempts,
             independent_exploration: args.independent_exploration,
+            rollout: args.rollout.config(),
         },
     };
     config.validate()?;
-    let mut candidate = OnnxEvaluator::load(
-        &args.candidate,
-        args.ort_library.as_deref(),
-        args.inference_threads,
-        args.device,
-    )?;
+    let mut candidate = args
+        .candidate
+        .as_ref()
+        .map(|path| {
+            OnnxEvaluator::load(
+                path,
+                args.ort_library.as_deref(),
+                args.inference_threads,
+                args.device,
+            )
+        })
+        .transpose()?;
     let mut incumbent = args
         .incumbent
         .as_ref()
@@ -112,7 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })
         .transpose()?;
-    candidate.configure_features(args.feature_threads, args.cache_positions)?;
+    if let Some(candidate) = &mut candidate {
+        candidate.configure_features(args.feature_threads, args.cache_positions)?;
+    }
     if let Some(incumbent) = &mut incumbent {
         incumbent.configure_features(args.feature_threads, args.cache_positions)?;
     }
@@ -124,16 +150,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let candidate_black = ordinal % 2 == 0;
         let color = if candidate_black { "black" } else { "white" };
         let board = Board::new(size)?;
-        let mut record = if let Some(incumbent) = &mut incumbent {
-            if candidate_black {
-                generate_match(board, &config, seed, &mut candidate, incumbent)?
+        let started = Instant::now();
+        let mut record = if let Some(candidate) = &mut candidate {
+            if let Some(incumbent) = &mut incumbent {
+                if candidate_black {
+                    generate_match(board, &config, seed, candidate, incumbent)?
+                } else {
+                    generate_match(board, &config, seed, incumbent, candidate)?
+                }
             } else {
-                generate_match(board, &config, seed, incumbent, &mut candidate)?
+                generate_reference_match(board, &config, seed, candidate, candidate_black)?
             }
         } else {
-            generate_reference_match(board, &config, seed, &mut candidate, candidate_black)?
+            generate_unguided_reference_match(board, &config, seed, candidate_black)?
         };
         record.annotate_evaluation(&binary_id)?;
+        if config.search.rollout.is_some() {
+            eprintln!(
+                "rollouts game {}: {:?}",
+                ordinal + 1,
+                record.metadata.rollout_stats
+            );
+        }
         let path = args.output.join(format!(
             "game-{:06}-size{size}-seed{seed}-candidate-{color}.sgf",
             ordinal + 1
@@ -143,6 +181,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .create_new(true)
             .open(path)?
             .write_all(record.sgf.as_bytes())?;
+        eprintln!(
+            "arena game {}/{end}: size={size} seed={seed} candidate={color} moves={} completed={} elapsed={:.3}s",
+            ordinal + 1,
+            record.metadata.policies.len(),
+            record.metadata.result.is_some(),
+            started.elapsed().as_secs_f64()
+        );
         match record.metadata.result {
             Some(territory::Outcome::Draw) => {
                 draws += 1;
@@ -170,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!(
         "arena: candidate={} incumbent={} wins={wins} losses={losses} draws={draws} truncated={truncated}",
-        candidate.model_id(),
+        candidate.as_ref().map_or("unguided-mcts", |e| e.model_id()),
         incumbent.as_ref().map_or(REFERENCE_ID, |e| e.model_id())
     );
     Ok(())

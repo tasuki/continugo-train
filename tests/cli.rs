@@ -216,7 +216,7 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
             "--simulations",
             "16",
             "--max-moves",
-            "12",
+            "512",
             "--output",
         ])
         .arg(&directory.0)
@@ -250,6 +250,92 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
     assert_eq!(metadata["seed"], 1);
     assert_eq!(metadata["search"]["simulations"], 16);
     assert_eq!(metadata.as_object().unwrap().len(), 2);
+}
+
+#[test]
+fn rollout_diagnostics_never_turn_an_unfinished_actual_game_into_a_label() {
+    let directory = TestDir::new("rollout-censoring");
+    let output = cli()
+        .args([
+            "--engine",
+            "mcts",
+            "--sizes",
+            "9",
+            "--games",
+            "1",
+            "--simulations",
+            "8",
+            "--max-moves",
+            "1",
+            "--rollouts",
+            "2",
+            "--rollout-max-moves",
+            "1",
+            "--rollout-pass-probability",
+            "0",
+            "--output",
+        ])
+        .arg(&directory.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let text = fs::read_to_string(directory.0.join("game-000001-size9-seed0.sgf")).unwrap();
+    let record = sgf::decode_record(&text).unwrap();
+    let metadata = comment(&record.root);
+    assert_eq!(metadata["search"]["rollout"]["playouts"], 2);
+    assert_eq!(metadata["rollout_stats"]["completed"], 0);
+    assert_eq!(metadata["rollout_stats"]["draws"], 0);
+    assert!(metadata["rollout_stats"]["truncated"].as_u64().unwrap() > 0);
+    assert!(!record.root.iter().any(|(name, _)| name == "RE"));
+    let replay = continugo_train::replay::ReplayGame::load(&text).unwrap();
+    assert!(replay.info(4).unwrap().eligible_plies.is_empty());
+}
+
+#[test]
+fn unguided_reference_diagnostics_need_no_neural_runtime_and_keep_random_turns_unlabeled() {
+    let directory = TestDir::new("unguided-reference");
+    let output = Command::new(env!("CARGO_BIN_EXE_arena"))
+        .args([
+            "--unguided",
+            "--reference-random",
+            "--games",
+            "2",
+            "--sizes",
+            "9",
+            "--simulations",
+            "8",
+            "--max-moves",
+            "2",
+            "--ort-library",
+            "/missing/unused.so",
+            "--output",
+        ])
+        .arg(&directory.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    for entry in fs::read_dir(&directory.0).unwrap() {
+        let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+        let record = sgf::decode_record(&text).unwrap();
+        let players: Vec<_> = ["PB", "PW"]
+            .iter()
+            .map(|key| record.root.iter().find(|(name, _)| name == key).unwrap().1[0].as_str())
+            .collect();
+        assert!(players.contains(&"mcts"));
+        assert!(players.contains(&"random-no-eye-fill-v1"));
+        assert!(record.root.iter().any(|(name, _)| name == "C"));
+        for (index, properties) in record.move_properties.iter().enumerate() {
+            assert_eq!(!properties.is_empty(), players[index % 2] == "mcts");
+        }
+        assert!(
+            continugo_train::replay::ReplayGame::load(&text)
+                .unwrap()
+                .info(4)
+                .unwrap()
+                .eligible_plies
+                .is_empty()
+        );
+    }
 }
 
 #[test]
@@ -302,6 +388,9 @@ fn invalid_settings_fail_and_existing_sgf_is_not_overwritten() {
         vec!["--simulations", "0"],
         vec!["--proposal-attempts", "0"],
         vec!["--profile"],
+        vec!["--rollouts", "1", "--rollout-max-moves", "0"],
+        vec!["--rollouts", "1", "--rollout-pass-probability", "2"],
+        vec!["--engine", "random", "--rollouts", "1"],
         vec!["--concurrent-games", "0"],
         vec!["--concurrent-games", "65"],
         vec!["--concurrent-games", "2"], // neural only

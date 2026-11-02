@@ -127,14 +127,20 @@ def main(argv=None):
         command += ["--"] + (["--engine", "neural"] if args.command == "selfplay" else [])
         if "--help" in remaining or "-h" in remaining:
             os.execvpe(command[0], [*command, *remaining], os.environ.copy())
-        library, environment = inference_environment(args.device, args.ort_library)
+        if args.command == "arena" and "--unguided" in remaining:
+            library, environment = None, os.environ.copy()
+        else:
+            library, environment = inference_environment(args.device, args.ort_library)
         if args.command in {"selfplay", "arena"} and not any(
             value == "--output" or value.startswith("--output=") for value in remaining
         ):
             output = new_run_directory(args.command)
             print(f"Output: {output}", flush=True)
             remaining += ["--output", str(output)]
-        command += ["--device", args.device, "--ort-library", str(library), *remaining]
+        command += ["--device", args.device]
+        if library is not None:
+            command += ["--ort-library", str(library)]
+        command += remaining
         os.execvpe(command[0], command, environment)
     except (ValueError, OSError) as error:
         print(f"inference setup error: {error}", file=sys.stderr)
