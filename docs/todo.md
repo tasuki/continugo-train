@@ -14,13 +14,14 @@ publication needs explicit hash-pinned user approval. Initial checkpoints and
 favorable matches no longer grant acceptance. No promotion is authorized until
 convincingly much stronger than the reference bot.
 
-- [ ] Launch a resumable week-long campaign from the fresh `cold1` lineage, with periodic health/strength checks and a possible second-week extension. Keep network-size changes manual; do not substitute prolonged fitting of the bootstrap corpus for fresh self-play. Manual acceptance is a separate operation, not a prerequisite for continued learning.
+- [ ] Bootstrap from scratch with the corrected search, then launch a resumable week-long campaign with periodic health/strength checks and a possible second-week extension. The user explicitly discarded all old runs/models, including `cold1`; do not reuse an old checkpoint. Keep network-size changes manual; do not substitute prolonged fitting of the bootstrap corpus for fresh self-play. Manual acceptance is a separate operation, not a prerequisite for continued learning.
 
 ### Calibrate evaluation before scaling
 
 The [first bounded overnight run](overnight-2026-11-01.md) completed but exposed
 opening-pass collapse. [Cold-start search tests and a fresh-network diagnostic](cold-start.md)
-are underway; confirm meaningful play before scaling. Evaluation settings remain
+document the initial failure and fixes; their generated artifacts have been
+explicitly deleted at the user's request. Confirm meaningful play before scaling. Evaluation settings remain
 provisional. Network-size changes stay manual.
 
 - [ ] Validate the cold-start search changes with fresh-network opening/pass diagnostics, natural completion rates and reference matches. Exact terminal pass checks are implemented; optional rollout evaluation is experimental, not the default. Longer games or lower loss alone do not establish improvement.

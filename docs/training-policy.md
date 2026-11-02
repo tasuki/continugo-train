@@ -18,7 +18,8 @@ automatic gating or a daily promotion limit alone.
 Keep these roles separate in saved state and recovery. Training and experimental
 self-play must not wait for a promotion review or remain permanently frozen on the
 last accepted model. An accepted network may be absent in a fresh experiment.
-Existing historical accepted bundles must not be deleted or silently relabeled.
+Existing historical accepted bundles must not be automatically deleted or
+silently relabeled. Explicit user-requested removal is a separate operation.
 
 ## Every promotion requires explicit user approval
 
@@ -47,10 +48,12 @@ than after every training phase.
 
 ## Long-run operating intent
 
-Continue the **fresh `cold1` lineage from the search-calibration experiment**, not
-the pass-collapsed original overnight lineage. Preserve weights/optimizer progress
-and keep adding fresh self-play games, rather than repeatedly resetting or fitting
-one bootstrap corpus indefinitely. Network-size changes remain manual.
+**Start from scratch with the corrected search and new bootstrap data.** On
+2026-11-02 the user explicitly discarded all previous generated runs/model stores,
+including `cold1`; no previous checkpoint is to be adopted or protected. Once the
+new campaign starts, preserve its weights/optimizer progress and keep adding fresh
+self-play games rather than repeatedly resetting or fitting one corpus indefinitely.
+Network-size changes remain manual.
 
 Plan a resumable week of training initially, extending to two weeks after review
 if healthy. Check after the first day and periodically thereafter. There is no

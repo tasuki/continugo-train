@@ -40,7 +40,7 @@ models/
   approvals/
     SEQUENCE-APPROVAL_ID.pt       immutable authorization for one checkpoint
     SEQUENCE-APPROVAL_ID.receipt.pt
-  sgf-blobs/                     immutable store-owned data, shared by hardlinks
+  sgf-blobs/YYYY-MM-DD/<SHA>.sgf  UTC-day buckets, immutable store-owned data
   ratings/networks.csv
   ratings/matches.csv
   ratings/games/*.sgf
@@ -69,8 +69,17 @@ Packs are write-once/read-only, staged and fsynced before atomic publication, an
 never automatically pruned. Store SGFs are **copies**, not hardlinks to disposable
 run-owned files. Hardlinks only connect store-owned blobs, bundle replay/evidence
 and rating evidence. Deleting `runs/` cannot mutate or delete those retained SGFs.
+New blobs are grouped by the UTC day they are first retained in this store, not
+by an invented game date. A hash is reused across days: importing the same SGF
+tomorrow does not create another blob. Bundle `replay/` and `evaluation/` paths
+and `ratings/games/<SHA>.sgf` remain stable hardlinks, so no checkpoint, manifest
+or CSV rewrite is needed for the daily blob layout. Legacy flat blobs remain
+readable and are reused; all new copies use dated buckets.
+
 Owners can chmod/delete local data deliberately; read-only mode is not access
-control or a substitute for backups.
+control or a substitute for backups. On 2026-11-02 the user explicitly requested
+removal of all old generated runs/model stores, including `cold1`; those artifacts
+were deleted, not archived. A new campaign must bootstrap from scratch.
 
 ## Accepted publication is a separate manual operation
 

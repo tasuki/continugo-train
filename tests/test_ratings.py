@@ -69,9 +69,9 @@ class RatingsTests(helpers.LoopHarness):
         for row in matches:
             path = self.directory / "games" / f"{row['sgf_sha256']}.sgf"
             self.assertEqual(archive.digest(path), row["sgf_sha256"])
-            self.assertEqual(
-                path.stat().st_ino, (self.store / "sgf-blobs" / path.name).stat().st_ino
-            )
+            blobs = list((self.store / "sgf-blobs").glob(f"????-??-??/{path.name}"))
+            self.assertEqual(len(blobs), 1)
+            self.assertEqual(path.stat().st_ino, blobs[0].stat().st_ino)
         bundle = state["actor"]["archive"]
         self.assertIsNone(state["accepted"])
         self.assertEqual(

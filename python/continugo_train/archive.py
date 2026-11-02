@@ -12,6 +12,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+from datetime import UTC, date
 from pathlib import Path
 
 import torch
@@ -193,7 +194,8 @@ def _publish(
                 "ONNX alone is inference-only. Read each bundle's README.md for training "
                 "recovery; code/rules and a compatible environment are still required.\n\n"
                 "Bundles are write-once and read-only, with no automatic pruning. SGF blobs "
-                "are store-owned copies, not links to disposable runs/. Back up this entire "
+                "use sgf-blobs/YYYY-MM-DD/ by UTC first-retention day, deduplicated across days. "
+                "They are store-owned copies, not links to disposable runs/. Back up this entire "
                 "store off-machine (for example rsync -aH); a local directory cannot protect "
                 "against disk loss. Do not chmod/delete bundles used by an active loop.\n"
             )
@@ -331,25 +333,52 @@ def _publish(
 
 
 def _sgf_blob(blobs, source, expected):
-    """Caller holds the archive lock. Never link disposable run-owned files."""
+    """Caller holds the archive lock. One blob per hash across UTC retention days.
+
+    Legacy flat blobs remain readable, but all new copies use YYYY-MM-DD/hash.sgf.
+    Bundle replay/evidence links keep their stable paths and remain self-contained.
+    """
+    if blobs.is_symlink():
+        raise ValueError("SGF blob directory cannot be a symlink")
     source = Path(source)
     if not source.is_file() or digest(source) != expected:
         raise ValueError(f"recovery SGF missing/changed: {source}")
-    blob = blobs / f"{expected}.sgf"
-    if blob.exists():
-        if blob.is_symlink() or digest(blob) != expected:
+    filename = f"{expected}.sgf"
+    legacy = blobs / filename
+    matches = ([legacy] if legacy.exists() or legacy.is_symlink() else []) + list(
+        blobs.glob(f"????-??-??/{filename}")
+    )
+    if len(matches) > 1:
+        raise ValueError(f"duplicate SGF blob across retention days: {expected}")
+    if matches:
+        blob = matches[0]
+        if blob.parent != blobs:
+            date.fromisoformat(blob.parent.name)
+        if (
+            blob.is_symlink()
+            or blob.parent.is_symlink()
+            or not blob.is_file()
+            or digest(blob) != expected
+        ):
             raise ValueError(f"recovery SGF blob corrupted: {blob}")
-    else:
-        descriptor, name = tempfile.mkstemp(prefix=".sgf-", dir=blobs)
-        os.close(descriptor)
-        try:
-            shutil.copyfile(source, name)
-            if digest(name) != expected:
-                raise ValueError("SGF changed while archiving")
-            seal_file(Path(name))
-            os.rename(name, blob)
-        finally:
-            Path(name).unlink(missing_ok=True)
+        return blob
+    day = blobs / utc_now().astimezone(UTC).date().isoformat()
+    if day.is_symlink():
+        raise ValueError("SGF retention day cannot be a symlink")
+    day.mkdir(exist_ok=True)
+    sync_directory(blobs)
+    blob = day / filename
+    descriptor, name = tempfile.mkstemp(prefix=".sgf-", dir=day)
+    os.close(descriptor)
+    try:
+        shutil.copyfile(source, name)
+        if digest(name) != expected:
+            raise ValueError("SGF changed while archiving")
+        seal_file(Path(name))
+        os.rename(name, blob)
+        sync_directory(day)
+    finally:
+        Path(name).unlink(missing_ok=True)
     return blob
 
 

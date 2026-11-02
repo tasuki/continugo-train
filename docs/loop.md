@@ -144,7 +144,7 @@ models/
   experimental/<dated-name>/     checkpoint + replay + frozen ONNX + match evidence
   accepted/<dated-name>/         only explicitly approved publications
   approvals/                    immutable user approval intents and receipts
-  sgf-blobs/                    deduplicated store-owned SGFs
+  sgf-blobs/YYYY-MM-DD/         UTC first-retention day; deduplicated across days
   ratings/                      both CSVs and authoritative evaluation SGFs
 ```
 
