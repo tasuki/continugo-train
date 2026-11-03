@@ -1,5 +1,8 @@
 # ContinuGo training benchmarks
 
+Historical measurements, not current defaults or a roadmap. See
+[current docs](current/) for supported behavior and [todo.md](todo.md) for open work.
+
 Initial self-play and network measurements: 2026-10-30.
 
 **Artifact reset:** the generated `runs/` contents and the old sibling model store
@@ -426,7 +429,7 @@ mise run model-bench -- --channels 64 --blocks 6 --policy-hidden 32
 ```
 
 Raw logs: `runs/network/cuda.txt` and `runs/network/cpu.txt`. See
-[python/README.md](../python/README.md) for the input contract and benchmark options.
+[network architecture](current/network.md) for the input contract and benchmark options.
 
 ## Real Rust feature extraction — 2026-10-31
 
@@ -439,7 +442,7 @@ Version-1 inputs contained real stone/group/liberty/history/border planes and
 exact move legality, connections, captures, resulting group size and capped exact
 liberties. Rule facts use the shared validator and shared integer liberty search;
 normalization/rasterization remain experimental code in `continugo-train`. Schema,
-label semantics and the binary bridge are documented in [features.md](features.md).
+label semantics and the binary bridge are documented in [features.md](current/features.md).
 
 The following are sequential, single-position diagnostics from the same three
 completed random SGFs (sizes 9/13/19, seeds 0/1/2), using the i5-8400 and Rust release
@@ -668,7 +671,7 @@ mise run train -- --data runs/offline-bootstrap --output runs/offline-training -
 Use fresh output directories to reproduce. Artifacts: `runs/offline-bootstrap/`,
 `runs/offline-training/training.log`, `runs/offline-training/best.pt` (epoch 2),
 and `runs/offline-training/latest.pt` (epoch 3). The separate resume check is in
-`runs/offline-smoke/`. See [training.md](training.md) for normal uncapped training,
+`runs/offline-smoke/`. See [training.md](current/training.md) for normal uncapped training,
 loading and resume. No feature-schema revision was introduced for this command.
 
 ## Native ONNX neural self-play — 2026-11-01
@@ -714,7 +717,7 @@ Full-policy logits are normalized over **all legal coordinates plus pass**.
 Progressive widening then uses a bounded sampled candidate reservoir with
 importance-corrected, pass-stratified priors. This is an approximate sampled
 search, not a conditional visited-action training softmax. Nodes do not retain
-million-element policies. See [inference.md](inference.md) for the proposal law,
+million-element policies. See [inference.md](current/inference.md) for the proposal law,
 why duplicates retain multiplicity, and independent exploration behavior.
 
 The measured `mise run neural-selfplay` launcher reached **373.8 MiB peak RSS**
@@ -891,7 +894,7 @@ value-only queries remain encoder-only. Exact move rows are streamed in chunks
 (at most 262,144 rows across a batch), instead of allocating one full-domain move
 matrix per game. The shared four-thread feature pool handles positions/chunks;
 CPU feature extraction and GPU execution still alternate, without pipelining.
-See [batching.md](batching.md) for controls, limits and failure handling.
+See [inference batching](current/inference.md#cross-game-batching) for controls, limits and failure handling.
 
 Same i5-8400 / GTX 1080, CUDA ONNX Runtime 1.20.1, unchanged epoch-2 model and
 features. FP32, one ONNX CPU helper thread, four feature workers, 64 cached contexts,
@@ -972,7 +975,7 @@ strict fixed-corpus `--resume` is unchanged. Warm-start copies weights/BatchNorm
 resets SGD momentum by default (optional explicit `keep`), and starts fresh
 run/epoch/step/best-loss/RNG state. Checkpoints retain source SHA-256 provenance
 and ancestral game-level split assignments, including games absent from the current
-window. See [training.md](training.md#warm-start-on-a-changing-replay-corpus).
+window. See [training.md](current/training.md#warm-start-on-a-changing-replay-corpus).
 
 A real CUDA smoke run used the earlier **epoch-2 / step-40** offline checkpoint
 as source, with the unchanged 80,099-parameter network and schema-4 features.
@@ -1020,7 +1023,7 @@ Restartable multi-iteration orchestration remains the next milestone at this sna
 
 ## Restartable two-iteration neural loop — 2026-11-01
 
-The [synchronous loop supervisor](loop.md) now connects native self-play, bounded
+The [synchronous loop supervisor](current/loop.md) now connects native self-play, bounded
 SGF replay, warm-start training and verified ONNX export. This is the small-machine
 synchronous pattern from KataGo's training guide, without a strength gate: latest
 completed epoch weights are promoted automatically. No rules, network feature
@@ -1073,7 +1076,7 @@ The run was first stopped normally after iteration 1, then restarted with
 `--resume --iterations 2`. A further idempotent `--resume` verified and reused all
 committed games/checkpoints/models without launching another stage. Artifacts and
 stage logs are under `runs/loop-smoke/`; reproduce with the small command in
-[loop.md](loop.md), using a fresh output directory.
+[loop.md](current/loop.md), using a fresh output directory.
 
 Fault-injection tests additionally cover partial self-play, publication gaps after
 completed epochs and atomic export renames, failed first epochs, input snapshot
@@ -1141,7 +1144,7 @@ store rejection, corruption checks and lost-run recovery. A real CPU gate uses a
 deliberately pass-biased tiny network: its ten genuine draws are loudly reported,
 not treated as a strength result. Its archived checkpoint and relocated SGFs then
 continue training **bit-for-bit against the original corpus after the original run
-is deleted**, including SGD momentum. See [evaluation.md](evaluation.md),
-[model-store.md](model-store.md) and [loop.md](loop.md) for controls and limitations.
+is deleted**, including SGD momentum. See [evaluation.md](current/evaluation.md),
+[model-store.md](current/model-store.md) and [loop.md](current/loop.md) for controls and limitations.
 All **66 Python tests**, shared/local Rust tests and checks pass, including CPU/CUDA
 inference parity, paired-gate recovery and bit-for-bit archive continuation.

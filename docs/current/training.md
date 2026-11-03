@@ -3,8 +3,8 @@
 This is a real SGF → Rust features → PyTorch training job, without ONNX. It learns
 from saved MCTS games; this command does **not** generate self-play or establish
 playing strength. Use the separate [native neural self-play command](inference.md)
-after exporting a checkpoint. The first goal is a usable initial checkpoint
-and verified data/optimization plumbing, not prolonged fitting of weak data.
+after exporting a checkpoint. Training loss and checkpoint selection are not
+playing-strength measurements.
 
 ## First run
 
@@ -23,8 +23,8 @@ otherwise CPU; `--device cpu` forces CPU. Inspect options with
 `mise run train -- --help`. Architecture options include `--channels`, `--blocks`, `--policy-hidden`,
 `--value-hidden`, and `--chunk-size`. Defaults are the existing 32-channel/4-block
 network, FP32 eager mode, SGD lr 0.01 / momentum 0.9 / weight decay 1e-4, gradient
-norm clipping at 5, batch size 2, and two feature workers. This fits the local GTX
-1080 comfortably; mixed precision is not assumed to help Pascal.
+norm clipping at 5, batch size 2, and two feature workers. Execution is FP32 eager;
+memory use depends on batch size, feature buffers, and resolution.
 
 The example deliberately limits the run. With omitted limits (all default to
 zero), all eligible positions are candidates before board-mixture downsampling.
@@ -55,10 +55,10 @@ can revisit a worker's game snapshot more often than contiguous uniform loading;
 worker queues remain bounded. `uniform` retains the original exhaustive ordering
 and dense shuffle-buffer behavior. Strict resume freezes this sampling option;
 legacy checkpoints without it restore `uniform`, rather than silently changing an
-old experiment. Warm-start/new loops use the new default unless otherwise specified.
+old experiment. Warm-start/new runs use `9:2,13:2,19:1` unless otherwise specified.
 
 **Random SGFs have no MCTS policy labels.** They are not silently assigned played-
-move targets. This initial joint policy/value trainer uses only positions with
+move targets. The joint policy/value trainer uses only positions with
 both real visits and a completed-game outcome. It reports skipped unlabeled,
 no-policy and duplicate games, and explicitly warns about draws and unlabeled/
 truncated SGFs. Invalid moves, policies or scores fail rather than
@@ -147,7 +147,7 @@ early epoch termination closes readers and reaps Rust processes.
 An epoch produces `epoch-0001.pt`, etc., plus atomic `latest.pt` and `best.pt`.
 Best means the lowest held-out **policy CE + value MSE**, not playing strength.
 The [loop's experimental matches](evaluation.md) measure playing strength;
-[accepted publication requires explicit user approval](training-policy.md), never
+[accepted publication requires explicit user approval](model-store.md#approval-operation), never
 just a lower loss or a favorable match verdict.
 Checkpoints contain weights and BatchNorm buffers, SGD momentum/state, optimizer
 step count, completed epochs, RNG states, architecture/options, feature names,
@@ -191,8 +191,7 @@ model.load_state_dict(saved["model"])
 model.eval()
 ```
 
-Resume refuses incompatible feature definitions. No new feature-schema revision
-was introduced just for this training command.
+Resume refuses incompatible feature definitions.
 
 ## Warm-start on a changing replay corpus
 
@@ -269,7 +268,7 @@ Holdout losses remain diagnostics/model-selection metrics, not playing-strength
 measurements or a fully untouched benchmark.
 
 The standalone trainer does **not** generate games, select a replay window or
-export a model. The separate [`mise run loop` supervisor](loop.md) now orchestrates
+export a model. The separate [`mise run loop` supervisor](loop.md) orchestrates
 these stages with frozen replay selection and interruption recovery. Keep each
 job's SGF inputs immutable; changing the corpus is allowed **between** warm-start
 runs, not while a job is loading it.
@@ -285,6 +284,6 @@ wait and compute subtotals need not sum to it.
 
 CUDA memory excludes reserved allocator/context/desktop usage. Parent peak RSS is
 the process lifetime high-water mark including Python threads, **not** Rust child
-RSS. More workers/buffering use more memory; they do not eliminate the current
-full-domain Rust feature extraction and binary transport bottleneck. See
-[benchmarks.md](benchmarks.md) for the actual first run and its limitations.
+RSS. More workers/buffering use more memory. Feature extraction and binary
+transport are included in end-to-end timings; historical measurements belong in
+[benchmarks.md](../benchmarks.md).

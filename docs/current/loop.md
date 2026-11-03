@@ -3,8 +3,8 @@
 `mise run loop` runs native self-play → bounded SGF replay → warm-start training →
 ONNX export, with periodic experimental/reference matches and durable recovery.
 It follows [KataGo's synchronous training pattern](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md),
-but **never automatically promotes a network**. See the agreed
-[training and promotion policy](training-policy.md).
+but **never automatically promotes a network**. Accepted publication follows the
+[approval procedure](model-store.md#approval-operation).
 
 ## Three independent roles (v5)
 
@@ -14,12 +14,9 @@ but **never automatically promotes a network**. See the agreed
 | Experimental actor | Frozen model generating the next self-play batch; not accepted merely by being selected | `LATEST-EXPERIMENTAL` |
 | Accepted | User-approved publication, or an existing historical accepted model; may be absent | `LATEST-ACCEPTED` |
 
-Initialization exports and backs up an **unaccepted** experimental actor. No
-accepted baseline is implicitly created. Starting/resuming a loop, disabling
-matches, passing a match, or advancing an actor never grants promotion permission.
-Approval is a [separate hash-pinned operation](training-policy.md#approval-operation).
-It changes neither training nor actor selection. The loop only reads the accepted
-head, refreshing its saved view at startup and iteration boundaries.
+Initialization backs up an unaccepted actor, not an accepted baseline. The loop
+only reads the accepted head, refreshing it at startup and iteration boundaries.
+Approval changes neither training nor actor selection.
 
 `--actor-policy latest` is the default: after each candidate is trained, exported,
 verified and archived, use it as the next experimental actor regardless of match
@@ -52,10 +49,11 @@ read-only and reports the three roles, cumulative progress, latest committed
 metrics, current phase, available disk space and live training/self-play log tails.
 Detailed warnings/matches remain in `loop.log` and stage logs.
 
-Defaults: CUDA, one iteration, ten self-play games, one training epoch capped at
-20 batches, 20 head-to-head games and 10 reference games. These are setup budgets,
-not calibrated strength settings. `--device cpu` selects CPU. Play, training and
-export are separate supervised processes; export verification uses CPU.
+Use `mise run loop -- --help` for defaults; these are setup budgets, not calibrated
+strength settings. Standalone self-play has different concurrency defaults; see
+[inference batching](inference.md#cross-game-batching). `--device cpu` selects CPU.
+Play, training, and export are
+separate supervised processes; export verification uses CPU.
 
 Resume restores frozen configuration. Explicit conflicting overrides fail; the
 total iteration target may increase, never decrease. Keep the same absolute path
@@ -65,32 +63,20 @@ frozen when evaluation is enabled. They are checked on resume and around child
 stages. Do not rebuild/replace active binaries; use frozen executable paths for
 long experiments. Changed executables require a new loop/fork.
 
-**v1–v4 automatic-promotion loops are not migrated or resumed.** Their artifacts
-remain available. Fork a v5 experiment from the latest full checkpoint and exact
-replay; specify `--actor-checkpoint` if its previous actor differs from the latest
+**v1–v4 automatic-promotion control files are not migrated or resumed.** If their
+full checkpoints and exact replay are available, fork a v5 experiment from them;
+specify `--actor-checkpoint` if the previous actor differs from the latest
 training checkpoint. `--incumbent-checkpoint` remains an alias for that flag, but
 no longer means “accept this checkpoint.” Historical accepted bundles stay intact.
 
 ## Periodic evaluation, not automatic publication
 
-`--evaluation-interval N` runs candidate-vs-parent-actor and candidate-vs-reference
-batches every N iterations (default 1). The initial actor gets one reference batch
-when reference games are enabled. Every evaluated candidate gets reference games,
-including candidates failing the actor match. Unscheduled rounds are explicitly
-`not-evaluated`; match verdicts are `passed`, `failed`, `inconclusive`, or `disabled`.
-None means accepted. Reference matches are never an automatic promotion threshold.
-
-Set `--gate-games 0` and/or `--reference-games 0` to disable those match types, not
-to authorize publication. Periodic evaluation lets training/experimental actor
-updates continue without human review after every phase. Matches still take time
-when scheduled; approval itself does not block the learning loop.
-
-See [evaluation](evaluation.md) for paired colors, conservative missing-outcome
-bounds, per-size breakdown, natural draws, caps and ratings. Preserve all evaluation
-SGFs outside replay. Ratings remain in `models/ratings/networks.csv` and
-`matches.csv`, with immutable SGF evidence. Unapproved networks stay `accepted=0`,
-even if well-rated or selected for self-play. `mise run ratings -- --accepted-only`
-shows only user-approved or preserved historical accepted networks.
+`--evaluation-interval N` schedules candidate-vs-parent-actor and reference batches
+(default 1). The initial actor gets a reference batch when enabled, as does every
+scheduled candidate, even after a failed actor match. Other rounds record
+`not-evaluated`. Zero `--gate-games` / `--reference-games` disables that match type.
+See [evaluation](evaluation.md) for budgets, verdicts, ratings, and evidence handling.
+Training and actor advancement do not wait for manual promotion review.
 
 ## Training and replay
 
@@ -131,38 +117,17 @@ These are sample/game fractions, not wall-time fractions. Weights are configurab
 `uniform` restores literal cycling and zero weights exclude a size. All three
 sizes remain covered by rule/feature/inference parity tests.
 
-## Durable recovery
+## Operating safeguards
 
-Default store: `models/` inside this repository, outside disposable `runs/`:
+Preserve weights/optimizer progress within a campaign; resets and network-size
+changes are explicit decisions. Keep generating fresh games rather than fitting
+one weak corpus indefinitely. Inspect losses, sample counts, SGFs, pass/game-length
+and completion statistics, strength, throughput, memory, and disk. Pause for
+nonfinite values, invalid data, behavioral collapse, or resource/recovery problems.
+Loss alone is not strength and need not decrease across changing replay windows.
 
-```text
-models/
-  LATEST-TRAINING
-  LATEST-EXPERIMENTAL
-  LATEST-ACCEPTED                 absent until approval, unless already historical
-  training/<dated-name>/         checkpoint + exact replay for every candidate
-  experimental/<dated-name>/     checkpoint + replay + frozen ONNX + match evidence
-  accepted/<dated-name>/         only explicitly approved publications
-  approvals/                    immutable user approval intents and receipts
-  sgf-blobs/YYYY-MM-DD/         UTC first-retention day; deduplicated across days
-  ratings/                      both CSVs and authoritative evaluation SGFs
-```
-
-Training backup precedes export/evaluation; experimental backup precedes actor
-selection. Bundles are write-once/read-only, hashed and never automatically pruned.
-Accepted bundles also retain their exact approval record. New accepted publications
-require explicit consent pinned to the full checkpoint hash, not a moving alias.
-
-To fork after losing `runs/`, use `LATEST-TRAINING`'s checkpoint/replay and, if
-different, `LATEST-EXPERIMENTAL`'s checkpoint as `--actor-checkpoint`, with a fresh
-seed and output. Store pointers are convenience indexes across experiments; a live
-loop's frozen parents are in `loop.pt`. Approval does not alter those parents.
-See [model storage](model-store.md) for backup and strict offline continuation.
-
-**ONNX alone cannot resume training.** Checkpoints preserve optimizer/BatchNorm,
-RNG, options, cumulative progress, holdout history and corpus identities. Keep the
-whole model store, source/rules and a compatible environment backed up off-machine.
-`models/` is Git-ignored; destructive Git-clean commands can delete it.
+Store layout, backups, and recovery after losing `runs/` are in
+[model storage](model-store.md).
 
 ## Interruption semantics
 

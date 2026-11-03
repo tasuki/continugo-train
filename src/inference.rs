@@ -163,7 +163,7 @@ impl OnnxEvaluator {
         }
         let library = library.map(Path::to_path_buf)
             .or_else(|| std::env::var_os("ORT_DYLIB_PATH").map(Into::into))
-            .ok_or("set ORT_DYLIB_PATH or --ort-library to an ONNX Runtime >=1.20 shared library (see docs/inference.md)")?;
+            .ok_or("set ORT_DYLIB_PATH or --ort-library to an ONNX Runtime >=1.20 shared library (see docs/current/inference.md)")?;
         if !library.is_file() {
             return Err(format!("runtime library does not exist: {}", library.display()).into());
         }

@@ -1,4 +1,4 @@
-# Overnight pilot — historical results
+# 2026-11-01 overnight pilot — historical results
 
 **Artifacts were deleted at the user's request on 2026-11-02**, together with all
 other old `runs/` and model stores. No checkpoint/history archive was retained.
@@ -24,7 +24,7 @@ was Black pass, White placement, Black pass, White pass. There were no observed
 draws after stone placement.
 
 The pilot demonstrated plumbing/recovery, not useful strength. See
-[cold-start search](cold-start.md) for the fixes and follow-up measurements. The
-[manual-approval policy](training-policy.md) now supersedes this pilot's automatic
-promotion mechanics. Future learning starts from scratch with fresh games; use
-the current [loop](loop.md) and [model-store](model-store.md) instructions.
+[cold-start experiments](2026-11-02-cold-start-search.md) for follow-up measurements.
+This pilot used automatic-promotion mechanics; those are not the current contract.
+Use the [current approval procedure](../current/model-store.md#approval-operation),
+[loop](../current/loop.md), and [model store](../current/model-store.md) instructions.

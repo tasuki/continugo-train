@@ -2,7 +2,7 @@
 
 SGF remains the source game record. CGFEAT01 is an ephemeral single-position
 training/inference tensor packet, carried via stdout or an optional cache file.
-See docs/features.md for feature names, normalization and binary layout.
+See docs/current/features.md for feature names, normalization and binary layout.
 """
 
 import json

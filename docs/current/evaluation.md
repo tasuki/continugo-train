@@ -1,18 +1,15 @@
-# Experimental matches and manual acceptance
+# Evaluation and ratings
 
-**Every promotion requires [explicit user approval](training-policy.md#approval-operation),**
-and none are authorized until convincingly much stronger than the fixed reference.
-The v5 loop never publishes acceptance, including initialization and disabled-match
-paths. A favorable match verdict, rating or loss is evidence, not permission.
+Match results measure progress; accepted publication requires the separate
+[approval operation](model-store.md#approval-operation).
 
 Head-to-head matches compare a trained candidate against its **frozen experimental
 self-play parent**, independently of the official accepted network. This adapts
 KataGo's optional [gatekeeper](https://github.com/lightvector/KataGo/blob/master/cpp/command/gatekeeper.cpp)
 pattern: configurable win-point proportion (default 50%, candidate wins ties).
 Verdicts are `passed`, `failed`, `inconclusive` or `disabled`, not accepted models.
-With `--actor-policy latest` they measure progress; optional `--actor-policy gate`
-uses them only to guard experimental actor updates. A finite match is not proof
-of improvement. `--evaluation-interval N` schedules matches every N iterations.
+Actor selection and scheduling are defined in [loop](loop.md); a failed match
+never rewinds training. Evaluation SGFs stay outside training replay.
 
 ## Budget and board mix
 
@@ -70,17 +67,6 @@ completed-only score is `None`, not 50%. Reports and warnings live in `loop.log`
 `loop.pt`, and native arena logs. All SGFs have standard `SZ`, `PB`/`PW`, and RE only
 when naturally scored; model/search/seed metadata and actual visits are comments.
 
-## Training is not rolled back
-
-Training, experimental actor and accepted publication are three independent
-roles. Failed/inconclusive candidates retain weights and optimizer progress.
-Default experimental self-play advances to each latest completed/exported candidate;
-optional gated actor selection can hold its actor without rewinding training.
-Neither changes the accepted head. Every candidate has durable training and frozen
-experimental recovery data in the [model store](model-store.md). Evaluation SGFs
-remain outside training replay. Approval can select an older specific candidate
-without changing either current training or actor state.
-
 ## Manual matches
 
 ```sh
@@ -109,9 +95,8 @@ experimental actor and each candidate scheduled by `--evaluation-interval`,
 including candidates failing the head-to-head match. `--reference-max-moves 2048` allows
 longer natural completion than the default gate cap; zero reference games disables
 calibration, not gating. These can be expensive: use zero explicitly for plumbing
-runs. Reference results **do not authorize promotion**: they inform the user's
-manual strength review. Actor matches, including failed and inconclusive candidates,
-also contribute completed outcomes to ratings.
+runs. Actor matches, including failed and inconclusive candidates, also contribute
+completed outcomes to ratings.
 All evaluation records stay out of training replay and the training data counter.
 
 `../continugo/backend/rating` supplies the original Glicko update with **no time
@@ -131,7 +116,7 @@ to resume after an executable change; fork a new loop instead. Equal simulations
 are not equal wall-clock compute across architectures. A rating is relative to
 this reference/protocol, not a human rank or an external strength scale.
 
-### Two CSVs, no database or rating JSON files
+## Ratings storage
 
 Inside the durable model store:
 
@@ -149,7 +134,7 @@ and completed W/D/L/truncation counts. **Filter `accepted=1` for all accepted ne
 rejected candidates remain in the same table. The reference has `accepted=0`.
 Numbers may be negative for bots weaker than the 100 reference. Newly evaluated
 or selected experimental actors remain `accepted=0` until explicit approval;
-historical accepted entries are preserved. Match `decision` values now describe
+supported legacy accepted entries are preserved. Match `decision` values describe
 experimental verdicts; legacy CSV rows are not silently rewritten.
 
 `matches.csv` records raw SGF hashes, players, actual results (blank means unknown),
@@ -163,8 +148,10 @@ A writer lock serializes updates. CSVs are fsynced and atomically replaced, not
 appended in place. Metadata is saved before committing match rows. On restart or
 refresh, current numeric ratings/counts are rebuilt from **committed match rows**,
 repairing an ahead/behind network-table cache without replaying the math or
-inflating uncertainty. Keep both CSVs; a missing match ledger is an error,
-not permission to reset ratings. Back up the whole store and quiesce writers while
+inflating uncertainty. Network rows are sorted by pool and network ID, not by
+registration time; match rows retain ledger insertion order, not newest-first.
+Evidence uses `ratings/games/<full-SGF-SHA>.sgf`. Keep both CSVs; a missing match
+ledger is an error, not permission to reset ratings. Back up the whole store and quiesce writers while
 copying the two CSVs. Do not edit rating snapshots or processed hashes by hand.
 
 ```sh
@@ -181,13 +168,13 @@ rating storage or SGF sidecars. Python validates/replays SGFs through Rust, pins
 players/search/budgets, retains store-owned evidence, and manages the two CSVs.
 Completed-only ratings can be biased if truncation censors particular boards or
 outcomes. Inspect per-size reports and truncation counts; a small RD does not
-account for that bias or prove improvement. The budgets still need calibration.
+account for that bias or prove improvement.
 
 ## Limits
 
-Twenty games are cheap enough for initial wiring but noisy. The threshold, visit
-budget, number of games, model quality and sample diversity need calibration before
-scaling or trusting fine strength differences. There is no SPRT/confidence-bound
-promotion test, resignation, opening suite or per-size minimum-strength constraint
-in this first gate. The conservative bounds above account for **missing outcomes**,
-not statistical uncertainty. Diagnostics/parity tests still cover all board sizes.
+Default match budgets and thresholds are configuration defaults, not statistically
+calibrated strength guarantees. There is no SPRT/confidence-bound promotion test,
+resignation, opening suite, or per-size minimum-strength constraint. The conservative
+bounds above account for **missing outcomes**, not statistical uncertainty.
+Diagnostics/parity tests cover all board sizes; tuning work belongs in
+[todo.md](../todo.md).

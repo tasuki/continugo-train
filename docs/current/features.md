@@ -63,9 +63,8 @@ policy-output column, including when every placement is illegal.
 Columns 1–5 use the logarithmic count transform. For illegal moves, columns 0–5
 are zero and only border geometry remains. Legality also has a separate boolean
 mask for the network. It includes suicide and captures, not just geometric
-availability. It **never applies the random bootstrap's eye-avoidance filter**.
-Finished games cannot be policy inputs. Rule semantics, including current lack of
-ko enforcement, are unchanged.
+availability. It **never applies the direct random bot's eye-avoidance filter**.
+Finished games cannot be policy inputs. The shared rules do not enforce ko.
 
 ## Exact one-move capturability
 
@@ -112,11 +111,9 @@ worst-case error bound; exact liberty centers and move legality are never sample
 Tests compare analytic disk/capsule unions and doubled integration density, plus
 pointwise checks of the exact center spans against the shared rule geometry.
 
-Area is computed once per existing group. We removed the old per-move capped
-liberty-count column rather than integrate a new group area for a million
-hypothetical children. Actual child positions get fresh group areas when their
-features are extracted. Per-move legality, connections, captures and resulting
-group sizes remain exact.
+Area is computed once per existing group, not per hypothetical candidate.
+Actual child positions get fresh group areas when their features are extracted.
+Per-move legality, connections, captures and resulting group sizes remain exact.
 
 Area is **not** a moves-to-capture counter. Equal-area regions can have different
 shapes or separated pockets; attack legality and defensive extensions/connections
@@ -199,8 +196,7 @@ IDs u32 `[N]`; target action IDs u32 `[K]`; target visit counts u32 `[K]`.
 Target IDs are canonical Rust IDs, including pass at 1,000,000; they are **not**
 subset output columns. Python checks schema, dimensions, length, finiteness,
 legality encoding and action domains before creating writable tensors.
-Schema 4 adds the two exact one-move-capturable group planes (12 planes / 10 move
-fields). Schemas 1–3 are incompatible: rebuild the extractor and discard old
-derived packets/checkpoints; the source SGFs remain usable. Feature changes
-require a schema-version bump; checkpoints should record
-that version alongside architecture configuration and weights.
+Schema 4 has 12 planes / 10 move fields. Schemas 1–3 are incompatible: rebuild
+the extractor and discard incompatible derived packets/checkpoints; source SGFs
+remain usable. Feature changes require a schema-version bump and compatible
+checkpoint/ONNX feature metadata.

@@ -4,13 +4,10 @@ Rust self-play experiments using shared ContinuGo rules, plus a configurable PyT
 
 ## Current operating policy
 
-See [training and promotion policy](docs/training-policy.md): experimental self-play
-checkpoints may advance, but **every accepted-network promotion needs explicit user
-approval**, and none are authorized until convincingly stronger than the reference.
-The v5 supervisor implements this separation and never promotes automatically,
-including initialization or disabled gates. `mise run loop-status` inspects progress;
-`mise run promote` is a separate hash-pinned approval operation, only to be used
-after the user explicitly approves that checkpoint.
+Experimental actors may advance independently, but accepted networks require
+[explicit hash-pinned approval](docs/current/model-store.md#approval-operation)
+and convincing strength against the reference. The [loop](docs/current/loop.md)
+never promotes automatically.
 
 ## Requirements
 
@@ -48,12 +45,12 @@ mise run arena -- --help
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
 
-See [features.md](docs/features.md) for real Rust inputs and SGF loading,
-[training.md](docs/training.md) for offline training, resume and replay warm-start,
-[inference.md](docs/inference.md) for ONNX export and neural self-play,
-[batching.md](docs/batching.md) for concurrent games and inference batching,
-[loop.md](docs/loop.md) for restartable experimental training with a 40/40/20 board mix,
-[evaluation.md](docs/evaluation.md) for strength matches and fixed-reference CSV ratings (`mise run ratings`),
-[model-store.md](docs/model-store.md) for durable ONNX + training recovery packs,
-[python/README.md](python/README.md) for the network, [todo.md](docs/todo.md) for the plan, and [benchmarks.md](docs/benchmarks.md)
-for measurements.
+## Documentation
+
+- [Current implementation and operating instructions](docs/current/)
+- [Open work and proposed experiments](docs/todo.md)
+- [Benchmarks](docs/benchmarks.md)
+- [Network architecture](docs/current/network.md)
+
+Update current docs alongside code changes. Keep proposals in `docs/todo.md` and
+dated run results in `docs/history/`, not mixed into current instructions.
