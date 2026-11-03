@@ -74,7 +74,7 @@ struct Args {
     #[arg(long, default_value_t = 2)]
     inference_batch_wait_ms: u64,
     /// Bounded CPU pool for exact coordinate features (1 = serial).
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 6)]
     feature_threads: usize,
     /// Maximum cached coarse-network contexts; 0 disables, payload capped at 32 MiB.
     #[arg(long, default_value_t = 64)]

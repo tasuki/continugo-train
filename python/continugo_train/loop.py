@@ -54,7 +54,7 @@ class LoopConfig:
     inference_batch_size: int = 8
     inference_batch_wait_ms: int = 2
     inference_threads: int = 1
-    feature_threads: int = 4
+    feature_threads: int = 6
     cache_positions: int = 64
     replay_iterations: int = 4
     replay_games: int = 256

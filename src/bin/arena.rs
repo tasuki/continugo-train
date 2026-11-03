@@ -77,7 +77,7 @@ struct Args {
     device: InferenceDevice,
     #[arg(long, default_value_t = 1)]
     inference_threads: usize,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 6)]
     feature_threads: usize,
     #[arg(long, default_value_t = 64)]
     cache_positions: usize,
