@@ -30,6 +30,7 @@ impl BatchingConfig {
 struct Request {
     game: Game,
     policy: bool,
+    seed: u64,
     submitted: Instant,
     reply: SyncSender<Result<InferenceOutput, String>>,
 }
@@ -42,12 +43,13 @@ pub struct BatchingClient {
 }
 
 impl BatchingClient {
-    fn query(&self, game: &Game, policy: bool) -> Result<InferenceOutput, String> {
+    fn query(&self, game: &Game, policy: bool, seed: u64) -> Result<InferenceOutput, String> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(Request {
                 game: game.clone(),
                 policy,
+                seed,
                 submitted: Instant::now(),
                 reply,
             })
@@ -66,13 +68,16 @@ impl Evaluator for BatchingClient {
         &self.name
     }
     fn value(&mut self, game: &Game) -> Result<f64, String> {
-        match self.query(game, false)? {
+        match self.query(game, false, 0)? {
             InferenceOutput::Value(value) => Ok(value),
             _ => Err("wrong inference reply kind".into()),
         }
     }
     fn evaluate(&mut self, game: &Game) -> Result<Evaluation, String> {
-        match self.query(game, true)? {
+        self.evaluate_seeded(game, 0)
+    }
+    fn evaluate_seeded(&mut self, game: &Game, seed: u64) -> Result<Evaluation, String> {
+        match self.query(game, true, seed)? {
             InferenceOutput::Policy(evaluation) => Ok(evaluation),
             _ => Err("wrong inference reply kind".into()),
         }
@@ -190,7 +195,10 @@ impl BatchingWorker {
                 self.reply(request, Ok(InferenceOutput::Value(context.value)));
             }
         }
-        let queries: Vec<_> = policies.iter().map(|(r, c)| (&r.game, c.clone())).collect();
+        let queries: Vec<_> = policies
+            .iter()
+            .map(|(r, c)| (&r.game, c.clone(), r.seed))
+            .collect();
         match self.evaluator.policies(&queries) {
             Ok(results) => {
                 for ((request, _), result) in policies.into_iter().zip(results) {

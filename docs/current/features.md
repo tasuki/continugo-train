@@ -47,8 +47,10 @@ action IDs are u32 on the wire / `torch.int64` in Python.
 ## Exact coordinate input `[N, 10]` and legality `[N]`
 
 Coordinate IDs are `x + 1000*y`, excluding pass. Rows preserve caller order.
-Full evaluation uses IDs 0 through 999,999. Pass is always the separate final
-policy-output column, including when every placement is illegal.
+Selective inference evaluates complete chosen coarse cells; training evaluates
+complete target-bearing cells (see [network](network.md)). The explicit diagnostic
+`--full-domain` mode uses IDs 0 through 999,999 as a reference only. Pass is always
+the separate final policy-output column, including when no placements are supplied.
 
 | Column | Contents |
 |---|---|
@@ -160,9 +162,11 @@ columns, visits = sample.policy_targets()  # Output columns, with pass last.
 The Python loader invokes the release Rust binary and decodes its binary stdout.
 `CONTINUGO_FEATURE_BIN` can override the executable path. `actions=[...]` requests a
 coordinate subset for diagnostics; positive targets omitted from it cause
-`policy_targets()` to fail, not silently renormalize. An arbitrary subset's softmax
-is conditional, unless it includes every legal placement. A tensor packet can
-also be cached for inspection:
+`policy_targets()` to fail, not silently renormalize. An arbitrary subset is not
+valid hierarchical training input: each represented cell must be complete for
+its local softmax to be correct. Model outputs are hierarchical log weights;
+do not apply a candidate-only softmax in training. A tensor packet can also be
+cached for inspection:
 
 ```sh
 mkdir -p runs
@@ -175,9 +179,12 @@ keeps one fully validated game's pre-move snapshots and samples positions withou
 replaying/scoring each request. `features --inspect` exposes validated metadata
 and eligible plies without implementing a Python SGF parser. See
 [training.md](training.md) for the bounded loader, game-level holdout and checkpoints.
-The tensor packet layout below is unchanged. Full packets are about 45 MB; do not precompute
-an entire corpus of dense per-position files. SGFs remain the sole primary game
-records. Binary packets/cache files are derived, disposable tensors, not JSON
+The tensor packet layout below is unchanged. Server/default one-shot extraction
+returns complete cells containing positive placement targets, with full-domain
+flag false; a pass-only/no-policy position has zero exact rows. Explicit
+`--actions` remains a diagnostic subset; `--full-domain` is a slow reference only.
+Packet size scales with target-cell coverage, not a mandatory million-row matrix.
+SGFs remain the sole primary game records. Binary packets/cache files are derived, disposable tensors, not JSON
 sidecars or another game-record format.
 
 ### CGFEAT01 packet layout

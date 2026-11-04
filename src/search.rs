@@ -142,7 +142,7 @@ impl Node {
         config: &SearchConfig,
         rng: &mut impl Rng,
     ) -> Result<f64, String> {
-        let evaluation = evaluator.evaluate(&self.game)?;
+        let evaluation = evaluator.evaluate_seeded(&self.game, rng.random())?;
         let value = evaluation.value;
         self.neural = Some(SampledPolicy::new(evaluation, config, rng)?);
         Ok(value)
@@ -180,8 +180,8 @@ impl Node {
             };
             return Ok(self.update_estimate(value));
         }
-        // Most new leaves are never expanded: do not score a million moves for
-        // their value queries. Materialize policy only on a subsequent visit.
+        // Most new leaves are never expanded: skip cell selection and exact
+        // scoring for value queries. Materialize policy on a subsequent visit.
         if self.neural.is_none() {
             self.evaluate_neural(evaluator, config, rng)?;
         }

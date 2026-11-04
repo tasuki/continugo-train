@@ -30,7 +30,8 @@ class Encoder(nn.Module):
         self.model = model
 
     def forward(self, coarse):
-        return self.model.encode(coarse)
+        spatial, pass_logit, value = self.model.encode(coarse)
+        return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1)
 
 
 class Scorer(nn.Module):
@@ -78,14 +79,16 @@ def verify(model, directory):
                 batch, model.config.input_planes, resolution, resolution, generator=rng
             )
             exact = torch.rand(batch, count, model.config.move_features, generator=rng)
-            actions = torch.cat(
-                [
-                    torch.tensor([0, 999, 1000, 999999, 500500, 500501]),
-                    torch.randint(1000000, (count - 6,), generator=rng),
-                ]
-            )
+            actions = torch.randint(1000000, (batch, count), generator=rng)
+            actions[:, :6] = torch.tensor([0, 999, 1000, 999999, 500500, 500501])
             spatial, pass_logit, value = model.encode(coarse)
-            expected = [spatial, pass_logit, value, model.score_chunk(spatial, exact, actions)]
+            expected = [
+                spatial,
+                pass_logit,
+                value,
+                model.cell_head(spatial).flatten(1),
+                model.score_chunk(spatial, exact, actions),
+            ]
             actual = encoder.run(None, {"coarse": coarse.numpy()})
             actual += scorer.run(
                 None, {"spatial": actual[0], "exact": exact.numpy(), "actions": actions.numpy()}
@@ -133,26 +136,27 @@ def export_checkpoint(checkpoint, output):
                 (coarse,),
                 str(directory / "encoder.onnx"),
                 input_names=["coarse"],
-                output_names=["spatial", "pass_logit", "value"],
+                output_names=["spatial", "pass_logit", "value", "cells"],
                 dynamic_axes={
                     "coarse": {0: "batch", 2: "height", 3: "width"},
                     "spatial": {0: "batch", 2: "height", 3: "width"},
                     "pass_logit": {0: "batch"},
                     "value": {0: "batch"},
+                    "cells": {0: "batch", 1: "cells"},
                 },
                 opset_version=17,
                 dynamo=False,
             )
             torch.onnx.export(
                 Scorer(model).eval(),
-                (spatial, torch.zeros(1, 7, config.move_features), torch.arange(7)),
+                (spatial, torch.zeros(1, 7, config.move_features), torch.arange(7)[None]),
                 str(directory / "policy.onnx"),
                 input_names=["spatial", "exact", "actions"],
                 output_names=["logits"],
                 dynamic_axes={
                     "spatial": {0: "batch", 2: "height", 3: "width"},
                     "exact": {0: "batch", 1: "actions"},
-                    "actions": {0: "actions"},
+                    "actions": {0: "batch", 1: "actions"},
                     "logits": {0: "batch", 1: "actions"},
                 },
                 opset_version=17,

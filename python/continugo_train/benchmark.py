@@ -1,7 +1,7 @@
 """Synthetic compute/memory benchmark, NOT SGF training or self-play throughput.
 
-Separates coarse inference, dense scoring with precomputed coarse features,
-combined inference, coarse backward/SGD, and full policy/value backward/SGD.
+Separates coarse inference, selected-cell scoring with precomputed coarse features,
+combined inference, coarse backward/SGD, and hierarchical policy/value backward/SGD.
 Inputs/targets are generated on-device outside timings. CUDA timings synchronize
 at both boundaries. FP32/eager mode is deliberate (including on Pascal GPUs).
 """
@@ -15,8 +15,14 @@ from dataclasses import asdict
 
 import torch
 
-from .losses import policy_value_loss
-from .model import COORDINATE_ACTIONS, NetworkConfig, PolicyValueNet, resolution_for_diameter
+from .losses import hierarchical_policy_value_loss
+from .model import (
+    COORDINATE_ACTIONS,
+    NetworkConfig,
+    PolicyValueNet,
+    cell_actions,
+    resolution_for_diameter,
+)
 
 
 def positive(value: str) -> int:
@@ -35,7 +41,11 @@ def main() -> None:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--diameters", type=positive_list, default=[110, 76, 52])
     parser.add_argument("--batch-sizes", type=positive_list, default=[1, 4])
-    parser.add_argument("--actions", type=positive, default=COORDINATE_ACTIONS)
+    parser.add_argument(
+        "--actions",
+        type=positive,
+        help="approximate coordinate budget, rounded to complete cells; default uses model cell budget",
+    )
     parser.add_argument("--samples-per-diameter", type=positive, default=4)
     parser.add_argument("--iterations", type=positive, default=5)
     parser.add_argument("--warmup", type=int, default=2)
@@ -46,7 +56,11 @@ def main() -> None:
             "--" + name.replace("_", "-"), type=positive, default=getattr(NetworkConfig(), name)
         )
     args = parser.parse_args()
-    if args.actions > COORDINATE_ACTIONS or args.warmup < 0 or max(args.diameters) > 1000:
+    if (
+        (args.actions and args.actions > COORDINATE_ACTIONS)
+        or args.warmup < 0
+        or max(args.diameters) > 1000
+    ):
         parser.error("actions <= 1000000, diameters <= 1000, warmup >= 0 required")
     device = torch.device(
         "cuda"
@@ -74,7 +88,7 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.synchronize(device)
 
-    def measure(call, diameter, resolution, batch, stage) -> None:
+    def measure(call, diameter, resolution, batch, stage, count) -> None:
         for _ in range(args.warmup):
             call()
         sync()
@@ -94,7 +108,7 @@ def main() -> None:
             else "-"
         )
         print(
-            f"{diameter} {resolution} {batch} {args.actions} {stage} "
+            f"{diameter} {resolution} {batch} {count} {stage} "
             f"{median * 1000:.3f} {batch / median:.2f} {peak}",
             flush=True,
         )
@@ -103,24 +117,35 @@ def main() -> None:
         model.zero_grad(set_to_none=True)
         resolution = resolution_for_diameter(diameter, args.samples_per_diameter)
         coarse = torch.randn(batch, config.input_planes, resolution, resolution, device=device)
-        exact = torch.randn(batch, args.actions, config.move_features, device=device)
-        actions = torch.arange(args.actions, device=device)
-        legal = torch.rand(batch, args.actions, device=device) > 0.1
-        selected = [0, args.actions // 2, args.actions - 1]
+        cells = config.top_cells + config.exploration_cells
+        if args.actions:
+            cells = max(1, round(args.actions * resolution**2 / COORDINATE_ACTIONS))
+        chosen = torch.linspace(0, resolution**2 - 1, min(cells, resolution**2)).long().tolist()
+        actions = cell_actions(chosen, resolution).to(device)
+        count = actions.numel()
+        exact = torch.randn(batch, count, config.move_features, device=device)
+        legal = torch.rand(batch, count, device=device) > 0.1
+        selected = [0, count // 2, count - 1]
         legal[:, selected] = True
-        indices = torch.tensor([selected + [args.actions]], device=device).expand(batch, -1)
+        indices = torch.tensor([selected + [count]], device=device).expand(batch, -1)
         visits = torch.tensor([[4.0, 2.0, 1.0, 1.0]], device=device).expand(batch, -1)
         outcomes = torch.linspace(-1, 1, batch, device=device)
         model.eval()
         with torch.inference_mode():
             spatial, pass_logit, _ = model.encode(coarse)
-            measure(lambda: model.encode(coarse), diameter, resolution, batch, "coarse_infer")
+
+            def encode():
+                context, pass_score, value = model.encode(coarse)
+                return context, pass_score, value, model.cell_head(context)
+
+            measure(encode, diameter, resolution, batch, "coarse_infer", count)
             measure(
                 lambda: model.policy(spatial, pass_logit, exact, actions, legal),
                 diameter,
                 resolution,
                 batch,
                 "policy_infer",
+                count,
             )
             measure(
                 lambda: model(coarse, exact, actions, legal),
@@ -128,6 +153,7 @@ def main() -> None:
                 resolution,
                 batch,
                 "full_infer",
+                count,
             )
         if args.skip_training:
             return
@@ -138,21 +164,26 @@ def main() -> None:
             # Synthetic squared-output objective isolates coarse backward cost.
             optimizer.zero_grad(set_to_none=True)
             spatial, pass_logit, value = model.encode(coarse)
-            loss = spatial.square().mean() + pass_logit.square().mean() + value.square().mean()
+            loss = (
+                spatial.square().mean()
+                + pass_logit.square().mean()
+                + value.square().mean()
+                + model.cell_head(spatial).square().mean()
+            )
             loss.backward()
             optimizer.step()
 
         def full_step() -> None:
             optimizer.zero_grad(set_to_none=True)
             logits, values = model(coarse, exact, actions, legal)
-            losses = policy_value_loss(logits, values, indices, visits, outcomes)
+            losses = hierarchical_policy_value_loss(logits, values, indices, visits, outcomes)
             if not torch.isfinite(losses.total):
                 raise RuntimeError("nonfinite training loss")
             losses.total.backward()
             optimizer.step()
 
-        measure(coarse_step, diameter, resolution, batch, "coarse_step")
-        measure(full_step, diameter, resolution, batch, "full_step")
+        measure(coarse_step, diameter, resolution, batch, "coarse_step", count)
+        measure(full_step, diameter, resolution, batch, "full_step", count)
 
     for diameter in args.diameters:
         for batch in args.batch_sizes:

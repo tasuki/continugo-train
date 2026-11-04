@@ -39,7 +39,7 @@ otherwise an epoch exhausts the data. Final partial batches are retained.
 New training/warm-start runs default to `--size-weights 9:2,13:2,19:1`, emphasizing
 9/13 equivalents while retaining 20% for size 19. This controls **actual positions**:
 a long 19 game cannot dominate merely by providing many more plies. Surplus
-positions are downsampled without replacement before extracting million-row
+positions are downsampled without replacement before extracting selected-cell
 features, and homogeneous batches follow the weighted schedule. There are no
 extra loss multipliers, duplicate synthetic samples or conditional action softmaxes.
 
@@ -123,9 +123,12 @@ short-hash suffix; inner epoch/checkpoint filenames stay stable.
   mixture; workers are consumed in stable round-robin order. In `uniform` mode, the
   original bounded dense shuffle buffer (default 8) mixes output. Positions are
   batched by actual resolution without spatial padding.
-- Every sample includes **all million coordinates plus pass** for exact policy
-  normalization, not a sampled/conditional action softmax. Sparse visit targets
-  are padded with zero counts; no dense target distribution is allocated.
+- Each sample includes **all coordinates in every positive-target cell**, plus
+  pass. The coarse denominator covers all cells/pass; local denominators cover
+  complete legal cells. Zero-target cells require no exact work. This trains the
+  [hierarchical cell proposal objective](network.md), not a visited-action softmax
+  or the old dense policy. Ragged rows use false-legality padding, and sparse
+  targets use zero-count padding with pass remapped to the batch's final column.
 
 SGFs stay the primary game records. The Rust `features --inspect` command emits
 metadata only. `features --serve` accepts local JSON request lines containing a
@@ -136,13 +139,19 @@ framed CGFEAT01 tensors or UTF-8 errors. These are ephemeral IPC commands/tensor
 Corpora are immutable during a job. Workers check the inspected raw-file SHA-256
 when loading a game, then serve that snapshot. Do not point a run at files being
 rewritten by self-play. The implementation stores per-game snapshots, so unusually
-long games consume more worker memory. Dense feature packets are never cached as
-an entire corpus: one packet is about 45 MB. Reduce `--shuffle-buffer`,
+long games consume more worker memory. Cell-feature packets are never cached as
+an entire corpus; their size depends on target-cell coverage. Reduce `--shuffle-buffer`,
 `--batch-size`, or `--workers` for less host memory (`--shuffle-buffer` applies only
 in uniform mode). Worker queues are bounded;
 early epoch termination closes readers and reaps Rust processes.
 
 ## Checkpoints and resume
+
+The current policy format is `cells-v1`, recorded in checkpoint feature metadata
+and both ONNX graphs. Old dense-policy checkpoints/bundles are incompatible:
+start a fresh training run and export new models. Validated old SGF training data
+can still be used. `--top-cells` (default 32) and `--exploration-cells` (default 8)
+are positive architecture settings pinned by the checkpoint/export.
 
 An epoch produces `epoch-0001.pt`, etc., plus atomic `latest.pt` and `best.pt`.
 Best means the lowest held-out **policy CE + value MSE**, not playing strength.

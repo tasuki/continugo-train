@@ -3,7 +3,7 @@
 Only Rust parses/replays games. Threads each own a persistent Rust process; no
 CUDA fork or 40-MB tensor IPC between Python processes. One game is replayed once
 per worker visit. Ordered queues make sampling independent of worker completion
-speed. Dense tensors are buffered in bounded memory, never cached as a corpus.
+speed. Selected-cell tensors are buffered in bounded memory, never cached as a corpus.
 """
 
 import hashlib
@@ -21,7 +21,7 @@ from pathlib import Path
 import torch
 from torch import Tensor
 
-from .features import PASS, FeatureClient, inspect_game
+from .features import FeatureClient, inspect_game
 from .sampling import position_quotas, weighted_sizes
 
 
@@ -168,6 +168,7 @@ class TrainingSample:
     outcome: float
     game_id: str
     ply: int
+    actions: Tensor
     board_size: int = 13
 
 
@@ -176,6 +177,7 @@ class Batch:
     coarse: Tensor
     exact: Tensor
     legal: Tensor
+    actions: Tensor
     indices: Tensor
     visits: Tensor
     outcomes: Tensor
@@ -189,20 +191,28 @@ def collate(samples: list[TrainingSample]) -> Batch:
     if not samples:
         raise ValueError("empty batch")
     width = max(s.visits.numel() for s in samples)
-    indices = torch.full((len(samples), width), PASS, dtype=torch.int64)
+    count = max(s.actions.numel() for s in samples)
+    indices = torch.full((len(samples), width), count, dtype=torch.int64)
     visits = torch.zeros(len(samples), width)
+    exact = samples[0].exact.new_zeros((len(samples), count, samples[0].exact.shape[-1]))
+    legal = torch.zeros(len(samples), count, dtype=torch.bool)
+    actions = torch.zeros(len(samples), count, dtype=torch.int64)
     for row, sample in enumerate(samples):
-        if (
-            sample.coarse.shape != samples[0].coarse.shape
-            or sample.exact.shape != samples[0].exact.shape
-        ):
-            raise ValueError("batch mixes spatial resolutions or action domains")
-        indices[row, : sample.indices.numel()] = sample.indices
+        if sample.coarse.shape != samples[0].coarse.shape:
+            raise ValueError("batch mixes spatial resolutions")
+        n = sample.actions.numel()
+        exact[row, :n] = sample.exact
+        legal[row, :n] = sample.legal
+        actions[row, :n] = sample.actions
+        indices[row, : sample.indices.numel()] = torch.where(
+            sample.indices == n, count, sample.indices
+        )
         visits[row, : sample.visits.numel()] = sample.visits
     return Batch(
         torch.stack([s.coarse for s in samples]),
-        torch.stack([s.exact for s in samples]),
-        torch.stack([s.legal for s in samples]),
+        exact,
+        legal,
+        actions,
         indices,
         visits,
         torch.tensor([s.outcome for s in samples], dtype=torch.float32),
@@ -227,8 +237,8 @@ def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_si
         plans.append((game, plies))
     if size_weights == "uniform":
         return plans
-    # Sample references before extracting any million-row packets. No dense
-    # features are computed for surplus long-board positions.
+    # Sample references before extracting cell features. No exact features
+    # are computed for surplus long-board positions.
     references = defaultdict(list)
     for game, plies in plans:
         references[game.board_size].extend((game, ply) for ply in plies)
@@ -266,14 +276,14 @@ def _serial_samples(plans, density, binary):
                         game.path, ply, density=density, file_sha256=game.file_sha256
                     )
                     if (
-                        not sample.full_domain
+                        sample.full_domain
                         or sample.outcome is None
                         or sample.resolution != game.resolution
                         or sample.board_size != game.board_size
                         or sample.diameter != game.diameter
                     ):
                         raise ValueError(
-                            "training requires labeled full-domain samples in the inspected resolution"
+                            "training requires labeled target-cell samples in the inspected resolution"
                         )
                     indices, visits = sample.policy_targets()
                     yield TrainingSample(
@@ -285,6 +295,7 @@ def _serial_samples(plans, density, binary):
                         sample.outcome,
                         game.game_id,
                         ply,
+                        sample.actions,
                         game.board_size,
                     )
                 except Exception as error:
@@ -358,7 +369,7 @@ def batches(
     Close the generator when stopping an epoch early, so Rust workers are reaped.
     """
     plans = _plans(games, seed, epoch, training, limit, size_weights, batch_size)
-    # Weighted plans already shuffle references within each size. A global dense
+    # Weighted plans already shuffle references within each size. A global
     # shuffle would undo the early-step budget mix and waste extraction work.
     if size_weights != "uniform":
         shuffle_buffer = 0

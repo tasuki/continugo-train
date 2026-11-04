@@ -1,18 +1,10 @@
-"""Small coarse ResNet and a shared, exact-feature-conditioned coordinate scorer.
+"""Coarse cell policy, exact within-cell policy, and side-to-move value.
 
-Inputs are side-to-move-relative Rust features, not images of inferred legality:
-  coarse:       [B, input_planes, H, W], one resolution bucket per batch
-  move_features:[B, N, move_features], exact features for each candidate
-  actions:      [N] int64 coordinate IDs, x + 1000*y (pass is separate)
-  legal:        [B, N] bool, authoritative legality, NOT the bootstrap eye filter
-
-Full policy evaluation supplies IDs 0..999999 in order. Subsets use the very same
-scorer; their softmax is conditional unless every legal placement is included.
-Output columns follow the supplied IDs, with pass appended at column N. Values
-are expected outcomes in [-1,1] from the current player's perspective.
-
-Defaults match the versioned real Rust feature schema in docs/current/features.md. Alternate
-feature widths remain configurable for experiments. No game rules live here.
+Each raster sample owns the integer coordinates nearest to it (ties round up).
+Cells do not overlap. The policy factorizes as P(cell) * P(move | cell), with
+pass as a separate coarse action. Complete cells, not individual sampled moves,
+are required for exact local normalization. Training only needs target-bearing
+cells; the coarse softmax still covers the whole board and pass.
 """
 
 import math
@@ -26,6 +18,42 @@ from .features import COARSE_PLANES, MOVE_FEATURES
 
 COORD_RANGE = 1000
 COORDINATE_ACTIONS = COORD_RANGE**2
+POLICY_VERSION = "cells-v1"
+
+
+def cell_ids(actions: Tensor, resolution: int) -> Tensor:
+    """Same integer partition as Rust cells::cell; actions exclude pass."""
+    x = (actions.remainder(1000) * (resolution - 1) + 499).div(999, rounding_mode="floor")
+    y = (actions.div(1000, rounding_mode="floor") * (resolution - 1) + 499).div(
+        999, rounding_mode="floor"
+    )
+    return x + resolution * y
+
+
+def cell_actions(cells: list[int], resolution: int) -> Tensor:
+    """Enumerate complete cells for synthetic benchmarks/geometry checks, not rules."""
+    axis = torch.arange(1000)
+    owners = (axis * (resolution - 1) + 499).div(999, rounding_mode="floor")
+    result = []
+    for cell in sorted(set(cells)):
+        if not 0 <= cell < resolution**2:
+            raise ValueError("cell outside coarse grid")
+        xs, ys = axis[owners == cell % resolution], axis[owners == cell // resolution]
+        result.append((xs[None] + 1000 * ys[:, None]).flatten())
+    return torch.cat(result) if result else torch.empty(0, dtype=torch.int64)
+
+
+def local_log_probs(scores: Tensor, actions: Tensor, legal: Tensor, resolution: int) -> Tensor:
+    """Segmented legal softmax. Empty/all-illegal cells remain -inf, never NaN."""
+    cells = cell_ids(actions, resolution).expand(scores.shape[0], -1)
+    masked = scores.masked_fill(~legal, -torch.inf)
+    maxima = scores.new_full((scores.shape[0], resolution**2), -torch.inf)
+    maxima.scatter_reduce_(1, cells, masked.detach(), reduce="amax", include_self=True)
+    maxima = maxima.masked_fill(~torch.isfinite(maxima), 0)
+    shifted = masked - maxima.gather(1, cells)
+    sums = scores.new_zeros(maxima.shape).scatter_add(1, cells, shifted.exp())
+    normalizers = sums.clamp_min(torch.finfo(scores.dtype).tiny).log()
+    return shifted - normalizers.gather(1, cells)
 
 
 @dataclass(frozen=True)
@@ -37,6 +65,8 @@ class NetworkConfig:
     policy_hidden: int = 16
     value_hidden: int = 32
     chunk_size: int = 65536
+    top_cells: int = 32
+    exploration_cells: int = 8
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():
@@ -45,11 +75,6 @@ class NetworkConfig:
 
 
 def resolution_for_diameter(diameter: int, samples_per_diameter: int = 4) -> int:
-    """Use the diameter supplied by Rust, without duplicating board-size rules.
-
-    Coarse grid endpoints correspond to coordinates 0 and 999, inclusively.
-    Four intervals per diameter give 38/54/78 samples for diameters 110/76/52.
-    """
     if not 1 <= diameter <= COORD_RANGE or samples_per_diameter <= 0:
         raise ValueError("expected a positive diameter <= 1000 and sample density")
     return math.ceil((COORD_RANGE - 1) * samples_per_diameter / diameter) + 1
@@ -78,9 +103,9 @@ class PolicyValueNet(nn.Module):
             nn.ReLU(),
             *(ResidualBlock(config.channels) for _ in range(config.blocks)),
         )
-        # Project BEFORE sampling: no channels-wide million-coordinate tensor.
         self.policy_spatial = nn.Conv2d(config.channels, config.policy_hidden, 1)
         self.policy_global = nn.Linear(config.channels, config.policy_hidden, bias=False)
+        self.cell_head = nn.Conv2d(config.policy_hidden, 1, 1)
         self.policy_exact = nn.Linear(config.move_features, config.policy_hidden, bias=False)
         self.policy_score = nn.Linear(config.policy_hidden, 1)
         self.pass_head = nn.Linear(config.channels, 1)
@@ -92,54 +117,61 @@ class PolicyValueNet(nn.Module):
         )
 
     def encode(self, coarse: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """Return projected coarse policy features, pass logit, and value."""
         trunk = self.trunk(coarse)
         pooled = trunk.mean(dim=(-2, -1))
         spatial = self.policy_spatial(trunk) + self.policy_global(pooled)[:, :, None, None]
         return spatial, self.pass_head(pooled), self.value_head(pooled).squeeze(-1)
 
-    def score_chunk(self, spatial: Tensor, exact: Tensor, actions: Tensor) -> Tensor:
-        """Shared coordinate kernel, also usable independently for sparse proposals.
+    def coarse_logits(self, spatial: Tensor, pass_logit: Tensor) -> Tensor:
+        return torch.cat((self.cell_head(spatial).flatten(1), pass_logit), dim=1)
 
-        Bilinear interpolation only smooths the coarse context; the exact rule
-        features remain independent at every neighboring integer coordinate.
-        """
+    def score_chunk(self, spatial: Tensor, exact: Tensor, actions: Tensor) -> Tensor:
+        # Shared IDs [N] or different cells per position [B,N]. Export uses [B,N].
+        if actions.ndim == 1:
+            actions = actions[None].expand(spatial.shape[0], -1)
         x = actions.remainder(COORD_RANGE).to(spatial.dtype)
         y = actions.div(COORD_RANGE, rounding_mode="floor").to(spatial.dtype)
         grid = torch.stack((x, y), dim=-1) * (2.0 / (COORD_RANGE - 1)) - 1.0
-        grid = grid[None, None].expand(spatial.shape[0], -1, -1, -1)
-        sampled = F.grid_sample(spatial, grid, mode="bilinear", align_corners=True)
+        sampled = F.grid_sample(spatial, grid[:, None], mode="bilinear", align_corners=True)
         hidden = sampled.squeeze(2).transpose(1, 2) + self.policy_exact(exact)
         return self.policy_score(F.relu(hidden)).squeeze(-1)
 
     def policy(
         self, spatial: Tensor, pass_logit: Tensor, exact: Tensor, actions: Tensor, legal: Tensor
     ) -> Tensor:
-        """Chunk hidden activations, then append the always-legal pass logit.
+        """Full hierarchical log probabilities at supplied complete cells + pass.
 
-        Chunking bounds inference intermediates, not the whole training graph:
-        autograd retains each chunk until backward. Tune batch size accordingly.
+        Omitted cells retain coarse probability mass. These outputs need not sum
+        to one: inference conditions on selected nonempty cells and pass; training
+        uses hierarchical_policy_value_loss without a candidate-only softmax.
         """
         batch, count, features = exact.shape
         if (
             features != self.config.move_features
             or legal.shape != (batch, count)
-            or spatial.shape[:2] != (batch, self.config.policy_hidden)
-            or pass_logit.shape != (batch, 1)
+            or spatial.shape[0] != batch
+            or actions.shape not in ((count,), (batch, count))
+            or actions.dtype != torch.int64
+            or legal.dtype != torch.bool
         ):
-            raise ValueError("coarse context, move features and legality have incompatible shapes")
-        if actions.shape != (count,) or actions.dtype != torch.int64:
-            raise ValueError("actions must be a shared 1D int64 coordinate-ID tensor")
-        if legal.dtype != torch.bool:
-            raise ValueError("legal must be boolean")
+            raise ValueError("incompatible coarse context, move features, actions or legality")
         if count and (actions.min() < 0 or actions.max() >= COORDINATE_ACTIONS):
             raise ValueError("coordinate IDs must exclude pass and be in [0,1000000)")
-        chunks = []
-        for start in range(0, count, self.config.chunk_size):
-            end = start + self.config.chunk_size
-            logits = self.score_chunk(spatial, exact[:, start:end], actions[start:end])
-            chunks.append(logits.masked_fill(~legal[:, start:end], -torch.inf))
-        return torch.cat([*chunks, pass_logit], dim=1)
+        coarse = self.coarse_logits(spatial, pass_logit).log_softmax(dim=1)
+        if not count:
+            return coarse[:, -1:]
+        chunks = [
+            self.score_chunk(
+                spatial,
+                exact[:, start : start + self.config.chunk_size],
+                actions[..., start : start + self.config.chunk_size],
+            )
+            for start in range(0, count, self.config.chunk_size)
+        ]
+        scores = torch.cat(chunks, dim=1)
+        cells = cell_ids(actions, spatial.shape[-1]).expand(batch, -1)
+        local = local_log_probs(scores, actions, legal, spatial.shape[-1])
+        return torch.cat((local + coarse.gather(1, cells), coarse[:, -1:]), dim=1)
 
     def forward(
         self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor

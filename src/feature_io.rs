@@ -4,7 +4,22 @@ use crate::{
     features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION},
     replay::{ReplayPosition, player_index},
 };
-use continugo_rules::Action;
+use continugo_rules::{Action, COORDINATE_ACTIONS};
+
+/// Only cells with positive placement visits need exact features for hierarchical
+/// training. The coarse loss still normalizes over every cell and pass.
+pub fn target_cell_actions(sample: &ReplayPosition, density: usize) -> Result<Vec<Action>, String> {
+    let resolution = crate::features::resolution(sample.game.board().diameter(), density)?;
+    let cells: Vec<_> = sample
+        .policy
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|target| target.visits > 0 && target.action < COORDINATE_ACTIONS)
+        .map(|target| crate::cells::cell(target.action, resolution))
+        .collect();
+    Ok(crate::cells::actions(&cells, resolution))
+}
 
 pub fn encode_position(
     sample: &ReplayPosition,

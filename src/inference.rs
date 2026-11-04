@@ -1,18 +1,16 @@
 //! Native CPU/CUDA ONNX inference. The same graphs and rules serve both devices.
 //! CUDA registration is mandatory when requested; no silent CPU fallback.
-//! Full policy is streamed in chunks and deferred at value-only leaves.
+//! Coarse cell proposals bound exact work; value-only leaves never score moves.
 
 mod batch;
 pub mod batching;
 mod cache;
+mod proposals;
 pub use batch::InferenceOutput;
 use cache::ContextCache;
 
-use crate::{
-    action::Action,
-    features::{COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION},
-};
-use continugo_rules::{COORDINATE_ACTIONS, Game};
+use crate::features::{COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION};
+use continugo_rules::Game;
 use ort::{
     execution_providers::{
         CUDAExecutionProvider, ExecutionProvider, cuda::CUDAExecutionProviderCuDNNConvAlgoSearch,
@@ -39,13 +37,22 @@ impl InferenceDevice {
 #[derive(Debug)]
 pub struct Evaluation {
     pub value: f64,
-    /// Raw logits in shared action-ID order, including pass at 1,000,000.
+    /// Hierarchical log probabilities in action-ID order, pass at 1,000,000.
+    /// Unselected or illegal coordinates are -inf. Consumers normalize over
+    /// selected nonempty cells and pass, not the full board.
     pub logits: Vec<f32>,
+    /// Exact legality inside selected cells; zero also means unselected, not a
+    /// claim of illegality across the whole board.
     pub legal: Vec<u8>,
 }
 
 pub trait Evaluator {
     fn evaluate(&mut self, game: &Game) -> Result<Evaluation, String>;
+    /// Search supplies a per-node RNG seed so exploration varies across games
+    /// without depending on inference queue order. Test evaluators may ignore it.
+    fn evaluate_seeded(&mut self, game: &Game, _seed: u64) -> Result<Evaluation, String> {
+        self.evaluate(game)
+    }
     fn model_id(&self) -> &str;
     fn network_name(&self) -> &str {
         self.model_id()
@@ -58,6 +65,7 @@ pub trait Evaluator {
 #[derive(Deserialize)]
 struct FeatureSpec {
     schema: u32,
+    policy: String,
     coarse: Vec<String>,
     moves: Vec<String>,
     samples_per_diameter: usize,
@@ -66,6 +74,8 @@ struct FeatureSpec {
 struct Config {
     chunk_size: usize,
     policy_hidden: usize,
+    top_cells: usize,
+    exploration_cells: usize,
 }
 #[derive(Deserialize)]
 struct Metadata {
@@ -90,6 +100,9 @@ pub struct InferenceStats {
     pub scorer_batches: u64,
     pub scorer_positions: u64,
     pub scorer_max_batch: usize,
+    /// Actual exact rows, excluding padding; no million-coordinate scan.
+    pub exact_coordinates: u64,
+    pub selected_cells: u64,
     /// Worker queue/collection delay and end-to-end request latency, summed.
     pub queue_seconds: f64,
     pub request_seconds: f64,
@@ -98,7 +111,7 @@ pub struct InferenceStats {
     pub cache_misses: u64,
     pub cache_evictions: u64,
     pub cache_entries: usize,
-    /// Encoded spatial payloads only; excludes bounded Game keys/allocator overhead.
+    /// Encoded spatial + cell-logit payloads; excludes Game keys/allocator overhead.
     pub cache_bytes: usize,
 }
 
@@ -106,7 +119,6 @@ pub struct OnnxEvaluator {
     encoder: Session,
     scorer: Session,
     metadata: Metadata,
-    actions: Vec<Action>,
     feature_pool: Option<rayon::ThreadPool>,
     cache: ContextCache,
     pub device: InferenceDevice,
@@ -114,6 +126,10 @@ pub struct OnnxEvaluator {
 }
 
 impl OnnxEvaluator {
+    pub fn samples_per_diameter(&self) -> usize {
+        self.metadata.feature_spec.samples_per_diameter
+    }
+
     pub fn load(
         directory: &Path,
         library: Option<&Path>,
@@ -207,14 +223,19 @@ impl OnnxEvaluator {
         if encoder_metadata != scorer_metadata {
             return Err("encoder/scorer metadata do not match (mixed model files)".into());
         }
-        let metadata: Metadata = serde_json::from_str(&encoder_metadata)?;
+        let metadata: Metadata = serde_json::from_str(&encoder_metadata).map_err(|e| {
+            format!("incompatible selective-policy metadata; retrain/re-export: {e}")
+        })?;
         let spec = &metadata.feature_spec;
         if spec.schema != SCHEMA_VERSION
+            || spec.policy != "cells-v1"
             || spec.coarse != COARSE_PLANES
             || spec.moves != MOVE_FEATURES
             || spec.samples_per_diameter == 0
             || metadata.config.chunk_size == 0
             || metadata.config.policy_hidden == 0
+            || metadata.config.top_cells == 0
+            || metadata.config.exploration_cells == 0
             || metadata.checkpoint_sha256.len() != 64
             || !metadata
                 .checkpoint_sha256
@@ -228,9 +249,6 @@ impl OnnxEvaluator {
             scorer,
             metadata,
             device,
-            actions: (0..COORDINATE_ACTIONS)
-                .map(|i| Action::from_index(i).unwrap())
-                .collect(),
             feature_pool: None,
             cache: ContextCache::new(64, 32 * 1024 * 1024),
             stats: InferenceStats::default(),
@@ -244,6 +262,17 @@ impl Evaluator for OnnxEvaluator {
             InferenceOutput::Policy(evaluation) => Ok(evaluation),
             InferenceOutput::Value(_) => unreachable!(),
         }
+    }
+    fn evaluate_seeded(&mut self, game: &Game, seed: u64) -> Result<Evaluation, String> {
+        let context = self
+            .contexts(&[game])
+            .map_err(|e| format!("ONNX contexts: {e}"))?
+            .pop()
+            .unwrap();
+        self.policies(&[(game, context, seed)])
+            .map_err(|e| format!("ONNX policies: {e}"))?
+            .pop()
+            .ok_or_else(|| "missing policy".into())
     }
     fn model_id(&self) -> &str {
         &self.metadata.checkpoint_sha256

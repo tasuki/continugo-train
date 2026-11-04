@@ -82,6 +82,12 @@ fn native_batch_parity_and_worker_lifecycle() {
             }
         }
     }
+    let seeded = evaluator.evaluate_seeded(&games[0], 17).unwrap();
+    let another = evaluator.evaluate_seeded(&games[0], 42).unwrap();
+    assert_ne!(seeded.legal, another.legal);
+    let repeat = evaluator.evaluate_seeded(&games[0], 17).unwrap();
+    assert_eq!(seeded.legal, repeat.legal);
+    assert_eq!(seeded.logits, repeat.logits);
     let before = evaluator.stats.encoder_positions;
     let cached = evaluator
         .evaluate_batch(&[(&games[0], false), (&games[1], false)])
@@ -155,6 +161,15 @@ fn native_batch_parity_and_worker_lifecycle() {
         // A hit requires no encoder or full policy work.
         close(client.value(&games[0]).unwrap(), singles[0].value);
         assert!(client.value(&terminal).unwrap_err().contains("finished"));
+        let actual = client.evaluate_seeded(&games[0], 17).unwrap();
+        assert_eq!(actual.legal, seeded.legal);
+        for (&a, &b) in actual.logits.iter().zip(&seeded.logits) {
+            if a.is_finite() {
+                close(f64::from(a), f64::from(b));
+            } else {
+                assert_eq!(a, b);
+            }
+        }
         let mut handles = Vec::new();
         for game in [&games[2], &games[3]] {
             let mut client = client.clone();
@@ -175,7 +190,7 @@ fn native_batch_parity_and_worker_lifecycle() {
     });
     assert_eq!(stats.encoder_max_batch, 2);
     assert_eq!(stats.scorer_max_batch, 2);
-    assert_eq!(stats.calls, 2);
-    assert_eq!(stats.requests, 5);
-    assert_eq!(stats.cache_hits, 1);
+    assert_eq!(stats.calls, 3);
+    assert_eq!(stats.requests, 6);
+    assert_eq!(stats.cache_hits, 2);
 }

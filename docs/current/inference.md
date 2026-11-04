@@ -44,17 +44,19 @@ cargo run --locked --release -- --engine neural --device cpu --model runs/model-
 
 Export atomically publishes two opset-17 graphs as one new directory:
 
-- `encoder.onnx`: coarse inputs → projected spatial context, pass logit, and value.
-- `policy.onnx`: context + exact candidate features + shared int64 action IDs →
+- `encoder.onnx`: coarse inputs → projected spatial context, cell logits, pass
+  logit, and value.
+- `policy.onnx`: context + exact candidate features + per-position int64 IDs `[B,N]` →
   raw placement logits. Batch, spatial, and candidate axes are dynamic.
 
 Both graphs embed matching feature definitions, density, architecture, checkpoint
 hash, and epoch. There is no metadata sidecar. Loading rejects incompatible
-metadata or mixed graph pairs. Chunking avoids rerunning the encoder; default
+metadata or mixed graph pairs; `cells-v1` is required and old dense bundles must
+be retrained/re-exported. Chunking avoids rerunning the encoder; default
 chunks are 65,536 coordinates. See [features](features.md) for input semantics.
 
 Export verifies eager/ONNX parity across default resolutions, batch sizes, and
-candidate counts. Native tests compare full-domain logits, legality, values,
+candidate counts. Native tests compare selected-cell probabilities, legality, values,
 neighboring coordinates, chunks, and value-only queries on CPU/CUDA. The
 checkpoint—not ONNX—is the trainable/recoverable artifact.
 
@@ -67,8 +69,11 @@ mise run infer -- --device cpu --model runs/model-001 --sgf FILE --ply 1 --warmu
 ```
 
 Stdout is a numeric JSON report, not a game record. `--actions` selects printed
-logits, not evaluated coordinates; ordinary diagnostics still compute the full
-policy. Illegal scores print as null. `--value-only` skips exact rows/dense scoring.
+log probabilities, not evaluated coordinates. Diagnostics use the same selective
+policy as search; illegal **and unselected** scores print as null. `cells` lists
+selected nonempty cells; `policy_mass` reports hierarchical weight before the
+runtime conditioning on selected nonempty cells/pass. `--value-only` skips all
+cell selection and exact scoring.
 Set `CONTINUGO_ORT_PROFILE` to an existing directory for encoder/scorer runtime
 profiles, including actual operator placement. Timers exclude warmup/model load.
 
@@ -79,12 +84,12 @@ profiles, including actual operator placement. Timers exclude warmup/model load.
   This is separate from ONNX `--inference-threads` / diagnostic `--threads`, whose
   default is one. Native self-play and `infer` use mimalloc. The standalone feature
   exporter remains serial per process; training uses multiple loader processes.
-- `--cache-positions 64`: host-side LRU of encoded spatial context, pass logit, and
-  value. A value query populates context reusable for subsequent value/policy work.
+- `--cache-positions 64`: host-side LRU of encoded spatial context, cell logits,
+  pass logit, and value. A value query populates context reusable for subsequent value/policy work.
   Keys use exact immutable Game equality, including record/turn/pass history,
   within one frozen model/backend/density. Reconfiguration clears it; terminal
   queries are rejected before lookup. There is no approximate or cross-model reuse.
-- Spatial payload is capped at 32 MiB; game keys/scalars/allocator overhead are
+- Spatial plus cell-logit payload is capped at 32 MiB; game keys/scalars/allocator overhead are
   separate and bounded by entry count. Oversized contexts are not cached; zero
   positions disables caching. Raw coarse rasters, dense exact rows, and million-
   action logits are not cached. Search retains only small candidate reservoirs.
@@ -98,7 +103,7 @@ CPU feature extraction and GPU execution alternate without pipelining.
 Neural and unguided `--engine mcts` share PUCT, progressive widening, side-to-move
 backup signs, terminal scoring, and visit-count move sampling. Terminal outcomes
 override estimates. Default nonterminal leaves use neural values or neutral
-unguided values. Full policies are deferred until node expansion; their dense
+unguided values. Selective policies are deferred until node expansion; their dense
 vectors are discarded after candidate sampling. Neither search applies the direct
 random reference's eye filter or a handcrafted positional value bonus.
 
@@ -131,25 +136,36 @@ compares unguided search against the direct reference without ONNX.
 
 ### Huge-action-space adaptation
 
-Expanded nodes score **all million coordinates plus pass**, apply exact legality,
-and compute a stable full-policy normalizer—not a visited-action softmax. Finite
-candidate search then approximates full-domain PUCT using stratified importance
-sampling ([Sampled MuZero](https://arxiv.org/abs/2104.06303)):
+Expanded nodes select **32 top coarse cells plus 8 exploratory cells** by default,
+then compute exact legality/features for every coordinate inside them. Cells do
+not overlap. Exploration is seeded from each tree's RNG, so opening coverage can
+vary across games without depending on queue/batch order. Both budgets are pinned
+in model configuration (`--top-cells`, `--exploration-cells` at training/export).
+
+Hierarchical weights are coarse cell probability times exact within-cell legal
+probability; pass has its own coarse probability. Selected empty cells are dropped,
+then weights plus pass are normalized. All-unselected/all-illegal placements mean
+pass only, not proof that the board has no legal moves. See [network](network.md)
+for the training objective and the deliberate selection/conditioning bias.
+
+Finite candidate search then approximates PUCT **within that selected domain**
+using stratified importance sampling ([Sampled MuZero](https://arxiv.org/abs/2104.06303)):
 
 1. Let `P` be placement mass and `r(a) = p(a)/P` its conditional policy.
 2. Draw a bounded reservoir from `q(a) = epsilon/L + (1-epsilon)*r(a)`, where `L`
-   is the legal-coordinate count. `--independent-exploration` defaults to 0.25,
+   is the selected legal-coordinate count. `--independent-exploration` defaults to 0.25,
    configurable in `(0,1]`.
 3. Sample with replacement; merge duplicates but retain multiplicity. Candidate
    weight is `multiplicity * r(a)/q(a)`. Deduplicating without counts changes the law.
 4. Admit candidates in first-sampled order under progressive widening. Their priors
-   share `P` proportional to those weights; pass retains its full-policy mass.
+   share `P` proportional to those weights; pass retains its selected-policy mass.
    If weights underflow to zero, admitted placements share mass uniformly.
 5. Every newly admitted coordinate gets a real leaf evaluation, even with tiny prior.
 
 A tiny candidate softmax would over-weight pass; weighting policy-sampled moves by
 policy again would double-count it. The correction avoids both mistakes but remains
-a finite-sample approximation, not exhaustive search.
+a finite-sample approximation, not exhaustive search. This correction concerns
+coordinate sampling inside selected cells; it does not recover omitted cells.
 
 ## Cross-game batching
 
@@ -172,9 +188,11 @@ parallelism or virtual loss. Baseline random/unguided engines bypass this schedu
 
 Cache misses batch by actual resolution without padding. Identical Game snapshots
 share an encoder execution even with cache disabled. Cached values return when
-dequeued; uncached values return after encoding, before dense policy work. Policies
-batch separately, streaming at most 65,536 coordinates/position and 262,144 aggregate
-rows per chunk, also respecting model chunk size. The pool parallelizes positions
+dequeued; uncached values return after encoding, before exact policy work. Policies
+batch separately with per-position selected cells. Chunks stream at most 65,536
+coordinates/position and 262,144 aggregate rows, also respecting model chunk size.
+Ragged coordinate lists are padded only for scorer transport; padded rows receive
+no rules analysis and never enter a cell's probability normalizer. The pool parallelizes positions
 and rows. Each reply still contains a million logits and legality (~5 MB/position).
 Queued replies/search state are bounded by concurrency, not the cache payload cap;
 these bounds are not total RSS/VRAM limits.
@@ -192,9 +210,11 @@ Per-game restart recovery belongs to [loop](loop.md#interruption-semantics).
 Neural SGFs carry player/model identities, seed/search settings, and pre-move root
 visits; replay/label rules are in [features](features.md#sgf-replay-and-labels).
 
-Stderr reports whole-run moves/s, full-policy/value calls, coarse/exact feature,
+Stderr reports whole-run moves/s, selective-policy/value calls, coarse/exact feature,
 encoder/scorer time, cache statistics, and encoder/scorer batch counts/maxima.
-`scorer_batches` counts chunk calls; `scorer_positions` counts full policies.
+`exact_coordinates` counts real extracted rows (not padding), and `selected_cells`
+counts proposed cells. `scorer_batches` counts chunk calls; `scorer_positions`
+counts selective policies.
 Queue/request seconds sum across clients and can exceed wall time; request seconds
 / requests gives mean latency. These counters are zero without the worker.
 Per-game concurrent latencies must not be summed as batch wall time.

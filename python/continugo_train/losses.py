@@ -1,10 +1,10 @@
-"""Sparse visit-count cross-entropy and expected-outcome regression.
+"""Sparse visit-count policy losses and expected-outcome regression.
 
-No dense target distribution is needed, but the policy normalization must still
-include ALL legal logits plus pass. A candidate-only batch instead trains a
-conditional policy and must not be confused with full-action training.
-Targets/outcomes are supplied by the validated SGF/Rust training loader. Exclude
-truncated games from outcome training, and flip RE to the pre-move player's view.
+Training uses hierarchical_policy_value_loss on globally coarse-normalized,
+complete-cell log probabilities; it must not renormalize the candidate subset.
+policy_value_loss is the generic logit-CE helper used by diagnostic tests.
+Targets/outcomes come from validated SGF/Rust data; exclude truncated outcomes
+and flip RE to the pre-move player's view.
 """
 
 from typing import NamedTuple
@@ -21,7 +21,13 @@ class Losses(NamedTuple):
 
 
 def policy_value_loss(
-    logits: Tensor, values: Tensor, target_indices: Tensor, visits: Tensor, outcomes: Tensor
+    logits: Tensor,
+    values: Tensor,
+    target_indices: Tensor,
+    visits: Tensor,
+    outcomes: Tensor,
+    *,
+    normalize: bool = True,
 ) -> Losses:
     """Targets are output-column indices [B,K], counts [B,K], outcomes [B].
 
@@ -59,10 +65,20 @@ def policy_value_loss(
     positive = visits > 0
     if not torch.isfinite(selected[positive]).all():
         raise ValueError("positive policy target on a masked or nonfinite logit")
-    log_normalizer = torch.logsumexp(logits, dim=1)
+    log_normalizer = torch.logsumexp(logits, dim=1) if normalize else logits.new_zeros(batch)
     if not torch.isfinite(log_normalizer).all():
         raise ValueError("policy needs a finite legal normalization")
     selected = torch.where(positive, selected, 0.0)  # Avoid 0 * -inf for padding.
     policy = (log_normalizer - (selected * (visits / totals[:, None])).sum(dim=1)).mean()
     value = F.mse_loss(values, outcomes)
     return Losses(policy + value, policy, value)
+
+
+def hierarchical_policy_value_loss(log_probs, values, target_indices, visits, outcomes):
+    """Exact hierarchical CE from full-coarse / complete-target-cell log probs.
+
+    Every positive target's cell must be supplied in full. There is no sampled
+    coordinate denominator or importance correction: omitted cells have zero
+    target mass, but still participate in the global coarse softmax.
+    """
+    return policy_value_loss(log_probs, values, target_indices, visits, outcomes, normalize=False)

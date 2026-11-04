@@ -8,6 +8,7 @@ use std::{collections::VecDeque, sync::Arc};
 pub(super) struct Context {
     pub resolution: usize,
     pub spatial: Vec<f32>,
+    pub cells: Vec<f32>,
     pub pass: f32,
     pub value: f64,
 }
@@ -41,17 +42,17 @@ impl ContextCache {
         Some(context)
     }
 
-    /// Return eviction count. The byte budget covers spatial payloads; keys and
+    /// Return eviction count. The byte budget covers spatial/cell payloads; keys and
     /// scalar/allocator overhead are additionally bounded by the entry limit.
     pub fn insert(&mut self, game: &Game, context: Arc<Context>) -> usize {
-        let bytes = context.spatial.len() * size_of::<f32>();
+        let bytes = (context.spatial.len() + context.cells.len()) * size_of::<f32>();
         if self.capacity == 0 || bytes > self.byte_limit {
             return 0;
         }
         let mut evictions = 0;
         while self.entries.len() >= self.capacity || self.bytes + bytes > self.byte_limit {
             let (_, oldest) = self.entries.pop_front().unwrap();
-            self.bytes -= oldest.spatial.len() * size_of::<f32>();
+            self.bytes -= (oldest.spatial.len() + oldest.cells.len()) * size_of::<f32>();
             evictions += 1;
         }
         self.bytes += bytes;
@@ -69,6 +70,7 @@ mod tests {
         Arc::new(Context {
             resolution: 2,
             spatial: vec![0.0; 4],
+            cells: Vec::new(),
             pass: 0.0,
             value: 0.25,
         })

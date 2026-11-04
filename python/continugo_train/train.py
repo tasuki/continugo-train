@@ -23,9 +23,9 @@ from pathlib import Path
 import torch
 
 from .data import batches, scan_corpus
-from .features import COARSE_PLANES, MOVE_FEATURES, PASS, SCHEMA_VERSION, feature_binary
-from .losses import policy_value_loss
-from .model import NetworkConfig, PolicyValueNet
+from .features import COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION, feature_binary
+from .losses import hierarchical_policy_value_loss
+from .model import POLICY_VERSION, NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
 from .progress import data_history, network_name
 from .progress import initialize as initialize_progress
@@ -81,6 +81,7 @@ class Options:
 def feature_spec(density):
     return {
         "schema": SCHEMA_VERSION,
+        "policy": POLICY_VERSION,
         "coarse": list(COARSE_PLANES),
         "moves": list(MOVE_FEATURES),
         "samples_per_diameter": density,
@@ -168,7 +169,7 @@ def sync(device):
         torch.cuda.synchronize(device)
 
 
-def run_phase(model, optimizer, games, options, epoch, device, binary, actions, training):
+def run_phase(model, optimizer, games, options, epoch, device, binary, training):
     model.train(training)
     model.zero_grad(set_to_none=True)
     if device.type == "cuda":
@@ -204,8 +205,10 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, actions, 
             batch = cpu_batch.to(device)
             if training:
                 optimizer.zero_grad(set_to_none=True)
-            logits, values = model(batch.coarse, batch.exact, actions, batch.legal)
-            loss = policy_value_loss(logits, values, batch.indices, batch.visits, batch.outcomes)
+            logits, values = model(batch.coarse, batch.exact, batch.actions, batch.legal)
+            loss = hierarchical_policy_value_loss(
+                logits, values, batch.indices, batch.visits, batch.outcomes
+            )
             if not torch.isfinite(loss.total):
                 raise RuntimeError("nonfinite policy/value loss")
             if training:
@@ -286,7 +289,15 @@ def parse_args(argv=None):
     )
     for field in fields(Options):
         parser.add_argument("--" + field.name.replace("_", "-"), type=type(field.default))
-    for name in ["channels", "blocks", "policy_hidden", "value_hidden", "chunk_size"]:
+    for name in [
+        "channels",
+        "blocks",
+        "policy_hidden",
+        "value_hidden",
+        "chunk_size",
+        "top_cells",
+        "exploration_cells",
+    ]:
         parser.add_argument("--" + name.replace("_", "-"), type=int)
     args = parser.parse_args(argv)
     if args.warm_start_optimizer is not None and args.warm_start is None:
@@ -368,7 +379,15 @@ def train(args):
     options.validate()
     config = NetworkConfig(**saved["config"]) if saved else NetworkConfig()
     settings = asdict(config)
-    for name in ["channels", "blocks", "policy_hidden", "value_hidden", "chunk_size"]:
+    for name in [
+        "channels",
+        "blocks",
+        "policy_hidden",
+        "value_hidden",
+        "chunk_size",
+        "top_cells",
+        "exploration_cells",
+    ]:
         value = getattr(args, name)
         if value is not None:
             if saved and name != "chunk_size" and value != settings[name]:
@@ -502,7 +521,6 @@ def train(args):
         log(
             "Validation is by complete unique game, stratified by resolution where possible; no synthetic policy/outcome labels."
         )
-        actions = torch.arange(PASS, device=device)
         step = saved["global_step"] if resuming else 0
         best = saved["best_validation"] if resuming else math.inf
         run_id = saved["run_id"] if resuming else uuid.uuid4().hex
@@ -513,7 +531,7 @@ def train(args):
                 (False, "validation", corpus.validation),
             ]:
                 result = run_phase(
-                    model, optimizer, games, options, epoch, device, binary, actions, training
+                    model, optimizer, games, options, epoch, device, binary, training
                 )
                 metrics[name] = result
                 if training:

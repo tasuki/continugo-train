@@ -308,7 +308,7 @@ class FeatureClient:
         if status != 0:
             raise RuntimeError("invalid feature-server status")
         sample = decode_sample(data)
-        if sample.ply != ply or sample.samples_per_diameter != density or not sample.full_domain:
+        if sample.ply != ply or sample.samples_per_diameter != density or sample.full_domain:
             raise RuntimeError("feature-server response does not match the request")
         return sample
 
@@ -318,6 +318,7 @@ def load_position(
     ply: int,
     *,
     actions: list[int] | None = None,
+    full_domain: bool = False,
     samples_per_diameter: int = 4,
     binary: str | Path | None = None,
 ) -> PositionFeatures:
@@ -338,6 +339,10 @@ def load_position(
         "--samples-per-diameter",
         str(samples_per_diameter),
     ]
+    if full_domain:
+        if actions is not None:
+            raise ValueError("full_domain conflicts with an explicit subset")
+        command.append("--full-domain")
     if actions is not None:
         if not actions or any(not isinstance(a, int) or not 0 <= a < PASS for a in actions):
             raise ValueError("coordinate subset must be nonempty and exclude pass")

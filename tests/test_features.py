@@ -15,8 +15,8 @@ from continugo_train.features import (
     decode_sample,
     load_position,
 )
-from continugo_train.losses import policy_value_loss
-from continugo_train.model import NetworkConfig, PolicyValueNet
+from continugo_train.losses import hierarchical_policy_value_loss
+from continugo_train.model import NetworkConfig, PolicyValueNet, cell_actions, cell_ids
 
 # Escaped SGF comments, native coordinates, and a checked one-stone area result.
 SGF = r"""(;FF[9071]GM[9071]SZ[13]RE[B+220.4]
@@ -90,17 +90,18 @@ class RealFeatureTests(unittest.TestCase):
         defended = self.load(2, actions=[38038])
         torch.testing.assert_close(defended.coarse[6], defended.coarse[0])
 
-    def test_full_real_million_coordinate_sample_drives_a_training_step(self):
+    def test_complete_target_cell_sample_drives_a_hierarchical_training_step(self):
         sample = self.load()
-        self.assertTrue(sample.full_domain)
-        self.assertEqual(sample.exact.shape, (1_000_000, len(MOVE_FEATURES)))
-        self.assertEqual(sample.actions[-1], 999999)
-        self.assertEqual(sample.legal.sum(), 855625)
+        self.assertFalse(sample.full_domain)
+        cells = cell_ids(torch.tensor([200200]), sample.resolution).tolist()
+        torch.testing.assert_close(sample.actions, cell_actions(cells, sample.resolution))
+        self.assertLess(sample.actions.numel(), 1000)
+        self.assertTrue(sample.legal.all())
         model = PolicyValueNet(NetworkConfig(channels=4, blocks=1, policy_hidden=4, value_hidden=8))
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
         logits, values = model(*sample.network_inputs())
         indices, counts = sample.policy_targets()
-        loss = policy_value_loss(
+        loss = hierarchical_policy_value_loss(
             logits, values, indices[None], counts[None], torch.tensor([sample.outcome])
         )
         loss.total.backward()

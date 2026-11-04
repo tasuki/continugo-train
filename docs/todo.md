@@ -12,13 +12,7 @@ cleanup before the next training trial. Use [KataGo's self-play training](https:
 - [ ] Add a shared-rules summary-only analysis path that avoids discarded child
   positions and repeated work. Verify against the existing validator, including
   captures and suicide.
-- [ ] Define the selective policy's probabilities and training objective. Compare
-  candidate-based and hierarchical policies; handle sampling bias, illegal moves,
-  overlapping probability mass, and checkpoint compatibility.
-- [ ] Implement coarse-to-fine move selection: choose promising coarse locations,
-  then compute exact features for every coordinate inside overlapping windows.
-  Deduplicate their union before rules work; retain whole-board exploration and pass.
-- [ ] Compare window/budget choices by tactical coverage and end-to-end speed,
+- [ ] Compare cell-size/budget choices by tactical coverage and end-to-end speed,
   then playing strength in the trial. Include coordinate-first sampling as a control.
 - [ ] Benchmark feature extraction, loader wait/transport, encoder, scorer, memory,
   and overall throughput. Tune concurrency/batching/cache settings from measurements.

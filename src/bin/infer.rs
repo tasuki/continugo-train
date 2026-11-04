@@ -1,5 +1,5 @@
-//! One-position native diagnostic: selected raw logits/value on stdout as JSON.
-//! This is not a game-record writer. Inference still evaluates the full domain.
+//! One-position diagnostic: selective hierarchical log probabilities and value.
+//! Unselected and illegal coordinates print as null; this is not a game record.
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -97,9 +97,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             value.is_finite().then_some(value)
         })
         .collect();
+    // Diagnostic summaries of selected nonempty cells, not the full legality set.
+    let size = continugo_train::features::resolution(
+        position.game.board().diameter(),
+        evaluator.samples_per_diameter(),
+    )?;
+    let cells: std::collections::BTreeSet<_> = evaluation
+        .legal
+        .iter()
+        .enumerate()
+        .filter(|(_, legal)| **legal != 0)
+        .map(|(id, _)| continugo_train::cells::cell(id as u32, size))
+        .collect();
+    let policy_mass: f64 = evaluation.logits.iter().map(|&p| f64::from(p).exp()).sum();
     println!(
         "{}",
-        serde_json::json!({"value": evaluation.value, "actions": args.actions, "logits": logits, "device": args.device.name()})
+        serde_json::json!({"value": evaluation.value, "actions": args.actions, "logits": logits, "device": args.device.name(), "cells": cells, "policy_mass": policy_mass})
     );
     eprintln!("{:?}", evaluator.stats);
     Ok(())

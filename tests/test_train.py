@@ -114,27 +114,30 @@ class OfflineDataTests(unittest.TestCase):
             fresh.load(path, 0, file_sha256=info["file_sha256"])
 
     def test_collate_pads_sparse_targets_and_rejects_mixed_resolutions(self):
-        def sample(resolution, indices, visits):
+        def sample(resolution, indices, visits, count=3):
             return data.TrainingSample(
                 torch.zeros(12, resolution, resolution),
-                torch.zeros(1, 10).expand(1_000_000, -1),
-                torch.ones(1_000_000, dtype=torch.bool),
+                torch.zeros(count, 10),
+                torch.ones(count, dtype=torch.bool),
                 torch.tensor(indices),
                 torch.tensor(visits),
                 1.0,
                 "fixture",
                 0,
+                torch.arange(count),
             )
 
-        first = sample(4, [0, 1_000_000], [7.0, 1.0])
-        second = sample(4, [1_000_000], [3.0])
+        first = sample(4, [0, 3], [7.0, 1.0])
+        second = sample(4, [1], [3.0], count=1)
         batch = data.collate([first, second])
         self.assertEqual(batch.coarse.shape, (2, 12, 4, 4))
-        self.assertEqual(batch.exact.shape, (2, 1_000_000, 10))
-        self.assertEqual(batch.indices.tolist(), [[0, 1_000_000], [1_000_000, 1_000_000]])
+        self.assertEqual(batch.exact.shape, (2, 3, 10))
+        self.assertEqual(batch.indices.tolist(), [[0, 3], [3, 3]])
+        self.assertEqual(batch.legal.tolist(), [[True, True, True], [True, False, False]])
+        self.assertEqual(batch.actions.tolist(), [[0, 1, 2], [0, 0, 0]])
         self.assertEqual(batch.visits.tolist(), [[7.0, 1.0], [3.0, 0.0]])
         with self.assertRaises(ValueError):
-            data.collate([first, sample(7, [1_000_000], [1.0])])
+            data.collate([first, sample(7, [3], [1.0])])
 
     def test_parallel_order_is_stable_and_early_close_and_errors_clean_up(self):
         closed = []
@@ -174,13 +177,14 @@ class OfflineDataTests(unittest.TestCase):
             for i, resolution in enumerate([4, 7, 4, 7, 4]):
                 yield data.TrainingSample(
                     torch.full((12, resolution, resolution), float(i)),
-                    torch.zeros(1, 10).expand(1_000_000, -1),
-                    torch.ones(1_000_000, dtype=torch.bool),
-                    torch.tensor([1_000_000]),
+                    torch.zeros(0, 10),
+                    torch.ones(0, dtype=torch.bool),
+                    torch.tensor([0]),
                     torch.ones(1),
                     0.0,
                     "fixture",
                     i,
+                    torch.empty(0, dtype=torch.int64),
                 )
 
         with patch.object(data, "_serial_samples", serial):

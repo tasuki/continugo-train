@@ -1,4 +1,4 @@
-//! Resolution-bucketed encoder/scorer execution with bounded streaming move rows.
+//! Resolution-bucketed encoding and selective, complete-cell exact scoring.
 use super::{Evaluation, OnnxEvaluator, cache::Context};
 use crate::features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, resolution};
 use continugo_rules::{COORDINATE_ACTIONS, Game};
@@ -17,7 +17,7 @@ pub enum InferenceOutput {
 type Error = Box<dyn std::error::Error>;
 
 impl OnnxEvaluator {
-    /// Each tuple requests either a full-domain policy (true) or only a value.
+    /// Each tuple requests either a selective cell policy (true) or only a value.
     /// Mixed resolutions are bucketed, not padded. Outputs retain request order.
     pub fn evaluate_batch(
         &mut self,
@@ -31,7 +31,7 @@ impl OnnxEvaluator {
             .iter()
             .zip(&contexts)
             .filter(|(q, _)| q.1)
-            .map(|(q, c)| (q.0, Arc::clone(c)))
+            .map(|(q, c)| (q.0, Arc::clone(c), 0))
             .collect();
         let mut evaluations = self
             .policies(&policies)
@@ -111,6 +111,7 @@ impl OnnxEvaluator {
             let (shape, spatial) = encoded["spatial"].try_extract_raw_tensor::<f32>()?;
             let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;
             let (_, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
+            let (cell_shape, cells) = encoded["cells"].try_extract_raw_tensor::<f32>()?;
             let stride = self.metadata.config.policy_hidden * size * size;
             if shape
                 != [
@@ -119,6 +120,8 @@ impl OnnxEvaluator {
                     size as i64,
                     size as i64,
                 ]
+                || cell_shape != [batch as i64, (size * size) as i64]
+                || cells.iter().any(|v| !v.is_finite())
                 || pass.len() != batch
                 || value.len() != batch
                 || spatial.iter().chain(pass).any(|v| !v.is_finite())
@@ -132,6 +135,7 @@ impl OnnxEvaluator {
                 let context = Arc::new(Context {
                     resolution: size,
                     spatial: spatial[row * stride..(row + 1) * stride].to_vec(),
+                    cells: cells[row * size * size..(row + 1) * size * size].to_vec(),
                     pass: pass[row],
                     value: f64::from(value[row]),
                 });
@@ -153,14 +157,14 @@ impl OnnxEvaluator {
 
     pub(super) fn policies(
         &mut self,
-        queries: &[(&Game, Arc<Context>)],
+        queries: &[(&Game, Arc<Context>, u64)],
     ) -> Result<Vec<Evaluation>, Error> {
         if queries.len() > MAX_BATCH {
             return Err("inference batch exceeds 32 positions".into());
         }
         let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         let mut result: Vec<Option<Evaluation>> = (0..queries.len()).map(|_| None).collect();
-        for (i, (_, context)) in queries.iter().enumerate() {
+        for (i, (_, context, _)) in queries.iter().enumerate() {
             groups.entry(context.resolution).or_default().push(i);
         }
         for (size, indices) in groups {
@@ -177,71 +181,131 @@ impl OnnxEvaluator {
                 .iter()
                 .flat_map(|&i| queries[i].1.spatial.iter().copied())
                 .collect();
-            for &i in &indices {
+            let actions: Vec<_> = indices
+                .iter()
+                .map(|&i| {
+                    let selected = super::proposals::select(
+                        queries[i].0,
+                        &queries[i].1.cells,
+                        self.metadata.config.top_cells,
+                        self.metadata.config.exploration_cells,
+                        queries[i].2,
+                    );
+                    self.stats.selected_cells += selected.len() as u64;
+                    crate::cells::actions(&selected, size)
+                })
+                .collect();
+            let count = actions.iter().map(Vec::len).max().unwrap_or(0);
+            let mut raw: Vec<Vec<f32>> = actions
+                .iter()
+                .map(|a| vec![f32::NEG_INFINITY; a.len()])
+                .collect();
+            for (&i, actions) in indices.iter().zip(&actions) {
+                self.stats.exact_coordinates += actions.len() as u64;
                 result[i] = Some(Evaluation {
                     value: queries[i].1.value,
-                    logits: Vec::with_capacity(COORDINATE_ACTIONS as usize + 1),
-                    legal: Vec::with_capacity(COORDINATE_ACTIONS as usize),
+                    // Dense IDs are only the search interface, not dense rules work.
+                    logits: vec![f32::NEG_INFINITY; COORDINATE_ACTIONS as usize + 1],
+                    legal: vec![0; COORDINATE_ACTIONS as usize],
                 });
             }
-            // At most 262,144 exact rows across a scorer call, not B million-row
-            // matrices. Persistent outputs cost about 5 MB per policy request.
             let chunk = self
                 .metadata
                 .config
                 .chunk_size
                 .min(65_536)
                 .min(262_144 / batch);
-            for start in (0..COORDINATE_ACTIONS as usize).step_by(chunk) {
-                let end = (start + chunk).min(COORDINATE_ACTIONS as usize);
+            for start in (0..count).step_by(chunk) {
+                let end = (start + chunk).min(count);
+                let width = end - start;
                 let tick = Instant::now();
-                let actions = &self.actions[start..end];
-                let moves: Result<Vec<_>, _> = match &self.feature_pool {
-                    Some(pool) => pool.install(|| {
-                        extractors
-                            .par_iter()
-                            .map(|e| e.moves_parallel(actions, pool))
-                            .collect()
-                    }),
-                    None => extractors.iter().map(|e| e.moves(actions)).collect(),
+                let extract = |row: usize| {
+                    let subset =
+                        &actions[row][start.min(actions[row].len())..end.min(actions[row].len())];
+                    match &self.feature_pool {
+                        Some(pool) => extractors[row].moves_parallel(subset, pool),
+                        None => extractors[row].moves(subset),
+                    }
                 };
-                let moves = moves?;
-                let exact: Vec<f32> = moves.iter().flat_map(|m| m.exact.iter().copied()).collect();
+                let moves: Vec<_> = match &self.feature_pool {
+                    Some(pool) => pool.install(|| {
+                        (0..batch)
+                            .into_par_iter()
+                            .map(extract)
+                            .collect::<Result<Vec<_>, _>>()
+                    }),
+                    None => (0..batch).map(extract).collect(),
+                }?;
+                let mut exact = vec![0.0; batch * width * MOVE_FEATURES.len()];
+                let mut ids = vec![0i64; batch * width];
+                for (row, moves) in moves.iter().enumerate() {
+                    let offset = row * width * MOVE_FEATURES.len();
+                    exact[offset..offset + moves.exact.len()].copy_from_slice(&moves.exact);
+                    for j in 0..moves.legal.len() {
+                        ids[row * width + j] = actions[row][start + j].index() as i64;
+                    }
+                }
                 let seconds = tick.elapsed().as_secs_f64();
                 self.stats.feature_seconds += seconds;
                 self.stats.move_seconds += seconds;
                 let tick = Instant::now();
-                let ids: Vec<i64> = (start as i64..end as i64).collect();
                 let output = self.scorer.run(ort::inputs![
                     "spatial" => Tensor::from_array(([batch, self.metadata.config.policy_hidden, size, size], spatial.as_slice()))?,
-                    "exact" => Tensor::from_array(([batch, end-start, MOVE_FEATURES.len()], exact))?,
-                    "actions" => Tensor::from_array(([end-start], ids))?
+                    "exact" => Tensor::from_array(([batch, width, MOVE_FEATURES.len()], exact))?,
+                    "actions" => Tensor::from_array(([batch, width], ids))?
                 ]?)?;
                 let (shape, scores) = output["logits"].try_extract_raw_tensor::<f32>()?;
-                if shape != [batch as i64, (end - start) as i64]
-                    || scores.iter().any(|v| !v.is_finite())
-                {
+                if shape != [batch as i64, width as i64] || scores.iter().any(|v| !v.is_finite()) {
                     return Err("invalid scorer outputs".into());
                 }
-                for ((&i, moves), scores) in indices
-                    .iter()
-                    .zip(moves)
-                    .zip(scores.chunks_exact(end - start))
-                {
-                    let evaluation = result[i].as_mut().unwrap();
-                    evaluation
-                        .logits
-                        .extend(scores.iter().zip(&moves.legal).map(|(&score, &legal)| {
-                            if legal == 0 { f32::NEG_INFINITY } else { score }
-                        }));
-                    evaluation.legal.extend(moves.legal);
+                for (row, (&i, moves)) in indices.iter().zip(&moves).enumerate() {
+                    for j in 0..moves.legal.len() {
+                        if moves.legal[j] != 0 {
+                            raw[row][start + j] = scores[row * width + j];
+                            result[i].as_mut().unwrap().legal
+                                [actions[row][start + j].index() as usize] = 1;
+                        }
+                    }
                 }
                 self.stats.scorer_seconds += tick.elapsed().as_secs_f64();
                 self.stats.scorer_batches += 1;
                 self.stats.scorer_max_batch = self.stats.scorer_max_batch.max(batch);
             }
-            for &i in &indices {
-                result[i].as_mut().unwrap().logits.push(queries[i].1.pass);
+            for (row, &i) in indices.iter().enumerate() {
+                let context = &queries[i].1;
+                let mut maxima = vec![f64::NEG_INFINITY; size * size];
+                for (action, &score) in actions[row].iter().zip(&raw[row]) {
+                    let cell = crate::cells::cell(action.index(), size);
+                    maxima[cell] = maxima[cell].max(f64::from(score));
+                }
+                let mut sums = vec![0.0f64; size * size];
+                for (action, &score) in actions[row].iter().zip(&raw[row]) {
+                    if score.is_finite() {
+                        let cell = crate::cells::cell(action.index(), size);
+                        sums[cell] += (f64::from(score) - maxima[cell]).exp();
+                    }
+                }
+                let coarse_max = context.cells.iter().copied().fold(context.pass, f32::max) as f64;
+                let coarse_logsum = (context
+                    .cells
+                    .iter()
+                    .map(|&x| (f64::from(x) - coarse_max).exp())
+                    .sum::<f64>()
+                    + (f64::from(context.pass) - coarse_max).exp())
+                .ln();
+                let evaluation = result[i].as_mut().unwrap();
+                for (action, &score) in actions[row].iter().zip(&raw[row]) {
+                    if score.is_finite() {
+                        let cell = crate::cells::cell(action.index(), size);
+                        let coarse_logp =
+                            f64::from(context.cells[cell]) - coarse_max - coarse_logsum;
+                        let local_logp = f64::from(score) - maxima[cell] - sums[cell].ln();
+                        evaluation.logits[action.index() as usize] =
+                            (coarse_logp + local_logp) as f32;
+                    }
+                }
+                evaluation.logits[COORDINATE_ACTIONS as usize] =
+                    (f64::from(context.pass) - coarse_max - coarse_logsum) as f32;
             }
             self.stats.calls += batch as u64;
             self.stats.scorer_positions += batch as u64;

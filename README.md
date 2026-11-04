@@ -2,6 +2,11 @@
 
 Rust self-play experiments using shared ContinuGo rules, plus a configurable PyTorch policy/value network.
 
+The [neural policy](docs/current/network.md) selects non-overlapping coarse cells
+before exact coordinate analysis, with whole-board exploration and pass. The
+`cells-v1` model format requires fresh training; old dense-policy checkpoints are
+not supported, but their validated SGF training data remains usable.
+
 ## Current operating policy
 
 Experimental actors may advance independently, but accepted networks require

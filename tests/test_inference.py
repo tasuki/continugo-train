@@ -16,7 +16,7 @@ from test_features import SGF
 
 from continugo_train.export import export_checkpoint, runtime_path
 from continugo_train.features import load_position
-from continugo_train.model import NetworkConfig, PolicyValueNet
+from continugo_train.model import NetworkConfig, PolicyValueNet, cell_actions, cell_ids
 from continugo_train.runtime import gpu_library, gpu_root, inference_environment
 from continugo_train.train import feature_spec
 
@@ -117,12 +117,17 @@ class NativeInferenceTests(unittest.TestCase):
             json.loads(value.stdout)["value"], json.loads(cached.stdout)["value"], places=7
         )
 
-    def test_real_full_domain_native_outputs_match_torch_across_sizes(self):
+    def test_real_selected_cell_native_outputs_match_torch_across_sizes(self):
         self.assertLess(self.error, 1e-5)
         for size in [9, 13, 19]:
             source = self.root / f"size-{size}.sgf"
             source.write_text(SGF.replace("SZ[13]", f"SZ[{size}]").replace("RE[B+220.4]", ""))
-            sample = load_position(source, 1)
+            # Dense extraction is a diagnostic oracle only; production selects cells.
+            sample = load_position(source, 1, full_domain=True)
+            preview = self.infer(source, [1000000])
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            selected = json.loads(preview.stdout)["cells"]
+            self.assertTrue(selected)
             actions = [
                 0,
                 999999,
@@ -136,11 +141,21 @@ class NativeInferenceTests(unittest.TestCase):
                 900900,
                 1000000,
             ]
+            for cell in selected:
+                coordinates = cell_actions([cell], sample.resolution)
+                legal = coordinates[sample.legal[coordinates]]
+                self.assertGreater(legal.numel(), 0)
+                actions += legal[[0, legal.numel() // 2, -1]].tolist()
             with torch.inference_mode():
                 logits, value = self.model(*sample.network_inputs())
+                spatial, pass_logit, _ = self.model.encode(sample.coarse[None])
+                coarse_probs = self.model.coarse_logits(spatial, pass_logit).softmax(dim=1)
+                expected_mass = coarse_probs[0, selected].sum() + coarse_probs[0, -1]
             native = self.infer(source, actions)
             self.assertEqual(native.returncode, 0, native.stderr)
             result = json.loads(native.stdout)
+            self.assertEqual(result["cells"], selected)
+            self.assertAlmostEqual(result["policy_mass"], expected_mass.item(), places=5)
             self.assertAlmostEqual(result["value"], value.item(), places=5)
             value_only = self.infer(source, actions, value_only=True)
             self.assertEqual(value_only.returncode, 0, value_only.stderr)
@@ -150,10 +165,17 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertIn("calls: 0, value_calls: 1", value_only.stderr)
             for action, actual in zip(actions, result["logits"], strict=True):
                 expected = logits[0, action].item()
-                if not np.isfinite(expected):
+                cell = (
+                    cell_ids(torch.tensor(action), sample.resolution).item()
+                    if action < 1000000
+                    else None
+                )
+                if not np.isfinite(expected) or (action < 1000000 and cell not in selected):
                     self.assertIsNone(actual)
                 else:
+                    self.assertIsNotNone(actual)
                     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-5)
+            self.assertLess(int(re.search(r"exact_coordinates: (\d+)", native.stderr)[1]), 50000)
 
     def check_search(self, device="cpu", library=None, environment=None):
         output = self.root / f"games-{device}"
@@ -413,6 +435,22 @@ class NativeInferenceTests(unittest.TestCase):
         result = self.infer(source, [500500], bad)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("incompatible feature", result.stderr)
+        # Old dense bundles have no cell-policy version: never silently load them.
+        metadata["feature_spec"]["moves"][0] = "legal"
+        del metadata["feature_spec"]["policy"]
+        for name in ["encoder.onnx", "policy.onnx"]:
+            graph = onnx.load(bad / name)
+            graph.metadata_props[0].value = json.dumps(metadata)
+            onnx.save(graph, bad / name)
+        result = self.infer(source, [500500], bad)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retrain/re-export", result.stderr)
+        old = torch.load(self.checkpoint, weights_only=True)
+        del old["feature_spec"]["policy"]
+        checkpoint = self.root / "old-dense.pt"
+        torch.save(old, checkpoint)
+        with self.assertRaisesRegex(ValueError, "incompatible features"):
+            export_checkpoint(checkpoint, self.root / "old-export")
 
 
 if __name__ == "__main__":

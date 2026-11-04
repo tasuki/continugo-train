@@ -1148,3 +1148,56 @@ is deleted**, including SGD momentum. See [evaluation.md](current/evaluation.md)
 [model-store.md](current/model-store.md) and [loop.md](current/loop.md) for controls and limitations.
 All **66 Python tests**, shared/local Rust tests and checks pass, including CPU/CUDA
 inference parity, paired-gate recovery and bit-for-bit archive continuation.
+
+## Selective non-overlapping cell policy — 2026-11-04
+
+The `cells-v1` policy replaces mandatory million-coordinate exact analysis with
+32 learned top cells plus 8 exploratory cells. Training uses complete positive-
+target cells with global coarse supervision. See [network](current/network.md)
+for probability/legality/selection semantics; old dense checkpoints are incompatible.
+
+A controlled **cost check**, not a learning/strength trial, used identical random
+weights (`torch.manual_seed(0)`, default 32 channels / 4 blocks / 16 policy channels),
+CPU ONNX, one inference thread, four feature threads, batch one, cache disabled.
+The source position has one stone at (200,200), White to move. Each size ran one
+warmup plus five measured calls. The reference uses the **same new hierarchy**
+with every cell selected (`top_cells=1000000`), not an old checkpoint or a different
+network. It measures the cost of exhaustive exact coverage, not equivalent search
+behavior or a claim that old-model playing strength is preserved.
+
+Mean stage milliseconds per policy call (model load/warmup excluded):
+
+| Size | Coverage | Exact rows | Coarse features | Exact features | Encoder | Scorer |
+|---|---|---:|---:|---:|---:|---:|
+| 9 | 32 + 8 cells | 17,928 | 1.547 | 0.800 | 2.136 | 6.991 |
+| 9 | All cells | 1,000,000 | 1.521 | 42.565 | 2.139 | 392.060 |
+| 13 | 32 + 8 cells | 8,861 | 0.870 | 0.539 | 4.235 | 3.497 |
+| 13 | All cells | 1,000,000 | 0.848 | 45.110 | 4.342 | 390.760 |
+| 19 | 32 + 8 cells | 4,315 | 0.864 | 0.307 | 8.750 | 1.737 |
+| 19 | All cells | 1,000,000 | 0.892 | 45.502 | 8.970 | 391.787 |
+
+Rows include illegal coordinates inside selected cells. The untrained coarse head
+can favor border cells; these counts are not tactical coverage measurements. Stage
+sums exclude proposal enumeration, allocation, local normalization, and search.
+
+A tiny end-to-end CPU self-play check (two size-9 games, seeds 700/701, four
+simulations, eight-move cap, otherwise defaults) took **0.668 s selective vs
+8.191 s all-cell reference**, measured as subprocess wall time including load.
+Trajectories differ, games can be truncated, and these untrained games provide
+**no playing-strength evidence**.
+
+Loader/transport sanity check on the naturally completed size-13 fixture with one
+positive placement target: the persistent server returned **361 exact rows** in
+0.792 ms/packet (five warm calls), versus a diagnostic one-shot full packet's
+1,000,000 rows in 252.789 ms. The latter also includes process/replay overhead,
+so these are not a controlled loader speedup ratio. A pass-only target returned
+zero exact rows in 1.317 ms/packet. All still include coarse extraction/decoding.
+
+Local reproducibility artifacts: `runs/20261104-000500-cell-policy-bench/` contains
+`measure.py`, SGF fixtures, checkpoints/exports, raw native statistics, generated
+self-play SGFs, and `summary.json`. Run the script in a fresh directory; it refuses
+to overwrite exports. No trained/accepted models were replaced. Budget comparisons,
+tactical misses, real-corpus memory/loader profiling, and playing-strength trials
+remain open work. All **119 Python tests** pass, including CPU/CUDA ONNX/native
+parity, complete-cell mass checks, seeded batching, training/resume, and self-play;
+Rust tests and Clippy also pass.

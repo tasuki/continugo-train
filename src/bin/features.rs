@@ -3,7 +3,10 @@
 
 use clap::Parser;
 use continugo_rules::{Action, COORDINATE_ACTIONS};
-use continugo_train::{feature_io::encode_position, replay::ReplayGame};
+use continugo_train::{
+    feature_io::{encode_position, target_cell_actions},
+    replay::ReplayGame,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -27,6 +30,9 @@ struct Args {
     samples_per_diameter: usize,
     #[arg(long, value_delimiter = ',', num_args = 1.., value_parser = clap::value_parser!(u32).range(0..COORDINATE_ACTIONS as i64))]
     actions: Option<Vec<u32>>,
+    /// Diagnostic reference only: extract all million coordinates, not training.
+    #[arg(long, conflicts_with_all = ["actions", "serve", "inspect"])]
+    full_domain: bool,
     #[arg(long, default_value = "-")]
     output: PathBuf,
     /// Emit metadata only (not game moves), including eligible training plies.
@@ -57,9 +63,6 @@ struct Request {
 }
 
 fn serve() -> Result<(), Box<dyn Error>> {
-    let actions: Vec<_> = (0..COORDINATE_ACTIONS)
-        .map(|i| Action::from_index(i).unwrap())
-        .collect();
     let mut cached: Option<(PathBuf, String, ReplayGame)> = None;
     let mut output = BufWriter::new(io::stdout().lock());
     for line in io::stdin().lock().lines() {
@@ -78,12 +81,13 @@ fn serve() -> Result<(), Box<dyn Error>> {
                 cached = Some((request.sgf, hash, game));
             }
             let sample = cached.as_ref().unwrap().2.position(request.ply)?;
+            let actions = target_cell_actions(&sample, request.samples_per_diameter)?;
             encode_position(
                 &sample,
                 request.ply,
                 request.samples_per_diameter,
                 &actions,
-                true,
+                false,
             )
         })();
         let (status, bytes) = match response {
@@ -123,13 +127,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let sample = game.position(args.ply)?;
     let replay_seconds = started.elapsed().as_secs_f64();
-    let full_domain = args.actions.is_none();
-    let actions: Vec<_> = args
-        .actions
-        .unwrap_or_else(|| (0..COORDINATE_ACTIONS).collect())
-        .into_iter()
-        .map(|i| Action::from_index(i).unwrap())
-        .collect();
+    let full_domain = args.full_domain;
+    let actions: Vec<_> = if full_domain {
+        (0..COORDINATE_ACTIONS)
+            .map(|i| Action::from_index(i).unwrap())
+            .collect()
+    } else if let Some(ids) = args.actions {
+        ids.into_iter()
+            .map(|i| Action::from_index(i).unwrap())
+            .collect()
+    } else {
+        target_cell_actions(&sample, args.samples_per_diameter)?
+    };
     if !full_domain {
         let mut seen = HashSet::new();
         if actions.iter().any(|a| !seen.insert(a.index())) {
