@@ -54,6 +54,10 @@ description = "Restartable neural self-play, bounded replay, warm-start and expo
 depends = ["build-loop"]
 run = ".venv/bin/python -m continugo_train.loop"
 
+[tasks.plot-metrics]
+description = "Plot saved training/validation losses from a campaign, loop or offline job"
+run = ".venv/bin/python -m continugo_train.plot_metrics"
+
 [tasks.loop-status]
 description = "Read-only training, experimental actor, accepted identity and live loop progress"
 run = ".venv/bin/python -m continugo_train.status"

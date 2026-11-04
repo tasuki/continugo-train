@@ -288,6 +288,39 @@ these stages with frozen replay selection and interruption recovery. Keep each
 job's SGF inputs immutable; changing the corpus is allowed **between** warm-start
 runs, not while a job is loading it.
 
+## Loss plots
+
+Install the optional plotting dependency, then plot an offline job, a loop output,
+or a campaign containing `initial-training/` and `loop/`:
+
+```sh
+.venv/bin/python -m pip install -e '.[plot]'
+mise run plot-metrics -- --run runs/YYYYMMDD-HHMMSS-size9-training
+# Optional output format/location:
+mise run plot-metrics -- --run runs/train-001 --output runs/train-001/losses.svg
+```
+
+The default output is `RUN/metrics.png`; `.svg` and `.pdf` are also supported.
+For loops/campaigns, the command also writes `draws.png` (or the chosen format)
+beside the loss plot. `--draws-output PATH` overrides its location. Draw proportions
+come from an atomic read-only `loop.pt` snapshot, counting actual generated games,
+not deduplicated replay. Only fully recorded self-play batches are included;
+fast-finishing draws otherwise bias partial iterations. Reference/arena games are
+excluded. The denominator includes all games in a batch; truncations are unknown,
+never counted as draws, and plotted separately when present.
+
+Losses come from `training.log`, using train/validation total loss, policy
+cross-entropy and value MSE for epochs with a logged checkpoint save. Live partial
+epochs are omitted. Resumed logs and numbered training attempts are combined by
+local epoch, with the latest saved occurrence taking precedence, rather than
+counting repeated epochs twice. It does not load checkpoints or alter training.
+Rerun to refresh the plot during a campaign.
+
+Epochs are stitched across jobs, with round labels/boundaries and separate line
+segments at replay changes. Missing/unlogged epochs or jobs cannot be recovered
+from logs alone. These are not fixed-corpus learning curves: changing replay can
+change loss without a change in playing strength.
+
 ## Measurements
 
 `training.log` and stdout report policy cross-entropy, value MSE, sample/batch
