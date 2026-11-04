@@ -17,7 +17,8 @@ from pathlib import Path
 import torch
 
 from .data import scan_corpus
-from .features import FeatureClient, inspect_game
+from .features import FeatureClient, FeatureProfile, inspect_game
+from .memory import GpuMemorySampler
 from .model import NetworkConfig, PolicyValueNet
 from .paths import ROOT, new_run_directory
 from .runtime import inference_environment
@@ -73,7 +74,7 @@ def select_positions(paths):
     return selected
 
 
-def measured_command(command, stem, environment):
+def measured_command(command, stem, environment, *, profile_gpu=False):
     """GNU time peak RSS is process-lifetime, including loading/replay/warmup.
 
     This launches native binaries directly, so Python/Torch launchers and cargo
@@ -83,8 +84,13 @@ def measured_command(command, stem, environment):
     timed = timer.is_file() and platform.system() == "Linux"
     actual = [str(timer), "-f", "%M", "-o", str(stem) + ".rss", *command] if timed else command
     started = time.perf_counter()
-    result = subprocess.run(actual, capture_output=True, text=True, env=environment, check=False)
-    seconds = time.perf_counter() - started
+    with subprocess.Popen(
+        actual, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment
+    ) as process:
+        with GpuMemorySampler(process.pid, enabled=profile_gpu) as memory:
+            stdout, stderr = process.communicate()
+            seconds = time.perf_counter() - started
+        result = subprocess.CompletedProcess(actual, process.returncode, stdout, stderr)
     Path(str(stem) + ".stderr").write_text(result.stderr)
     Path(str(stem) + ".stdout").write_text(result.stdout)
     result.check_returncode()
@@ -93,6 +99,7 @@ def measured_command(command, stem, environment):
         "process_peak_rss_mib": float(Path(str(stem) + ".rss").read_text()) / 1024
         if timed
         else None,
+        **memory.summary(),
     }
 
 
@@ -103,7 +110,7 @@ def transport_samples(games, iterations):
     measurement. Uses real policy target cells, not empty random-bot targets.
     """
     results = []
-    with FeatureClient() as client:
+    with FeatureClient(profile=True) as client:
         for size in SIZES:
             game = next((g for g in games if g.board_size == size), None)
             if game is None:
@@ -115,9 +122,12 @@ def transport_samples(games, iterations):
                 strict=True,
             ):
                 client.load(game.path, ply, file_sha256=game.file_sha256)
+                profile = FeatureProfile()
                 started = time.perf_counter()
                 for _ in range(iterations):
                     sample = client.load(game.path, ply, file_sha256=game.file_sha256)
+                    profile.add(client.process.pid, client.last_profile)
+                seconds = time.perf_counter() - started
                 results.append(
                     {
                         "size": size,
@@ -126,8 +136,9 @@ def transport_samples(games, iterations):
                         "sgf": game.path,
                         "file_sha256": game.file_sha256,
                         "iterations": iterations,
-                        "seconds": time.perf_counter() - started,
+                        "seconds": seconds,
                         "exact_coordinates": sample.actions.numel(),
+                        "feature_profile": profile.summary(),
                     }
                 )
     return results
@@ -221,9 +232,11 @@ def main(argv=None):
         "limitations": [
             "Phase labels are move-count proxies; inspect source SGFs for tactical coverage.",
             "Single selected game per size, not multi-seed statistics or playing strength.",
-            "Transport roundtrip includes extraction/serialization/decoding, not pure IPC.",
-            "Native RSS includes model loading/replay/warmup; native CUDA peak is not measured.",
-            "Training parent peak RSS is cumulative and excludes feature child processes.",
+            "IPC residual includes dispatch/framing/scheduling; server writes overlap client reads.",
+            "Feature worker wall-time sums include prefetch and are not exposed loader wait.",
+            "Sum of Rust child lifetime RSS peaks is not a simultaneous process-tree peak.",
+            "Native RSS includes model loading/replay/warmup; driver GPU memory is sampled, not an exact peak.",
+            "Training parent RSS is cumulative; diagnostic Rust child RSS is reported separately.",
             "Synchronized training stage diagnostics may perturb throughput; baseline is separate.",
         ],
     }
@@ -263,7 +276,9 @@ def main(argv=None):
             ]
             if value_only:
                 command.append("--value-only")
-            stdout, process = measured_command(command, output / label, environment)
+            stdout, process = measured_command(
+                command, output / label, environment, profile_gpu=args.device == "cuda"
+            )
             report["positions"].append(
                 {**position, "value_only": value_only, **process, **json.loads(stdout)}
             )
@@ -305,6 +320,7 @@ def main(argv=None):
         ],
         output / "selfplay",
         environment,
+        profile_gpu=args.device == "cuda",
     )
     report["selfplay"] = {**json.loads(stats_path.read_text()), **process}
     save()

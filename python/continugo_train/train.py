@@ -23,8 +23,9 @@ from pathlib import Path
 import torch
 
 from .data import batches, scan_corpus
-from .features import COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION, feature_binary
+from .features import COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION, FeatureProfile, feature_binary
 from .losses import hierarchical_policy_value_loss
+from .memory import GpuMemorySampler
 from .model import POLICY_VERSION, NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
 from .progress import data_history, network_name
@@ -181,6 +182,7 @@ def run_phase(
     totals = [0.0, 0.0, 0.0]
     wait = compute = 0.0
     stage_seconds = Counter()
+    feature_profile = FeatureProfile() if profile_stages else None
 
     @contextmanager
     def stage(name):
@@ -206,8 +208,10 @@ def run_phase(
         limit=options.positions_per_game if training else options.validation_positions_per_game,
         binary=binary,
         size_weights=options.size_weights,
+        feature_profile=feature_profile,
     )
-    with closing(stream), torch.set_grad_enabled(training):
+    memory = GpuMemorySampler(enabled=profile_stages and device.type == "cuda")
+    with memory, closing(stream), torch.set_grad_enabled(training):
         while not (training and options.steps_per_epoch and steps >= options.steps_per_epoch):
             tick = time.perf_counter()
             try:
@@ -275,7 +279,18 @@ def run_phase(
         if device.type == "cuda"
         else None,
         "parent_peak_rss_mib": parent_peak_rss(),
-        **({"stage_seconds": dict(stage_seconds)} if profile_stages else {}),
+        "cuda_reserved_peak_mib": torch.cuda.max_memory_reserved(device) / 2**20
+        if device.type == "cuda"
+        else None,
+        **(
+            {
+                "stage_seconds": dict(stage_seconds),
+                "feature_profile": feature_profile.summary(),
+                **memory.summary(),
+            }
+            if profile_stages
+            else {}
+        ),
     }
 
 

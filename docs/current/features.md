@@ -187,6 +187,27 @@ Packet size scales with target-cell coverage, not a mandatory million-row matrix
 SGFs remain the sole primary game records. Binary packets/cache files are derived, disposable tensors, not JSON
 sidecars or another game-record format.
 
+### Optional server diagnostics
+
+Ordinary `features --serve` responses remain `status u8 + length u64 + payload`,
+where status 0 carries CGFEAT01 and status 1 carries a UTF-8 error. A request may
+set `"profile": true`: **successful** responses then append `length u64 + JSON`
+with server stage times and Linux process-lifetime peak RSS. Errors never append
+telemetry, so the next request remains aligned. The tensor payload/schema is
+unchanged; these are disposable transport diagnostics, not SGF annotations.
+
+```python
+from continugo_train.features import FeatureClient
+
+with FeatureClient(profile=True) as client:
+    sample = client.load("GAME.sgf", ply=0)
+    print(client.last_profile)
+```
+
+The Python client adds its own request/read and decode/copy clocks. No profile
+flag is sent by ordinary clients, which remain compatible with existing servers.
+See [profiling](profiling.md) for stage overlap, IPC residuals and memory limits.
+
 ### CGFEAT01 packet layout
 
 Little endian, no padding. Header: Python struct `<8s11If2I` (64 bytes):

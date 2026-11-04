@@ -89,6 +89,12 @@ class PipelineProfileTests(unittest.TestCase):
                 )
                 states.append((model.state_dict(), optimizer.state_dict()))
             self.assertNotIn("stage_seconds", metrics[0])
+            self.assertNotIn("feature_profile", metrics[0])
+            profile = metrics[1]["feature_profile"]
+            self.assertGreaterEqual(profile["requests"], metrics[1]["samples"])
+            self.assertGreater(profile["totals"]["server_coarse_seconds"], 0)
+            self.assertGreater(profile["totals"]["decode_seconds"], 0)
+            self.assertGreater(profile["totals"]["packet_bytes"], 0)
             self.assertEqual(
                 set(metrics[1]["stage_seconds"]),
                 {"transfer", "encoder", "scorer", "loss_backward_optimizer"},

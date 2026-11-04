@@ -14,11 +14,11 @@ as a reference, adapting it to ContinuGo.
   repeated blocker scans/allocations and duplicate group construction during
   preparation versus raster extraction. Keep populated early/middle/late 9/13/19
   positions and value-only cache misses in subsequent measurements.
-- [ ] Split the training feature-server round trip into extraction, serialization,
-  pipe transport, decoding/tensor copies, and exposed loader wait. Repeat longer,
-  warmed training phases with a fixed genuine-policy corpus and controlled worker
-  counts; account for Rust child RSS and native GPU memory, not only parent RSS
-  and live PyTorch allocation.
+- [ ] Extend training measurements to sustained, warmed persistent-loader windows;
+  current fixed-corpus phases still include worker startup/shutdown. Recheck
+  worker allocation on the trial corpus/actor before changing global defaults.
+  Retain extraction timing, exposed loader wait, Rust child RSS and sampled
+  driver GPU memory in subsequent measurements.
 - [ ] Remeasure actual self-play and training after each change, alongside the fixed
   positions. Keep model/search settings and source games fixed for comparisons;
   check decoded moves/visits/results when deterministic and report changed
@@ -58,7 +58,7 @@ as a reference, adapting it to ContinuGo.
 - [ ] Tune scorer batching and cell budgets for speed if their measured cost
   becomes significant; retain tactical-coverage and strength checks.
 - [ ] Investigate CPU/GPU pipelining and GPU-resident contexts if the remaining
-  compute/transfer split justifies them. Loader/transport measurement is above.
+  compute/transfer split justifies them.
 - [ ] Batch independent evaluation games.
 - [ ] Measure rollout cost/strength before adding it to the supervised loop/rating protocol.
 - [ ] Tune search/training budgets and manually scale network capacity; consider

@@ -43,8 +43,11 @@ The profiler:
    labels are excluded, never manufactured; insufficient completed data fails
    explicitly after retaining self-play diagnostics.
 5. Measures warm persistent feature-server round trips on actual eligible policy
-   positions (first/middle/last eligible ply per size). These cells come from
-   genuine visits, unlike dense random-bot games without policy targets.
+   positions (first/middle/last eligible ply per size). Opt-in server telemetry
+   separates replay/target-cell selection, coarse/exact extraction and serialization;
+   the client records request writes, response reads, decoding/copies and an IPC
+   residual. These cells come from genuine visits, unlike dense random-bot games
+   without policy targets.
 6. Runs real FP32 SGD twice from the supplied weights and fresh optimizer state:
    an ordinary baseline and synchronized stage diagnostics. Each gets one untimed
    warmup step by default, then weights, BatchNorm buffers, RNG and optimizer reset.
@@ -83,20 +86,56 @@ native measurements. SGFs remain the only primary game records.
   transfer, encoding, policy scoring/normalization, and loss/backward/optimizer.
   Synchronization can perturb overlap; use the ordinary baseline for throughput.
   Small CUDA backward differences are possible even with the same initialization.
-- Feature-server round trip includes extraction, serialization, pipe wait,
-  decoding and tensor copies. It is **not pure transport time**. Loader wait is
-  exposed consumer stall, not total worker CPU time; prefetch overlaps compute.
+- `training_transport[*].feature_profile` records warm round-trip stages.
+  `server_coarse_seconds`, `server_exact_seconds`, `server_serialization_seconds`
+  and `server_replay_and_selection_seconds` are disjoint server work.
+  `response_read_seconds` **includes waiting for that work**, not just transport.
+  `ipc_residual_seconds` subtracts server work from request-write + response-read
+  time: it includes framing, dispatch, allocation cleanup and scheduling, not pure
+  pipe bandwidth. It is a signed residual; do not clamp measurement noise to zero.
+  `server_output_write_seconds` includes pipe backpressure and **overlaps** client
+  reads; never add it to the residual or round trip. `decode_seconds` contains the
+  `decode_arrays_seconds` (header/NumPy copies/conversions),
+  `decode_validation_seconds`, and `decode_tensors_seconds` (Torch wrappers/legal
+  copy) subtotals. Request encoding/path resolution and timing-trailer reading are
+  recorded separately. Telemetry itself adds overhead; ordinary loads have no
+  per-stage clocks/trailer.
+- Synchronized training diagnostics include the same `feature_profile` aggregated
+  across workers. These are **summed worker wall times**, including prefetch and
+  any samples extracted before early shutdown, not disjoint training wall time.
+  Loader wait is exposed consumer stall, not total worker CPU time; prefetch
+  overlaps compute. Ordinary baseline throughput has no feature telemetry.
 - Linux `/usr/bin/time` records native process-lifetime peak RSS, including model
   load, validated SGF replay and warmup. Elsewhere it is null. Training parent RSS
-  excludes Rust children and is cumulative for the profiler process. CUDA training
-  memory is peak live PyTorch allocation, not reservation/context. Native GPU peak
-  allocation is not measured by this command. Cache bytes are payload, not RSS.
+  is cumulative and excludes Rust children. Diagnostic `child_peak_rss_mib` reads
+  each Rust worker's Linux `VmHWM`; `sum_child_peak_rss_mib` sums those lifetime
+  peaks, **not a simultaneous process-tree peak**. Unsupported readings are null.
+  CUDA training reports both peak live PyTorch allocation (`cuda_peak_mib`) and
+  reservation (`cuda_reserved_peak_mib`), neither of which includes all driver memory.
+- On Linux CUDA runs with `nvidia-smi`, native commands and synchronized training
+  also sample driver-reported compute-process memory for the measured process
+  tree, excluding unrelated GPU users. `sampled_gpu_peak_mib` includes contexts,
+  native ONNX allocations, and reservations outside live Torch tensors. This is a
+  **sampled**, not exact, peak; the polling gap is at least 100 ms plus query cost.
+  `gpu_memory_samples` counts successful polls; missing support/errors yield null
+  if no poll succeeds. Monitoring can perturb timings. Native samples include
+  startup/replay/warmup; training samples include sampler teardown in phase time.
+  Cache bytes remain payload, not RSS.
 
 Do not add overlapping stage totals or compare process startup with steady-state
 query times. Repeat with multiple seeds, representative trained weights, larger
 training windows, and controlled thread/cache settings before claiming a general
 speedup. Random-weight early passing is not playing strength. Retain dated results
 in [history](../history/), not in this operating guide.
+
+For a controlled worker sweep, reuse `--data` with unchanged games, weights,
+thread/batch settings and sample caps, changing only `--workers`. Keep caps above
+corpus exhaustion when checking full-corpus counts. Worker counts change the
+loader's round-robin sample order and hence SGD trajectories, even with the same
+seed; compare throughput and actual board counts, not loss as a strength result.
+Worker scaling need not be monotonic because of shard imbalance/backpressure.
+The [feature-transport diagnostic](../history/2026-11-04-feature-transport.md)
+records a hardware-specific three-worker recipe; it is not a new global default.
 
 ## Lower-level diagnostics
 

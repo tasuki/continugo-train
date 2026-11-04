@@ -267,14 +267,16 @@ def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_si
     return ordered
 
 
-def _serial_samples(plans, density, binary):
-    with FeatureClient(binary) as client:
+def _serial_samples(plans, density, binary, feature_profile=None):
+    with FeatureClient(binary, profile=feature_profile is not None) as client:
         for game, plies in plans:
             for ply in plies:
                 try:
                     sample = client.load(
                         game.path, ply, density=density, file_sha256=game.file_sha256
                     )
+                    if feature_profile is not None:
+                        feature_profile.add(client.process.pid, client.last_profile)
                     if (
                         sample.full_domain
                         or sample.outcome is None
@@ -302,11 +304,11 @@ def _serial_samples(plans, density, binary):
                     raise ValueError(f"{game.path} ply {ply}: {error}") from error
 
 
-def _parallel_samples(plans, density, workers, binary):
+def _parallel_samples(plans, density, workers, binary, feature_profile=None):
     if not plans:
         return
     if not workers:
-        yield from _serial_samples(plans, density, binary)
+        yield from _serial_samples(plans, density, binary, feature_profile)
         return
     count = min(workers, len(plans))
     stop = threading.Event()
@@ -322,7 +324,7 @@ def _parallel_samples(plans, density, workers, binary):
 
     def produce(shard, channel):
         try:
-            with closing(_serial_samples(shard, density, binary)) as stream:
+            with closing(_serial_samples(shard, density, binary, feature_profile)) as stream:
                 for sample in stream:
                     if stop.is_set():
                         break
@@ -363,6 +365,7 @@ def batches(
     limit=0,
     binary=None,
     size_weights="uniform",
+    feature_profile=None,
 ):
     """Bounded, deterministic shuffling and homogeneous-resolution batches.
 
@@ -387,7 +390,7 @@ def batches(
             return batch
         return None
 
-    with closing(_parallel_samples(plans, density, workers, binary)) as stream:
+    with closing(_parallel_samples(plans, density, workers, binary, feature_profile)) as stream:
         for sample in stream:
             if training and shuffle_buffer:
                 if len(buffered) < shuffle_buffer:

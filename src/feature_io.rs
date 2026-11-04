@@ -5,6 +5,15 @@ use crate::{
     replay::{ReplayPosition, player_index},
 };
 use continugo_rules::{Action, COORDINATE_ACTIONS};
+use std::time::Instant;
+
+/// Disjoint CPU stages, excluding replay, target-cell selection and pipe writes.
+#[derive(Default, serde::Serialize)]
+pub struct FeatureTimings {
+    pub coarse_seconds: f64,
+    pub exact_seconds: f64,
+    pub serialization_seconds: f64,
+}
 
 /// Only cells with positive placement visits need exact features for hierarchical
 /// training. The coarse loss still normalizes over every cell and pass.
@@ -28,8 +37,38 @@ pub fn encode_position(
     actions: &[Action],
     full_domain: bool,
 ) -> Result<Vec<u8>, String> {
+    encode::<false>(sample, ply, density, actions, full_domain).map(|(packet, _)| packet)
+}
+
+pub fn encode_position_profiled(
+    sample: &ReplayPosition,
+    ply: usize,
+    density: usize,
+    actions: &[Action],
+    full_domain: bool,
+) -> Result<(Vec<u8>, FeatureTimings), String> {
+    encode::<true>(sample, ply, density, actions, full_domain)
+}
+
+fn encode<const PROFILE: bool>(
+    sample: &ReplayPosition,
+    ply: usize,
+    density: usize,
+    actions: &[Action],
+    full_domain: bool,
+) -> Result<(Vec<u8>, FeatureTimings), String> {
+    let mut timings = FeatureTimings::default();
+    let tick = PROFILE.then(Instant::now);
     let extractor = FeatureExtractor::new(&sample.game, density)?;
+    if let Some(tick) = tick {
+        timings.coarse_seconds = tick.elapsed().as_secs_f64();
+    }
+    let tick = PROFILE.then(Instant::now);
     let moves = extractor.moves(actions)?;
+    if let Some(tick) = tick {
+        timings.exact_seconds = tick.elapsed().as_secs_f64();
+    }
+    let tick = PROFILE.then(Instant::now);
     let policy = sample.policy.as_deref().unwrap_or_default();
     let length = 64
         + extractor.coarse.len() * 4
@@ -70,5 +109,8 @@ pub fn encode_position(
         packet.extend_from_slice(&target.visits.to_le_bytes());
     }
     debug_assert_eq!(packet.len(), length);
-    Ok(packet)
+    if let Some(tick) = tick {
+        timings.serialization_seconds = tick.elapsed().as_secs_f64();
+    }
+    Ok((packet, timings))
 }

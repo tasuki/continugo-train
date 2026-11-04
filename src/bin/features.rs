@@ -4,7 +4,7 @@
 use clap::Parser;
 use continugo_rules::{Action, COORDINATE_ACTIONS};
 use continugo_train::{
-    feature_io::{encode_position, target_cell_actions},
+    feature_io::{encode_position, encode_position_profiled, target_cell_actions},
     replay::ReplayGame,
 };
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,22 @@ struct Request {
     ply: usize,
     samples_per_diameter: usize,
     file_sha256: Option<String>,
+    /// Successful responses append a u64-length framed JSON timing trailer.
+    #[serde(default)]
+    profile: bool,
+}
+
+fn peak_rss_mib() -> Option<f64> {
+    // Linux process-lifetime high-water mark, including validated game snapshots.
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        line.strip_prefix("VmHWM:")?
+            .split_whitespace()
+            .next()?
+            .parse::<f64>()
+            .ok()
+            .map(|kib| kib / 1024.0)
+    })
 }
 
 fn serve() -> Result<(), Box<dyn Error>> {
@@ -67,8 +83,10 @@ fn serve() -> Result<(), Box<dyn Error>> {
     let mut output = BufWriter::new(io::stdout().lock());
     for line in io::stdin().lock().lines() {
         let line = line?;
+        let mut timings = None;
         let response = (|| -> Result<Vec<u8>, String> {
             let request: Request = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+            let tick = request.profile.then(Instant::now);
             let reuse = cached.as_ref().is_some_and(|(path, hash, _)| {
                 *path == request.sgf
                     && request
@@ -82,22 +100,49 @@ fn serve() -> Result<(), Box<dyn Error>> {
             }
             let sample = cached.as_ref().unwrap().2.position(request.ply)?;
             let actions = target_cell_actions(&sample, request.samples_per_diameter)?;
-            encode_position(
-                &sample,
-                request.ply,
-                request.samples_per_diameter,
-                &actions,
-                false,
-            )
+            if let Some(tick) = tick {
+                let replay_and_selection_seconds = tick.elapsed().as_secs_f64();
+                let (packet, stages) = encode_position_profiled(
+                    &sample,
+                    request.ply,
+                    request.samples_per_diameter,
+                    &actions,
+                    false,
+                )?;
+                timings = Some(serde_json::json!({
+                    "replay_and_selection_seconds": replay_and_selection_seconds,
+                    "coarse_seconds": stages.coarse_seconds,
+                    "exact_seconds": stages.exact_seconds,
+                    "serialization_seconds": stages.serialization_seconds,
+                }));
+                Ok(packet)
+            } else {
+                encode_position(
+                    &sample,
+                    request.ply,
+                    request.samples_per_diameter,
+                    &actions,
+                    false,
+                )
+            }
         })();
         let (status, bytes) = match response {
             Ok(bytes) => (0u8, bytes),
             Err(error) => (1, error.into_bytes()),
         };
+        let tick = timings.as_ref().map(|_| Instant::now());
         output.write_all(&[status])?;
         output.write_all(&(bytes.len() as u64).to_le_bytes())?;
         output.write_all(&bytes)?;
         output.flush()?;
+        if let Some(mut timings) = timings {
+            timings["output_write_seconds"] = tick.unwrap().elapsed().as_secs_f64().into();
+            timings["peak_rss_mib"] = peak_rss_mib().into();
+            let trailer = serde_json::to_vec(&timings)?;
+            output.write_all(&(trailer.len() as u64).to_le_bytes())?;
+            output.write_all(&trailer)?;
+            output.flush()?;
+        }
     }
     Ok(())
 }

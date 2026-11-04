@@ -3,8 +3,11 @@
 Historical measurements, not current defaults or a roadmap. See
 [current docs](current/) for supported behavior and [todo.md](todo.md) for open work.
 
-Latest representative selective-cell CPU/CUDA positions, actual self-play and
-training: [2026-11-04 pipeline diagnostics](history/2026-11-04-representative-pipeline.md).
+Latest: [feature transport, decoder and worker allocation](history/2026-11-04-feature-transport.md),
+including expanded genuine-policy training, Rust child RSS and sampled driver GPU memory.
+Earlier [coarse-feature optimization](history/2026-11-04-coarse-features.md) and
+[representative CPU/CUDA pipeline diagnostics](history/2026-11-04-representative-pipeline.md)
+retain the preceding controlled comparisons.
 Reproduction: [pipeline profiler](current/profiling.md).
 
 Initial self-play and network measurements: 2026-10-30.

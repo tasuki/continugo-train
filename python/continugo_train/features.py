@@ -6,9 +6,13 @@ See docs/current/features.md for feature names, normalization and binary layout.
 """
 
 import json
+import math
 import os
 import struct
 import subprocess
+import threading
+import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,7 +107,8 @@ class PositionFeatures:
         return columns, self.visits.to(torch.float32)
 
 
-def decode_sample(data: bytes) -> PositionFeatures:
+def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatures:
+    tick = time.perf_counter() if timings is not None else 0
     if len(data) < HEADER.size:
         raise ValueError("truncated feature header")
     (
@@ -151,7 +156,7 @@ def decode_sample(data: bytes) -> PositionFeatures:
 
     def array(dtype, shape):
         nonlocal offset
-        amount = int(np.prod(shape))
+        amount = math.prod(shape)
         value = np.frombuffer(data, dtype=dtype, count=amount, offset=offset).reshape(shape)
         offset += amount * np.dtype(dtype).itemsize
         return value
@@ -162,11 +167,15 @@ def decode_sample(data: bytes) -> PositionFeatures:
     actions = array("<u4", (count,)).astype(np.int64)
     target_actions = array("<u4", (targets,)).astype(np.int64)
     visits = array("<u4", (targets,)).astype(np.int64)
+    if timings is not None:
+        now = time.perf_counter()
+        timings["decode_arrays_seconds"] = now - tick
+        tick = now
     if (
         not np.isfinite(coarse).all()
-        or not np.isin(coarse[6:8], [0, 1]).all()
+        or ((coarse[6:8] != 0) & (coarse[6:8] != 1)).any()
         or not np.isfinite(exact).all()
-        or not np.isin(raw_legal, [0, 1]).all()
+        or (raw_legal > 1).any()
         or (actions >= PASS).any()
         or not np.array_equal(exact[:, 0], raw_legal)
     ):
@@ -186,7 +195,11 @@ def decode_sample(data: bytes) -> PositionFeatures:
         raise ValueError("invalid MCTS policy targets")
     if labeled and (not np.isfinite(outcome) or abs(outcome) > 1):
         raise ValueError("invalid outcome label")
-    return PositionFeatures(
+    if timings is not None:
+        now = time.perf_counter()
+        timings["decode_validation_seconds"] = now - tick
+        tick = now
+    sample = PositionFeatures(
         torch.from_numpy(coarse),
         torch.from_numpy(exact),
         torch.from_numpy(actions),
@@ -202,6 +215,41 @@ def decode_sample(data: bytes) -> PositionFeatures:
         density,
         bool(full),
     )
+    if timings is not None:
+        timings["decode_tensors_seconds"] = time.perf_counter() - tick
+    return sample
+
+
+class FeatureProfile:
+    """Thread-safe diagnostics; worker wall-time sums are not exposed loader wait."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.requests = 0
+        self.totals = Counter()
+        self.child_peaks = {}
+
+    def add(self, pid, measurements):
+        with self.lock:
+            self.requests += 1
+            for key, value in measurements.items():
+                if key == "server_peak_rss_mib":
+                    if value is not None:
+                        self.child_peaks[pid] = max(self.child_peaks.get(pid, 0), value)
+                else:
+                    self.totals[key] += value
+
+    def summary(self):
+        with self.lock:
+            return {
+                "requests": self.requests,
+                "totals": dict(self.totals),
+                "child_peak_rss_mib": dict(self.child_peaks),
+                # Not a simultaneous peak: children may peak at different times.
+                "sum_child_peak_rss_mib": sum(self.child_peaks.values())
+                if self.child_peaks
+                else None,
+            }
 
 
 def feature_binary(binary: str | Path | None = None) -> Path:
@@ -238,7 +286,9 @@ class FeatureClient:
     The feature schema is unchanged; JSON lines are IPC commands, not game records.
     """
 
-    def __init__(self, binary: str | Path | None = None):
+    def __init__(self, binary: str | Path | None = None, *, profile: bool = False):
+        self.profile = profile
+        self.last_profile = None
         self.process = subprocess.Popen(
             [str(feature_binary(binary)), "--serve"],
             stdin=subprocess.PIPE,
@@ -286,19 +336,28 @@ class FeatureClient:
     def load(
         self, sgf: str | Path, ply: int, *, density: int = 4, file_sha256: str | None = None
     ) -> PositionFeatures:
+        self.last_profile = None
+        started = time.perf_counter() if self.profile else 0
         request = {
             "sgf": str(Path(sgf).resolve()),
             "ply": ply,
             "samples_per_diameter": density,
             "file_sha256": file_sha256,
         }
+        if self.profile:
+            request["profile"] = True
+        encoded = json.dumps(request).encode() + b"\n"
+        tick = time.perf_counter() if self.profile else 0
+        encode_seconds = tick - started
         try:
-            self.process.stdin.write(json.dumps(request).encode() + b"\n")
+            self.process.stdin.write(encoded)
             self.process.stdin.flush()
         except (BrokenPipeError, ValueError) as error:
             raise RuntimeError(
                 "feature server unavailable; rebuild with `mise run build-features`"
             ) from error
+        received = time.perf_counter() if self.profile else 0
+        write_seconds = received - tick
         status, length = struct.unpack("<BQ", self._read(9))
         if length > 1_000_000_000:
             raise RuntimeError("invalid feature-server response length")
@@ -307,7 +366,39 @@ class FeatureClient:
             raise ValueError(data.decode(errors="replace"))
         if status != 0:
             raise RuntimeError("invalid feature-server status")
-        sample = decode_sample(data)
+        if self.profile:
+            packet_received = time.perf_counter()
+            trailer_length = struct.unpack("<Q", self._read(8))[0]
+            if trailer_length > 65536:
+                raise RuntimeError("invalid feature-server timing length")
+            server = json.loads(self._read(trailer_length))
+            decode_started = time.perf_counter()
+            measurements = {f"server_{key}": value for key, value in server.items()}
+            sample = decode_sample(data, timings=measurements)
+            measurements.update(
+                request_encode_seconds=encode_seconds,
+                request_write_seconds=write_seconds,
+                response_read_seconds=packet_received - received,
+                telemetry_read_seconds=decode_started - packet_received,
+                decode_seconds=time.perf_counter() - decode_started,
+                packet_bytes=length,
+            )
+            # Residual, not a directly clocked bandwidth measurement: includes
+            # framing, scheduling and server dispatch. Write and read overlap.
+            work = sum(
+                server[key]
+                for key in (
+                    "replay_and_selection_seconds",
+                    "coarse_seconds",
+                    "exact_seconds",
+                    "serialization_seconds",
+                )
+            )
+            measurements["ipc_residual_seconds"] = write_seconds + packet_received - received - work
+            measurements["roundtrip_seconds"] = time.perf_counter() - started
+            self.last_profile = measurements
+        else:
+            sample = decode_sample(data)
         if sample.ply != ply or sample.samples_per_diameter != density or sample.full_domain:
             raise RuntimeError("feature-server response does not match the request")
         return sample

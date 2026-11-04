@@ -286,15 +286,18 @@ runs, not while a job is loading it.
 
 `training.log` and stdout report policy cross-entropy, value MSE, sample/batch
 counts, end-to-end positions/s, loader wait, compute-plus-transfer time, CUDA peak
-live allocation and parent peak RSS. Metrics are weighted by **positions**, not
+live allocation/reservation and parent peak RSS. Metrics are weighted by **positions**, not
 batches, so leftovers do not bias validation. CUDA timings synchronize. Phase
 elapsed time includes loader startup/shuffle fill and shutdown of prefetched work;
 wait and compute subtotals need not sum to it.
 
-CUDA memory excludes reserved allocator/context/desktop usage. Parent peak RSS is
-the process lifetime high-water mark including Python threads, **not** Rust child
-RSS. More workers/buffering use more memory. Feature extraction and binary
-transport are included in end-to-end timings; historical measurements belong in
+PyTorch memory excludes driver context and other native allocations; reserved
+memory is reported separately from live tensors. Parent peak RSS is the process
+lifetime high-water mark including Python threads, **not** Rust child RSS. More
+workers/buffering use more memory. Feature extraction and binary transport are
+included in end-to-end timings; historical measurements belong in
 [benchmarks.md](../benchmarks.md). The [pipeline profiler](profiling.md) also
-measures the real loader/SGD path with optional synchronized transfer, encoder,
-scorer, and loss/backward/optimizer stages, without saving training checkpoints.
+measures synchronized transfer, encoder, scorer, loss/backward/optimizer and
+per-worker extraction/serialization/IPC/decode stages. Diagnostic memory includes
+Rust child lifetime RSS peaks and sampled process-tree GPU driver memory, with
+explicit overlap/peak limitations. It saves no training checkpoints.

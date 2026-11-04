@@ -3,6 +3,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -12,6 +13,8 @@ from continugo_train.features import (
     HEADER,
     MOVE_FEATURES,
     SCHEMA_VERSION,
+    FeatureClient,
+    FeatureProfile,
     decode_sample,
     load_position,
 )
@@ -128,6 +131,71 @@ class RealFeatureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.load(actions=[200200, 200200])
 
+    def test_profile_trailer_preserves_tensors_and_recovers_after_errors(self):
+        with FeatureClient(self.binary, profile=True) as client:
+            for ply in (0, 1, 2):  # Placement targets, pass-only, then no targets.
+                expected = self.load(ply)
+                sample = client.load(self.sgf, ply)
+                for name, value in vars(expected).items():
+                    actual = getattr(sample, name)
+                    if isinstance(value, torch.Tensor):
+                        self.assertTrue(torch.equal(value, actual), name)
+                    else:
+                        self.assertEqual(value, actual, name)
+                timings = client.last_profile
+                self.assertTrue(
+                    all(
+                        v >= 0
+                        for k, v in timings.items()
+                        if k.endswith("seconds") and k != "ipc_residual_seconds"
+                    )
+                )
+                self.assertGreater(timings["packet_bytes"], HEADER.size)
+                self.assertLessEqual(
+                    sum(
+                        timings[f"decode_{part}_seconds"]
+                        for part in ("arrays", "validation", "tensors")
+                    ),
+                    timings["decode_seconds"],
+                )
+            with self.assertRaisesRegex(ValueError, "ply"):
+                client.load(self.sgf, 99)
+            self.assertIsNone(client.last_profile)
+            client.load(self.sgf, 0)
+            # Mix ordinary and diagnostic requests on one connection: no unread
+            # timing bytes after errors, nor unexpected trailers on ordinary loads.
+            client.profile = False
+            client.load(self.sgf, 1)
+            self.assertIsNone(client.last_profile)
+            client.profile = True
+            client.load(self.sgf, 0)
+            totals = FeatureProfile()
+            self.assertIsNone(totals.summary()["sum_child_peak_rss_mib"])
+            totals.add(client.process.pid, client.last_profile)
+            totals.add(client.process.pid, client.last_profile)
+            summary = totals.summary()
+            self.assertEqual(summary["requests"], 2)
+            self.assertEqual(
+                summary["totals"]["packet_bytes"], 2 * client.last_profile["packet_bytes"]
+            )
+            if client.last_profile["server_peak_rss_mib"] is not None:
+                self.assertEqual(len(summary["child_peak_rss_mib"]), 1)
+                self.assertEqual(
+                    summary["sum_child_peak_rss_mib"], client.last_profile["server_peak_rss_mib"]
+                )
+        self.assertEqual(client.process.poll(), 0)
+        concurrent = FeatureProfile()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(
+                pool.map(
+                    lambda _: concurrent.add(123, {"packet_bytes": 64, "server_peak_rss_mib": 2.0}),
+                    range(100),
+                )
+            )
+        self.assertEqual(concurrent.summary()["requests"], 100)
+        self.assertEqual(concurrent.summary()["totals"]["packet_bytes"], 6400)
+        self.assertEqual(concurrent.summary()["sum_child_peak_rss_mib"], 2.0)
+
     def test_binary_reader_rejects_malformed_or_wrong_schema_packets(self):
         result = subprocess.run(
             [str(self.binary), "--sgf", str(self.sgf), "--actions", "200200"],
@@ -144,6 +212,13 @@ class RealFeatureTests(unittest.TestCase):
         resolution = struct.unpack_from("<I", packet, 28)[0]
         struct.pack_into("<f", invalid_flag, HEADER.size + 6 * resolution**2 * 4, 0.5)
         mutations.append(bytes(invalid_flag))
+        for value in (-1.0, 2.0, float("nan"), float("inf")):
+            flag = bytearray(packet)
+            struct.pack_into("<f", flag, HEADER.size + 6 * resolution**2 * 4, value)
+            mutations.append(bytes(flag))
+        illegal_byte = bytearray(packet)
+        struct.pack_into("B", illegal_byte, HEADER.size + 12 * resolution**2 * 4 + 10 * 4, 255)
+        mutations.append(bytes(illegal_byte))
         old_schema = bytearray(packet)
         struct.pack_into("<I", old_schema, 8, SCHEMA_VERSION - 1)
         mutations.append(bytes(old_schema))
