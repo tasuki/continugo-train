@@ -186,8 +186,10 @@ def _publish(
                 "Accepted publication requires a hash-pinned explicit user approval; "
                 "approvals/ retains immutable approval intents and publication receipts.\n\n"
                 "ratings/networks.csv lists all networks (filter accepted=1); "
-                "ratings/matches.csv retains processed SGF hashes and rating history. "
-                "ratings/games/ retains authoritative SGF evidence. "
+                "ratings/matches.csv lists newest batches first, with full SGF hashes, "
+                "stable batch/game numbers, evidence paths, and rating history. "
+                "ratings/games/ retains dated, readable authoritative SGF evidence; "
+                "matches.csv sgf_path locates each file. "
                 "Ratings are distinct from the acceptance gate.\n\n"
                 "LATEST-ACCEPTED and LATEST-TRAINING are convenience pointers to the most "
                 "recently selected bundle in each category. They can differ intentionally.\n\n"
@@ -382,8 +384,8 @@ def _sgf_blob(blobs, source, expected):
     return blob
 
 
-def retain_evidence(store, records, destination):
-    """Write-once, self-contained rating SGFs sharing only store-owned inodes."""
+def retain_evidence(store, records, destination, *, filenames=None):
+    """Write-once SGFs, optionally with readable names, on store-owned inodes."""
     store, destination = Path(store), Path(destination)
     if not (store / "STORE.pt").is_file():
         raise ValueError("rating evidence needs an initialized model store")
@@ -391,11 +393,16 @@ def retain_evidence(store, records, destination):
     with (store / ".archive.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         blobs.mkdir(exist_ok=True)
+        if destination.is_symlink():
+            raise ValueError("rating evidence directory cannot be a symlink")
         destination.mkdir(parents=True, exist_ok=True)
         for source, expected in records:
+            filename = filenames[expected] if filenames is not None else f"{expected}.sgf"
+            if not filename or Path(filename).name != filename or filename in {".", ".."}:
+                raise ValueError("rating evidence filename must be a basename")
             blob = _sgf_blob(blobs, source, expected)
-            target = destination / blob.name
-            if target.exists():
+            target = destination / filename
+            if target.exists() or target.is_symlink():
                 if target.is_symlink() or digest(target) != expected:
                     raise ValueError(f"rating SGF missing/changed: {target}")
             else:

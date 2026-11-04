@@ -124,7 +124,7 @@ Inside the durable model store:
 ratings/
   networks.csv   all archived/evaluated networks, one row per network/pool
   matches.csv    one row per processed SGF, batch history and post-batch ratings
-  games/*.sgf    authoritative immutable match evidence (store-owned hardlinks)
+  games/*.sgf    dated, readable immutable evidence (store-owned hardlinks)
   .lock
 ```
 
@@ -136,14 +136,36 @@ rejected candidates remain in the same table. The reference has `accepted=0`.
 Numbers may be negative for bots weaker than the 100 reference. Newly evaluated
 or selected experimental actors remain `accepted=0` until explicit approval;
 supported legacy accepted entries are preserved. Match `decision` values describe
-experimental verdicts; legacy CSV rows are not silently rewritten.
+experimental verdicts; migration preserves their historical values.
 
-`matches.csv` records raw SGF hashes, players, actual results (blank means unknown),
-board size, protocol columns, audit dates, batch IDs and each player's **post-batch**
-rating/RD/anchor state. Snapshots repeat across a batch's rows, not per-game updates.
-It indexes evidence/history, not moves or training targets: SGFs remain the game
-records. One `(pool, SGF hash)` is counted at most once, even across overlapping
-imports or a crash after the CSV commit but before supervisor acknowledgement.
+`matches.csv` records full SGF hashes and player IDs, actual results (blank means
+unknown), board size, protocol columns, audit dates, batch IDs and each player's
+**post-batch** rating/RD/anchor state. Snapshots repeat across a batch's rows, not
+per-game updates. It indexes evidence/history, not moves or training targets:
+SGFs remain the game records. One `(pool, SGF hash)` is counted at most once, even
+across overlapping imports or a crash after the CSV commit but before supervisor
+acknowledgement.
+
+Match rows are **newest committed batch first**, with games in ascending
+`game_number` within each batch. `batch_number` is a store-wide monotonic commit
+sequence, independent of timestamps (including clock ties or rollback).
+`game_number` is a stable one-based ordinal within the committed batch, assigned
+by full SGF hash order on ingestion, not the source arena's game ordinal.
+Recovery applies snapshots in ascending batch/game order, regardless of CSV row
+order. Do not change these ordering keys by hand.
+
+Each row's `sgf_path` explicitly locates its evidence relative to `ratings/`:
+
+```text
+games/YYYYMMDD-HHMMSS-BLACK-vs-WHITE-size9-game000001-FULL_SGF_SHA.sgf
+```
+
+The date is the batch's UTC recording time. Player labels are sanitized, bounded
+network names with short checkpoint IDs (or the unmistakable reference name).
+Names are for browsing; full player IDs and SGF hashes in the ledger remain the
+identities. The full SGF hash prevents filename collisions even when readable
+labels, dates, or short hashes coincide. Distinct links for the same SGF share a
+single store-owned blob/inode, including across rating pools.
 
 A writer lock serializes updates. CSVs are fsynced and atomically replaced, not
 appended in place. Metadata is saved before committing match rows. On restart or
@@ -153,21 +175,37 @@ inflating uncertainty. Network rows show newest registrations first, with full
 network ID ascending to break timestamp ties and pool ID ascending within each
 network. The fixed reference stays last, identified by its full name and `fixed`
 status. Registration timestamps never change on re-registration, acceptance, or
-refresh. Match rows retain ledger insertion order, not newest-first.
+refresh.
 
 Existing network CSVs without `registered_at` migrate automatically on the next
 successful refresh/update (`mise run ratings` also refreshes). Their unknown dates
 remain blank and sort after dated networks, by full ID, before the reference;
 no registration history is invented from acceptance or checkpoint dates. The
 migration preserves metadata, match history, and SGF evidence, and numeric ratings
-are rebuilt from the unchanged ledger as usual.
-Evidence uses `ratings/games/<full-SGF-SHA>.sgf`. Keep both CSVs; a missing match
-ledger is an error, not permission to reset ratings. Back up the whole store and quiesce writers while
-copying the two CSVs. Do not edit rating snapshots or processed hashes by hand.
+are rebuilt from committed snapshots as usual.
+
+Legacy match CSVs also migrate automatically: batch sequences come from their
+original ledger insertion order, and per-batch game order is preserved. Dates,
+protocols, results, decisions, hashes, and rating snapshots are unchanged. Readable
+SGF hardlinks are created and synced **before** atomically publishing their ledger
+paths; original `games/<full-SGF-SHA>.sgf` links are retained for old backups and
+safe retry after interruption. No files are renamed in place or deleted, and
+no rating math is replayed. Back up the store before migration; older software
+cannot read the expanded CSV schema. Subsequent refreshes are stable and do not
+renumber batches/games. Uncommitted evidence links after a crash are harmless;
+the CSV ledger still controls which games count.
+
+Keep both CSVs; a missing match ledger is an error, not permission to reset
+ratings. Back up the whole store and quiesce writers while copying the CSVs.
+Do not edit rating snapshots or processed hashes by hand.
 
 ```sh
 mise run ratings
 mise run ratings -- --accepted-only
+mise run ratings -- --matches
+mise run ratings -- --matches --pool FULL_POOL_ID
+# Resolve and hash-verify exact evidence; optional --pool disambiguates pools:
+mise run ratings -- --sgf FULL_SGF_SHA
 # Additional arena SGFs must match the chosen existing pool's full protocol:
 mise run ratings -- --pool FULL_POOL_ID --ingest runs/arena-001 --checkpoints PATH/TO/CANDIDATE/checkpoint.pt
 # Standalone neural-vs-reference matches (ingest separately to update the table):

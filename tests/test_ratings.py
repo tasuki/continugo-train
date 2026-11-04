@@ -23,6 +23,31 @@ def read_csv(path):
 
 
 class NetworkOrderTests(unittest.TestCase):
+    def test_evidence_names_are_bounded_safe_and_use_full_sgf_hash(self):
+        network = "a" * 64
+        tables = ratings.Tables(
+            networks={
+                network: {"network": "A/../very long network " * 50},
+                ratings.REFERENCE_ID: {"network": ratings.REFERENCE_ID},
+            }
+        )
+        row = {
+            "recorded_at": "2026-11-02T01:02:03+03:00",
+            "black": network,
+            "white": ratings.REFERENCE_ID,
+            "board_size": "9",
+            "game_number": "1",
+            "sgf_sha256": "b" * 12 + "1" * 52,
+        }
+        first = ratings._sgf_name(tables, row)
+        second = ratings._sgf_name(tables, {**row, "sgf_sha256": "b" * 12 + "2" * 52})
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("20261101-220203-"))
+        self.assertIn(f"-vs-{ratings.REFERENCE_ID}-size9-game000001-", first)
+        self.assertTrue(first.endswith(row["sgf_sha256"] + ".sgf"))
+        self.assertNotIn("/", first)
+        self.assertLess(len(first.encode()), 255)
+
     def test_newest_first_id_ties_grouped_pools_and_reference_last(self):
         tables = ratings.Tables(pools={"z": {}, "a": {}})
         dates = {
@@ -60,6 +85,15 @@ class RatingsTests(helpers.LoopHarness):
     def rated_loop(self, output, extra=()):
         return self.run_loop(output, extra=["--gate-games", "2", "--reference-games", "2", *extra])
 
+    def legacy_ledger(self):
+        rows = sorted(self.matches(), key=lambda r: (int(r["batch_number"]), int(r["game_number"])))
+        for row in rows:
+            path = ratings.evidence_path(self.store, row)
+            path.rename(self.directory / "games" / f"{row['sgf_sha256']}.sgf")
+        legacy = [{key: row[key] for key in ratings.LEGACY_MATCH_COLUMNS} for row in rows]
+        ratings._atomic_csv(self.directory / "matches.csv", ratings.LEGACY_MATCH_COLUMNS, legacy)
+        return rows, legacy
+
     def rows(self):
         return read_csv(self.directory / "networks.csv")
 
@@ -95,9 +129,12 @@ class RatingsTests(helpers.LoopHarness):
                 self.assertLess(float(row["deviation"]), 350)
                 self.assertEqual(row["games"], "4")
         for row in matches:
-            path = self.directory / "games" / f"{row['sgf_sha256']}.sgf"
+            path = ratings.evidence_path(self.store, row)
             self.assertEqual(archive.digest(path), row["sgf_sha256"])
-            blobs = list((self.store / "sgf-blobs").glob(f"????-??-??/{path.name}"))
+            self.assertIn(f"-size{row['board_size']}-game{int(row['game_number']):06}-", path.name)
+            self.assertTrue(path.name.endswith(f"-{row['sgf_sha256']}.sgf"))
+            self.assertIn("-vs-", path.name)
+            blobs = list((self.store / "sgf-blobs").glob(f"????-??-??/{row['sgf_sha256']}.sgf"))
             self.assertEqual(len(blobs), 1)
             self.assertEqual(path.stat().st_ino, blobs[0].stat().st_ino)
         bundle = state["actor"]["archive"]
@@ -172,6 +209,148 @@ class RatingsTests(helpers.LoopHarness):
         self.assertEqual(newest["registered_at"], registered.isoformat())
         self.assertTrue(all(row["registered_at"] == "" for row in self.rows()[1:]))
 
+    def test_matches_use_commit_order_not_display_order_or_wall_clock(self):
+        output = self.root / "loop"
+        with patch.object(ratings, "utc_now", return_value=datetime(2026, 11, 4, tzinfo=UTC)):
+            self.rated_loop(output)
+        rows = self.matches()
+        self.assertEqual([r["batch_number"] for r in rows], ["3", "3", "2", "2", "1", "1"])
+        self.assertEqual([r["game_number"] for r in rows], ["1", "2"] * 3)
+        for start in range(0, len(rows), 2):
+            hashes = [r["sgf_sha256"] for r in rows[start : start + 2]]
+            self.assertEqual(hashes, sorted(hashes))
+        before = {
+            name: (self.directory / name).read_bytes() for name in ["networks.csv", "matches.csv"]
+        }
+        scrambled = rows[::2] + list(reversed(rows[1::2]))
+        ratings._atomic_csv(self.directory / "matches.csv", ratings.MATCH_COLUMNS, scrambled)
+        ratings.refresh(self.store)
+        for name, content in before.items():
+            self.assertEqual((self.directory / name).read_bytes(), content)
+        # Even a backwards clock cannot rewind ratings or mix old/new batches.
+        with patch.object(ratings, "utc_now", return_value=datetime(2026, 11, 1, tzinfo=UTC)):
+            self.run_loop(output, resume=True, extra=["--iterations", "2"])
+        newer = self.matches()
+        self.assertEqual([r["batch_number"] for r in newer[:4]], ["5", "5", "4", "4"])
+        self.assertLess(newer[0]["recorded_at"], rows[0]["recorded_at"])
+        self.assertEqual(newer[4:], rows)
+        with redirect_stdout(io.StringIO()) as result:
+            ratings.main(["--model-store", str(self.store), "--matches"])
+        self.assertEqual(list(csv.DictReader(io.StringIO(result.getvalue()))), newer)
+
+    def test_legacy_match_migration_preserves_snapshots_evidence_and_deduplication(self):
+        state = self.rated_loop(self.root / "loop")
+        networks = (self.directory / "networks.csv").read_bytes()
+        original, legacy = self.legacy_ledger()
+        # Simultaneously support the original network-table schema too.
+        ratings._atomic_csv(
+            self.directory / "networks.csv",
+            ratings.LEGACY_NETWORK_COLUMNS,
+            [{k: row[k] for k in ratings.LEGACY_NETWORK_COLUMNS} for row in self.rows()],
+        )
+        with patch.object(ratings.subprocess, "run", side_effect=AssertionError("no math replay")):
+            ratings.refresh(self.store)
+        migrated = self.matches()
+        self.assertEqual(
+            migrated,
+            sorted(original, key=lambda r: (-int(r["batch_number"]), int(r["game_number"]))),
+        )
+        chronological = sorted(
+            migrated, key=lambda r: (int(r["batch_number"]), int(r["game_number"]))
+        )
+        self.assertEqual(
+            [{key: row[key] for key in ratings.LEGACY_MATCH_COLUMNS} for row in chronological],
+            legacy,
+        )
+        # Only unknown legacy registration dates change in the numeric cache.
+        old_networks = list(csv.DictReader(io.StringIO(networks.decode())))
+        for row in old_networks:
+            row["registered_at"] = ""
+        self.assertEqual(
+            self.rows(),
+            sorted(
+                old_networks,
+                key=lambda r: (r["network_id"] == ratings.REFERENCE_ID, r["network_id"]),
+            ),
+        )
+        sources = []
+        for row in migrated:
+            old = self.directory / "games" / f"{row['sgf_sha256']}.sgf"
+            new = ratings.evidence_path(self.store, row)
+            self.assertEqual(old.stat().st_ino, new.stat().st_ino)
+            sources.append(old)
+        before = (self.directory / "matches.csv").read_bytes()
+        result = ratings.ingest(self.store, state["rating_protocol"], sources)
+        self.assertEqual(result["new_games"], 0)
+        ratings.refresh(self.store)
+        self.assertEqual((self.directory / "matches.csv").read_bytes(), before)
+
+    def test_interrupted_legacy_migration_can_be_retried_without_losing_history(self):
+        self.rated_loop(self.root / "loop")
+        original, _ = self.legacy_ledger()
+        path = self.directory / "matches.csv"
+        before = path.read_bytes()
+        write = ratings._atomic_csv
+
+        def fail_commit(target, columns, rows):
+            if target.name == "matches.csv":
+                raise OSError("migration commit interrupted")
+            return write(target, columns, rows)
+
+        with (
+            patch.object(ratings, "_atomic_csv", side_effect=fail_commit),
+            self.assertRaisesRegex(OSError, "migration commit interrupted"),
+        ):
+            ratings.refresh(self.store)
+        self.assertEqual(path.read_bytes(), before)
+        for row in original:
+            self.assertTrue((self.directory / "games" / f"{row['sgf_sha256']}.sgf").is_file())
+            ratings.evidence_path(self.store, row)
+        ratings.refresh(self.store)
+        self.assertEqual(
+            self.matches(),
+            sorted(original, key=lambda r: (-int(r["batch_number"]), int(r["game_number"]))),
+        )
+
+    def test_evidence_lookup_pool_filter_and_invalid_ledger_metadata(self):
+        self.rated_loop(self.root / "loop")
+        rows = self.matches()
+        row = rows[0]
+        with redirect_stdout(io.StringIO()) as result:
+            ratings.main(
+                [
+                    "--model-store",
+                    str(self.store),
+                    "--sgf",
+                    row["sgf_sha256"],
+                    "--pool",
+                    row["pool"],
+                ]
+            )
+        self.assertEqual(result.getvalue().strip(), str(ratings.evidence_path(self.store, row)))
+        with self.assertRaisesRegex(ValueError, "not in the match ledger"):
+            ratings.main(["--model-store", str(self.store), "--sgf", "0" * 64])
+        path = self.directory / "matches.csv"
+        for changes in [
+            {"sgf_path": "../outside.sgf"},
+            {"batch_number": ""},
+            {"batch_number": "1"},
+            {"game_number": "2"},
+        ]:
+            with self.subTest(changes=changes):
+                corrupted = [{**rows[0], **changes}, *rows[1:]]
+                ratings._atomic_csv(path, ratings.MATCH_COLUMNS, corrupted)
+                before = path.read_bytes()
+                with self.assertRaises(ValueError):
+                    ratings.refresh(self.store)
+                self.assertEqual(path.read_bytes(), before)
+        ratings._atomic_csv(path, ratings.MATCH_COLUMNS, rows)
+        target = ratings.evidence_path(self.store, row)
+        target.unlink()
+        target.symlink_to(self.source)
+        with self.assertRaisesRegex(ValueError, "missing or changed"):
+            ratings.evidence_path(self.store, row)
+
     def test_resume_reimport_and_future_clock_do_not_change_ratings(self):
         output = self.root / "loop"
         state = self.rated_loop(output)
@@ -183,9 +362,7 @@ class RatingsTests(helpers.LoopHarness):
         self.assertEqual(len(self.jobs.calls), calls)
         with patch.object(ratings, "utc_now", return_value=datetime(2050, 1, 1, tzinfo=UTC)):
             ratings.refresh(self.store)
-            paths = [
-                self.directory / "games" / f"{row['sgf_sha256']}.sgf" for row in self.matches()
-            ]
+            paths = [ratings.evidence_path(self.store, row) for row in self.matches()]
             result = ratings.ingest(
                 self.store, state["rating_protocol"], list(reversed(paths)) + paths[:1]
             )
@@ -197,11 +374,18 @@ class RatingsTests(helpers.LoopHarness):
         state = self.rated_loop(self.root / "loop")
         settings = state["rating_protocol"]
         gate_rows = [row for row in self.matches() if row["kind"] == "gate"]
-        paths = [self.directory / "games" / f"{r['sgf_sha256']}.sgf" for r in gate_rows]
+        paths = [ratings.evidence_path(self.store, row) for row in gate_rows]
         original = {row["network_id"]: row for row in self.rows()}
         changed = dict(settings, neural_max_moves=settings["neural_max_moves"] + 1)
         new = ratings.ingest(self.store, changed, paths)
         self.assertEqual(new["new_games"], 2)
+        for row in self.matches():
+            if row["pool"] == new["pool"]:
+                previous = next(r for r in gate_rows if r["sgf_sha256"] == row["sgf_sha256"])
+                self.assertEqual(
+                    ratings.evidence_path(self.store, row).stat().st_ino,
+                    ratings.evidence_path(self.store, previous).stat().st_ino,
+                )
         for row in self.rows():
             if row["pool"] == ratings.identity(settings):
                 self.assertEqual(row, original[row["network_id"]])
@@ -294,7 +478,7 @@ class RatingsTests(helpers.LoopHarness):
         committed = self.matches()
         self.assertEqual(len(committed), 2)
         self.run_loop(output, resume=True)
-        self.assertEqual(self.matches()[:2], committed)
+        self.assertEqual(self.matches()[-2:], committed)
         self.assertEqual(len(self.matches()), 6)
         self.assertTrue(all(row["games"] == "4" for row in self.rows()))
 

@@ -79,6 +79,47 @@ class ArtifactPathsTests(helpers.LoopHarness):
         self.source.unlink()
         archive.verify_bundle(reference)
 
+    def test_named_evidence_is_write_once_deduplicated_and_cannot_escape(self):
+        store = self.root / "named-evidence-store"
+        reference = archive.publish(store, "training", self.source)
+        replay = next((Path(reference["directory"]) / "replay").glob("*.sgf"))
+        checksum = replay.stem
+        destination = store / "ratings" / "games"
+        name = f"20261101-120000-black-vs-white-size9-game000001-{checksum}.sgf"
+        archive.retain_evidence(
+            store, [(replay, checksum)], destination, filenames={checksum: name}
+        )
+        target = destination / name
+        self.assertEqual(target.stat().st_ino, replay.stat().st_ino)
+        archive.retain_evidence(
+            store, [(replay, checksum)], destination, filenames={checksum: name}
+        )
+        for bad in ["../outside.sgf", "/absolute.sgf", "", ".."]:
+            with self.subTest(name=bad), self.assertRaisesRegex(ValueError, "basename"):
+                archive.retain_evidence(
+                    store, [(replay, checksum)], destination, filenames={checksum: bad}
+                )
+        self.assertEqual(list(destination.iterdir()), [target])
+        target.unlink()
+        target.write_text("wrong contents")
+        with self.assertRaisesRegex(ValueError, "missing/changed"):
+            archive.retain_evidence(
+                store, [(replay, checksum)], destination, filenames={checksum: name}
+            )
+        target.unlink()
+        target.symlink_to(replay)
+        with self.assertRaisesRegex(ValueError, "missing/changed"):
+            archive.retain_evidence(
+                store, [(replay, checksum)], destination, filenames={checksum: name}
+            )
+        target.unlink()
+        destination.rmdir()
+        destination.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "directory cannot be a symlink"):
+            archive.retain_evidence(
+                store, [(replay, checksum)], destination, filenames={checksum: name}
+            )
+
     def test_sgf_retention_day_is_utc_not_local_calendar_day(self):
         store = self.root / "utc-blob-store"
         local = datetime(2026, 11, 2, 1, tzinfo=timezone(timedelta(hours=3)))

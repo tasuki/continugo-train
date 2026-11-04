@@ -3,7 +3,7 @@
 This is a living document. When something is implemented, remove it from here.
 
 Prioritize playing strength per wall-clock hour. Complete the prioritized pipeline
-fixes and ratings cleanup before the next training trial; defer speculative tuning.
+fixes before the next training trial; defer speculative tuning.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
@@ -32,16 +32,7 @@ as a reference, adapting it to ContinuGo.
   tactical coverage as a correctness/strength question; do not shrink budgets
   merely to accelerate the currently small exact-feature/scorer stages.
 
-## 2. Organize ratings and evidence
-
-- [ ] Order `matches.csv` newest batch first, games stable within each batch.
-  Keep rating reconstruction independent of display order; check refresh/recovery.
-- [ ] Give rating SGFs readable, collision-safe dated names including players,
-  board size, game number, and a hash. Preserve full identities, deduplication,
-  and explicit ledger-to-file lookup.
-- [ ] Update CLI/docs and support migration without losing ledger/evidence history.
-
-## 3. Prepare and run a small-board learning trial
+## 2. Prepare and run a small-board learning trial
 
 - [ ] Implement explicit bootstrap-only eye avoidance using shared
   `SmallEyeAnalysis`, preserving the capture exemption. Keep game legality and

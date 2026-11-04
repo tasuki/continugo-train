@@ -79,7 +79,7 @@ description = "Paired-color candidate/incumbent evaluation (40/40/20 board mix)"
 run = ".venv/bin/python -m continugo_train.runtime arena"
 
 [tasks.ratings]
-description = "Refresh/view the durable accepted-network ratings table; optionally ingest arena SGFs"
+description = "Refresh/migrate ratings; view networks, --matches, or --sgf HASH; optionally ingest arena SGFs"
 depends = ["build-loop"]
 run = ".venv/bin/python -m continugo_train.ratings"
 
