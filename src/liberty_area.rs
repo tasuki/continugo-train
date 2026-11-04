@@ -35,34 +35,42 @@ fn measure(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
     let slices_per_unit = (32.0 / radius).ceil().max(1.0) as usize * refinement;
     let slices = (high - low) as usize * slices_per_unit;
     let step = 1.0 / slices_per_unit as f64;
-    let mut intervals = Vec::new();
+    // Maintain the sorted disjoint union directly. Most slices have only one
+    // or two components, even when hundreds of source spans overlap them. This
+    // avoids materializing and sorting every capsule interval on every slice.
+    let mut intervals: Vec<(f64, f64)> = Vec::new();
     let mut sum = 0.0;
     for i in 0..slices {
         let y = low + (i as f64 + 0.5) * step;
         let start = spans.partition_point(|s| f64::from(s.y) < y - radius);
         let end = spans.partition_point(|s| f64::from(s.y) <= y + radius);
         intervals.clear();
+        let mut row = None;
+        let mut extension = 0.0;
         for span in &spans[start..end] {
-            let dy = y - f64::from(span.y);
-            let extension = (radius * radius - dy * dy).max(0.0).sqrt();
-            intervals.push((
-                f64::from(span.left) - extension,
-                f64::from(span.right) + extension,
-            ));
+            // Disjoint spans on the same source row share the same round end.
+            if row != Some(span.y) {
+                let dy = y - f64::from(span.y);
+                extension = (radius * radius - dy * dy).max(0.0).sqrt();
+                row = Some(span.y);
+            }
+            let mut left = f64::from(span.left) - extension;
+            let mut right = f64::from(span.right) + extension;
+            let first = intervals.partition_point(|&(_, end)| end < left);
+            let mut last = first;
+            while last < intervals.len() && intervals[last].0 <= right {
+                left = left.min(intervals[last].0);
+                right = right.max(intervals[last].1);
+                last += 1;
+            }
+            if first == last {
+                intervals.insert(first, (left, right));
+            } else {
+                intervals[first] = (left, right);
+                intervals.drain(first + 1..last);
+            }
         }
-        intervals.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        let mut current: Option<(f64, f64)> = None;
-        for &(left, right) in &intervals {
-            current = match current {
-                Some((start, end)) if left <= end => Some((start, end.max(right))),
-                Some((start, end)) => {
-                    sum += end - start;
-                    Some((left, right))
-                }
-                None => Some((left, right)),
-            };
-        }
-        if let Some((start, end)) = current {
+        for &(start, end) in &intervals {
             sum += end - start;
         }
     }
@@ -72,6 +80,83 @@ fn measure(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Frozen pre-optimization sort-and-merge implementation. Keep independent
+    /// of the streaming union so fragmented/bridging intervals have an oracle.
+    fn reference(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
+        let Some(first) = spans.first() else {
+            return 0.0;
+        };
+        if spans.len() == 1 {
+            return 1.0 + 2.0 * f64::from(first.right - first.left) / (PI * radius);
+        }
+        let low = f64::from(first.y) - radius;
+        let high = f64::from(spans.last().unwrap().y) + radius;
+        let slices_per_unit = (32.0 / radius).ceil().max(1.0) as usize * refinement;
+        let step = 1.0 / slices_per_unit as f64;
+        let mut intervals = Vec::new();
+        let mut sum = 0.0;
+        for i in 0..(high - low) as usize * slices_per_unit {
+            let y = low + (i as f64 + 0.5) * step;
+            intervals.clear();
+            for span in spans {
+                if f64::from(span.y) < y - radius || f64::from(span.y) > y + radius {
+                    continue;
+                }
+                let dy = y - f64::from(span.y);
+                let extension = (radius * radius - dy * dy).max(0.0).sqrt();
+                intervals.push((
+                    f64::from(span.left) - extension,
+                    f64::from(span.right) + extension,
+                ));
+            }
+            intervals.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+            let mut current: Option<(f64, f64)> = None;
+            for &(left, right) in &intervals {
+                current = match current {
+                    Some((start, end)) if left <= end => Some((start, end.max(right))),
+                    Some((start, end)) => {
+                        sum += end - start;
+                        Some((left, right))
+                    }
+                    None => Some((left, right)),
+                };
+            }
+            if let Some((start, end)) = current {
+                sum += end - start;
+            }
+        }
+        sum * step / (PI * radius * radius)
+    }
+
+    #[test]
+    fn streaming_union_matches_sort_reference_bits() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(271828);
+        for radius in [1, 3, 7, 26, 38, 55, 100, 500] {
+            for trial in 0..32 {
+                let mut spans = Vec::new();
+                // Duplicate rows, nested intervals, disjoint components and
+                // later intervals bridging earlier components in arbitrary x order.
+                for _ in 0..trial * 3 {
+                    let left = rng.random_range(-100..1000);
+                    spans.push(LibertySpan {
+                        y: rng.random_range(-20..80),
+                        left,
+                        right: left + rng.random_range(0..200),
+                    });
+                }
+                spans.sort_by_key(|s| s.y);
+                for refinement in [1, 2] {
+                    assert_eq!(
+                        measure(&spans, f64::from(radius), refinement).to_bits(),
+                        reference(&spans, f64::from(radius), refinement).to_bits(),
+                        "radius={radius}, trial={trial}, refinement={refinement}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn empty_and_isolated_centers_and_long_capsules_have_analytic_area() {
@@ -157,6 +242,10 @@ mod tests {
                 let started = Instant::now();
                 let area = in_stone_discs(&spans, radius);
                 base_seconds += started.elapsed().as_secs_f64();
+                assert_eq!(
+                    area.to_bits(),
+                    reference(&spans, f64::from(radius), 1).to_bits()
+                );
                 let finer = measure(&spans, f64::from(radius), 2);
                 let difference = (area - finer).abs();
                 max_absolute = max_absolute.max(difference);
@@ -198,6 +287,10 @@ mod tests {
                 for members in position.groups(color) {
                     let spans = position.liberty_spans(&members);
                     let area = in_stone_discs(&spans, board.stone_radius());
+                    assert_eq!(
+                        area.to_bits(),
+                        reference(&spans, f64::from(board.stone_radius()), 1).to_bits()
+                    );
                     let finer = measure(&spans, f64::from(board.stone_radius()), 2);
                     assert!(
                         (area - finer).abs() < 0.003,

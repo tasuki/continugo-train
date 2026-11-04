@@ -32,6 +32,46 @@ fn empty_positions_have_real_borders_and_legal_masks_across_sizes() {
 }
 
 #[test]
+fn profiled_coarse_features_preserve_bits_and_count_work() {
+    for size in [9, 13, 19] {
+        let board = Board::new(size).unwrap();
+        let r = board.stone_radius();
+        let mut game = Game::new(board);
+        for spot in [Spot { x: r, y: r }, Spot { x: 500, y: 500 }] {
+            game = game.play(spot).unwrap();
+        }
+        let ordinary = FeatureExtractor::new(&game, 4).unwrap();
+        let (profiled, profile) = FeatureExtractor::profiled(&game, 4).unwrap();
+        assert!(
+            ordinary
+                .coarse
+                .iter()
+                .map(|v| v.to_bits())
+                .eq(profiled.coarse.iter().map(|v| v.to_bits()))
+        );
+        assert_eq!(profile.positions, 1);
+        assert_eq!(profile.stones, 2);
+        assert_eq!(profile.groups, 2);
+        assert!(profile.spans > 0);
+        assert_eq!(profile.preparation.calls, 1);
+        assert_eq!(profile.group_construction.calls, 2);
+        assert_eq!(profile.spans_and_capturability.calls, 2);
+        assert_eq!(profile.liberty_area.calls, 2);
+        assert_eq!(profile.painting.calls, 4); // allocation, two groups, borders
+        let mut total = continugo_train::features::CoarseProfile::default();
+        total.merge(&profile);
+        total.merge(&profile);
+        assert_eq!(total.groups, 4);
+        assert_eq!(
+            total.liberty_area.seconds,
+            2.0 * profile.liberty_area.seconds
+        );
+    }
+    let finished = Game::default().pass().unwrap().pass().unwrap();
+    assert!(FeatureExtractor::profiled(&finished, 4).is_err());
+}
+
+#[test]
 fn parallel_move_features_match_serial_bits_and_action_order() {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(4)

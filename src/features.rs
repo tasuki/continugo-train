@@ -6,7 +6,47 @@ use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
 };
 
+use crate::profile::Stage;
 use rayon::prelude::*;
+use std::time::Instant;
+
+/// Per-extraction CPU stage totals. Shared rules currently return exact spans and
+/// capturability together; do not mistake that combined stage for area integration.
+/// Parallel callers sum worker time, not elapsed batch time.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct CoarseProfile {
+    pub positions: u64,
+    pub groups: u64,
+    pub stones: u64,
+    pub spans: u64,
+    pub preparation: Stage,
+    pub group_construction: Stage,
+    pub spans_and_capturability: Stage,
+    pub liberty_area: Stage,
+    pub painting: Stage,
+}
+
+impl CoarseProfile {
+    pub fn merge(&mut self, other: &Self) {
+        self.positions += other.positions;
+        self.groups += other.groups;
+        self.stones += other.stones;
+        self.spans += other.spans;
+        for (target, source) in [
+            (&mut self.preparation, &other.preparation),
+            (&mut self.group_construction, &other.group_construction),
+            (
+                &mut self.spans_and_capturability,
+                &other.spans_and_capturability,
+            ),
+            (&mut self.liberty_area, &other.liberty_area),
+            (&mut self.painting, &other.painting),
+        ] {
+            target.calls += source.calls;
+            target.seconds += source.seconds;
+        }
+    }
+}
 
 pub const SCHEMA_VERSION: u32 = 4;
 pub const COARSE_PLANES: [&str; 12] = [
@@ -75,21 +115,64 @@ pub struct FeatureExtractor<'a> {
 
 impl<'a> FeatureExtractor<'a> {
     pub fn new(game: &'a Game, samples_per_diameter: usize) -> Result<Self, String> {
+        Self::build::<false>(game, samples_per_diameter).map(|(extractor, _)| extractor)
+    }
+
+    /// Diagnostic path with identical rules and rasters; ordinary extraction has
+    /// no per-group clock reads. Timings exclude replay and move-row extraction.
+    pub fn profiled(
+        game: &'a Game,
+        samples_per_diameter: usize,
+    ) -> Result<(Self, CoarseProfile), String> {
+        Self::build::<true>(game, samples_per_diameter)
+    }
+
+    fn build<const PROFILE: bool>(
+        game: &'a Game,
+        samples_per_diameter: usize,
+    ) -> Result<(Self, CoarseProfile), String> {
+        let mut profile = CoarseProfile::default();
+        let tick = PROFILE.then(Instant::now);
         let mut this = Self::for_moves(game)?;
+        if let Some(tick) = tick {
+            profile.preparation.record(tick);
+            profile.positions = 1;
+            profile.stones = game.position().stones().len() as u64;
+        }
         let board = game.board();
         let resolution = resolution(board.diameter(), samples_per_diameter)?;
         this.resolution = resolution;
+        let tick = PROFILE.then(Instant::now);
         this.coarse = vec![0.0; COARSE_PLANES.len() * resolution * resolution];
+        if let Some(tick) = tick {
+            profile.painting.record(tick);
+        }
         for color in [game.on_move(), game.on_move().other()] {
             let offset = usize::from(color != game.on_move());
-            for members in game.position().groups(color) {
+            let tick = PROFILE.then(Instant::now);
+            let groups = game.position().groups(color);
+            if let Some(tick) = tick {
+                profile.group_construction.record(tick);
+                profile.groups += groups.len() as u64;
+            }
+            for members in groups {
                 let size = count_feature(members.len());
+                let tick = PROFILE.then(Instant::now);
                 let analysis = this.prepared.analyze_group(&members);
+                if let Some(tick) = tick {
+                    profile.spans_and_capturability.record(tick);
+                    profile.spans += analysis.liberty_spans.len() as u64;
+                }
+                let tick = PROFILE.then(Instant::now);
                 let liberty_area = crate::liberty_area::in_stone_discs(
                     &analysis.liberty_spans,
                     board.stone_radius(),
                 ) as f32;
+                if let Some(tick) = tick {
+                    profile.liberty_area.record(tick);
+                }
                 let capturable = u8::from(analysis.capture_in_one.is_some()) as f32;
+                let tick = PROFILE.then(Instant::now);
                 for i in members {
                     let spot = game.position().stones()[i].spot;
                     this.paint(
@@ -102,8 +185,12 @@ impl<'a> FeatureExtractor<'a> {
                         ],
                     );
                 }
+                if let Some(tick) = tick {
+                    profile.painting.record(tick);
+                }
             }
         }
+        let tick = PROFILE.then(Instant::now);
         let area = resolution * resolution;
         for y in 0..resolution {
             for x in 0..resolution {
@@ -113,7 +200,10 @@ impl<'a> FeatureExtractor<'a> {
                 }
             }
         }
-        Ok(this)
+        if let Some(tick) = tick {
+            profile.painting.record(tick);
+        }
+        Ok((this, profile))
     }
 
     /// Move facts only: inference already has a cached coarse-network context.

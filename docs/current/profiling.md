@@ -47,16 +47,20 @@ The profiler:
    genuine visits, unlike dense random-bot games without policy targets.
 6. Runs real FP32 SGD twice from the supplied weights and fresh optimizer state:
    an ordinary baseline and synchronized stage diagnostics. Each gets one untimed
-   warmup step, then weights, BatchNorm buffers, RNG and optimizer are reset.
+   warmup step by default, then weights, BatchNorm buffers, RNG and optimizer reset.
    Default caps: 12 steps, batch two, at most 12 sampled positions per game, two
    feature workers. Short caps can skew the size mix; inspect `samples_by_size`.
-   No checkpoints are saved or promoted. This is a cost diagnostic, not a trial.
+   Use `--positions-per-game 0 --steps 120 --warmup-steps 20` for a longer
+   fixed-corpus window. These are caps, not promises: corpus exhaustion can end
+   a phase early. Each phase opens its own feature workers; this is not a fully
+   persistent warmed-loader benchmark. No checkpoints are saved or promoted.
+   This is a cost diagnostic, not a trial.
 
 ## Output and interpretation
 
 `summary.json` retains configuration, revision/dirty status, source hashes, model
-hashes, corpus manifest, per-position results, self-play totals, and training
-metrics. Raw native stdout/stderr and generated SGFs remain beside it. Intermediate
+hashes, native binary hashes, corpus manifest, per-position results, self-play
+and training metrics. Raw native stdout/stderr and generated SGFs remain beside it. Intermediate
 results are saved before subsequent stages, so a corpus error does not lose the
 native measurements. SGFs remain the only primary game records.
 
@@ -65,6 +69,15 @@ native measurements. SGFs remain the only primary game records.
   coarse/move times, **not an additional disjoint stage**. Scorer timing includes
   host output handling/transfer; coarse includes shared-rule analysis. Overall
   query seconds include normalization, dense result construction and other work.
+  `stats.coarse_stages` splits preparation (including shared group/witness work),
+  a second group construction, shared spans + capturability, area integration,
+  and raster allocation/painting/borders. The shared rules API still combines
+  spans and capturability; those are **not** independently measured yet.
+  These subtotals sit **inside** `coarse_seconds`. They exclude flattening and
+  instrumentation/bookkeeping overhead. For concurrent extraction, subtotals
+  sum worker wall times and may exceed elapsed batch time; never add them
+  to the batch total. Counts include only extractions on cache misses, after
+  deduplicating identical batch positions, and exclude diagnostic warmup.
 - Training baseline: wall time, loader wait, compute plus transfer, positions/s,
   memory, losses, and actual board mix. Stage diagnostics separately synchronize
   transfer, encoding, policy scoring/normalization, and loss/backward/optimizer.
@@ -92,7 +105,9 @@ in [history](../history/), not in this operating guide.
 load/replay and diagnostic output summarization are excluded from query timing.
 Warmup retains cache contents: use `--cache-positions 0` to measure uncached work.
 
-Self-play's `--stats-json NEW_FILE` writes machine-readable game totals and native
-inference stages without changing SGF annotations. Existing files are not replaced.
+`--profile-json` also enables per-group coarse clocks; ordinary queries avoid
+those clocks. Self-play's `--stats-json NEW_FILE` enables the same clocks and
+writes machine-readable game totals and native inference stages without changing
+SGF annotations. Existing files are not replaced.
 For random-engine candidate/eye timings, use the separate existing `--profile`
 option. See [native inference](inference.md) and [training metrics](training.md#measurements).

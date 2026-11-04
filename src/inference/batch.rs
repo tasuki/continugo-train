@@ -94,12 +94,24 @@ impl OnnxEvaluator {
         for (size, indices) in pending {
             let tick = Instant::now();
             let density = self.metadata.feature_spec.samples_per_diameter;
-            let extract = |&i: &usize| FeatureExtractor::new(games[i], density).map(|e| e.coarse);
+            let profile = self.profile_coarse;
+            let extract = |&i: &usize| {
+                if profile {
+                    FeatureExtractor::profiled(games[i], density)
+                        .map(|(e, stages)| (e.coarse, stages))
+                } else {
+                    FeatureExtractor::new(games[i], density).map(|e| (e.coarse, Default::default()))
+                }
+            };
             let rasters: Result<Vec<_>, _> = match &self.feature_pool {
                 Some(pool) => pool.install(|| indices.par_iter().map(extract).collect()),
                 None => indices.iter().map(extract).collect(),
             };
-            let coarse: Vec<f32> = rasters?.into_iter().flatten().collect();
+            let mut coarse = Vec::with_capacity(indices.len() * COARSE_PLANES.len() * size * size);
+            for (raster, stages) in rasters? {
+                coarse.extend(raster);
+                self.stats.coarse_stages.merge(&stages);
+            }
             let seconds = tick.elapsed().as_secs_f64();
             self.stats.coarse_seconds += seconds;
             self.stats.feature_seconds += seconds;

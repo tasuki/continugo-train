@@ -141,6 +141,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     if let Some(evaluator) = &mut evaluator {
         evaluator.configure_features(args.feature_threads, args.cache_positions)?;
+        evaluator.profile_coarse = args.stats_json.is_some();
         eprintln!(
             "ONNX device={} model={} threads={} feature_threads={} cache_positions={} concurrent_games={} batch_size={} batch_wait_ms={}",
             evaluator.device.name(),

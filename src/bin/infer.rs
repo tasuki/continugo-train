@@ -75,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.device,
     )?;
     evaluator.configure_features(args.feature_threads, args.cache_positions)?;
+    evaluator.profile_coarse = args.profile_json;
     let text = std::fs::read_to_string(&args.sgf)?;
     let position = load_position(&text, args.ply)?;
     for _ in 0..args.warmup {

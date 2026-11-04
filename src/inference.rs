@@ -91,6 +91,7 @@ pub struct InferenceStats {
     pub value_calls: u64,
     pub feature_seconds: f64,
     pub coarse_seconds: f64,
+    pub coarse_stages: crate::features::CoarseProfile,
     pub move_seconds: f64,
     pub encoder_seconds: f64,
     pub scorer_seconds: f64,
@@ -123,6 +124,8 @@ pub struct OnnxEvaluator {
     cache: ContextCache,
     pub device: InferenceDevice,
     pub stats: InferenceStats,
+    /// Opt-in per-group CPU clocks, independent of cache configuration.
+    pub profile_coarse: bool,
 }
 
 impl OnnxEvaluator {
@@ -252,6 +255,7 @@ impl OnnxEvaluator {
             feature_pool: None,
             cache: ContextCache::new(64, 32 * 1024 * 1024),
             stats: InferenceStats::default(),
+            profile_coarse: false,
         })
     }
 }

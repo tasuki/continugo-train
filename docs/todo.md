@@ -9,15 +9,11 @@ as a reference, adapting it to ContinuGo.
 
 ## 1. Optimize the measured CPU bottleneck
 
-- [ ] Split coarse/rules feature extraction into preparation/group construction,
-  exact liberty spans, liberty-area integration, one-move capturability, and raster
-  painting; identify repeated scans and allocations. Include value-only cache
-  misses, not just full-policy queries, and populated early/middle/late positions
-  across sizes 9/13/19.
-- [ ] Optimize the largest measured coarse-feature cost, reusing immutable-position
-  work where justified. Preserve shared-rule decisions and feature semantics;
-  differential-check coarse inputs, captures/suicide, borders, and numerical area
-  accuracy. Do not assume `analyze_move` or reduced numerical precision is the fix.
+- [ ] Split the remaining shared `analyze_group` timing into exact liberty spans
+  and one-move capturability without copying shared-rule decisions. Audit its
+  repeated blocker scans/allocations and duplicate group construction during
+  preparation versus raster extraction. Keep populated early/middle/late 9/13/19
+  positions and value-only cache misses in subsequent measurements.
 - [ ] Split the training feature-server round trip into extraction, serialization,
   pipe transport, decoding/tensor copies, and exposed loader wait. Repeat longer,
   warmed training phases with a fixed genuine-policy corpus and controlled worker

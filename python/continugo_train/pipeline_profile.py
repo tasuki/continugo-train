@@ -155,6 +155,10 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--steps", type=int, default=12)
+    parser.add_argument(
+        "--positions-per-game", type=int, default=12, help="0 uses all eligible positions"
+    )
+    parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--simulations", type=int, default=8)
     parser.add_argument("--max-moves", type=int, default=512)
     parser.add_argument("--seed", type=int, default=800)
@@ -166,13 +170,14 @@ def main(argv=None):
             args.threads,
             args.batch_size,
             args.steps,
+            args.warmup_steps,
             args.simulations,
             args.max_moves,
         )
         <= 0
-        or min(args.seed, args.workers) < 0
+        or min(args.seed, args.workers, args.positions_per_game) < 0
     ):
-        parser.error("counts must be positive; seed/workers must be nonnegative")
+        parser.error("counts must be positive; seed/workers/positions-per-game must be nonnegative")
     for binary in ("infer", "features", "continugo-train"):
         if not (ROOT / "target/release" / binary).is_file():
             parser.error("build first: cargo build --locked --release --bins")
@@ -207,6 +212,10 @@ def main(argv=None):
             name: sha256(args.model / name) for name in ("encoder.onnx", "policy.onnx")
         },
         "runtime": str(library),
+        "binary_sha256": {
+            name: sha256(ROOT / "target/release" / name)
+            for name in ("infer", "features", "continugo-train")
+        },
         "config": checkpoint["config"],
         "positions": [],
         "limitations": [
@@ -313,13 +322,13 @@ def main(argv=None):
         batch_size=args.batch_size,
         workers=args.workers,
         steps_per_epoch=args.steps,
-        positions_per_game=12,
+        positions_per_game=args.positions_per_game,
         validation_positions_per_game=4,
         seed=args.seed,
         size_weights="uniform",
     )
     report["training_options"] = asdict(options)
-    report["training_warmup_steps"] = 1
+    report["training_warmup_steps"] = args.warmup_steps
     device = torch.device(args.device)
     for detailed in (False, True):
         print(f"training {'synchronized stages' if detailed else 'baseline'}", flush=True)
@@ -338,7 +347,7 @@ def main(argv=None):
             model,
             optimizer,
             corpus.train,
-            replace(options, steps_per_epoch=1),
+            replace(options, steps_per_epoch=args.warmup_steps),
             0,
             device,
             None,

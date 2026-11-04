@@ -142,12 +142,37 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertEqual(report["stats"]["encoder_positions"], 2)
             self.assertEqual(report["stats"]["value_calls" if value_only else "calls"], 2)
             self.assertEqual(report["stats"]["cache_hits"], 0)
+            stages = report["stats"]["coarse_stages"]
+            self.assertEqual(stages["positions"], 2)
+            self.assertEqual(stages["preparation"]["calls"], 2)
+            self.assertEqual(stages["group_construction"]["calls"], 4)
+            self.assertEqual(stages["spans_and_capturability"]["calls"], stages["groups"])
+            self.assertEqual(stages["liberty_area"]["calls"], stages["groups"])
             if value_only:
                 self.assertEqual(report["stats"]["scorer_batches"], 0)
             plain = self.infer(source, [1000000], value_only=value_only)
             for key in ("iterations", "seconds", "stats"):
                 report.pop(key)
             self.assertEqual(report, json.loads(plain.stdout))
+            cached = self.infer(
+                source,
+                [1000000],
+                value_only=value_only,
+                extra=[
+                    "--profile-json",
+                    "--cache-positions",
+                    "2",
+                    "--warmup",
+                    "1",
+                    "--iterations",
+                    "2",
+                ],
+            )
+            self.assertEqual(cached.returncode, 0, cached.stderr)
+            stats = json.loads(cached.stdout)["stats"]
+            self.assertEqual(stats["cache_hits"], 2)
+            self.assertEqual(stats["coarse_stages"]["positions"], 0)
+            self.assertEqual(stats["coarse_seconds"], 0)
 
     def test_real_selected_cell_native_outputs_match_torch_across_sizes(self):
         self.assertLess(self.error, 1e-5)

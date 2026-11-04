@@ -9,11 +9,28 @@ from test_train import fixtures
 
 from continugo_train.data import scan_corpus
 from continugo_train.model import NetworkConfig, PolicyValueNet
-from continugo_train.pipeline_profile import representative_plies, select_positions
+from continugo_train.pipeline_profile import main, representative_plies, select_positions
 from continugo_train.train import Options, run_phase
 
 
 class PipelineProfileTests(unittest.TestCase):
+    def test_training_window_counts_are_validated_before_measurement(self):
+        for invalid in (["--positions-per-game", "-1"], ["--warmup-steps", "0"]):
+            with self.subTest(invalid=invalid), patch("sys.stderr"):
+                with self.assertRaises(SystemExit) as error:
+                    main(
+                        [
+                            "--positions",
+                            "unused",
+                            "--model",
+                            "unused",
+                            "--checkpoint",
+                            "unused",
+                            *invalid,
+                        ]
+                    )
+                self.assertEqual(error.exception.code, 2)
+
     def test_phase_proxies_are_nonterminal_and_reject_smoke_fixtures(self):
         self.assertEqual(representative_plies(102), {"early": 10, "middle": 50, "late": 100})
         with self.assertRaisesRegex(ValueError, "at least 10"):
