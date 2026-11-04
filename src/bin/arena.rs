@@ -108,6 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             widening_exponent: args.widening_exponent,
             proposal_attempts: args.proposal_attempts,
             independent_exploration: args.independent_exploration,
+            bootstrap_avoid_eyes: false,
             rollout: args.rollout.config(),
         },
     };

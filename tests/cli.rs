@@ -286,6 +286,46 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
 }
 
 #[test]
+fn bootstrap_guidance_is_explicit_recorded_and_forbidden_for_other_engines() {
+    let output = cli()
+        .args([
+            "--engine",
+            "mcts",
+            "--sizes",
+            "9",
+            "--simulations",
+            "4",
+            "--max-moves",
+            "1",
+            "--bootstrap-avoid-eyes",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    let record = sgf::decode_record(text.trim()).unwrap();
+    assert_eq!(
+        comment(&record.root)["search"]["bootstrap_avoid_eyes"],
+        true
+    );
+    assert!(!record.root.iter().any(|(name, _)| name == "RE"));
+    let info = continugo_train::replay::ReplayGame::load(&text)
+        .unwrap()
+        .info(4)
+        .unwrap();
+    assert_eq!(info.policy_visit_totals, vec![Some(4)]);
+    assert!(info.eligible_plies.is_empty());
+    for engine in ["random", "neural"] {
+        let output = cli()
+            .args(["--engine", engine, "--bootstrap-avoid-eyes"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("requires --engine mcts"));
+    }
+}
+
+#[test]
 fn rollout_diagnostics_never_turn_an_unfinished_actual_game_into_a_label() {
     let directory = TestDir::new("rollout-censoring");
     let output = cli()

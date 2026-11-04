@@ -40,6 +40,9 @@ pub struct SelfplayConfig {
 impl SelfplayConfig {
     pub fn validate(&self) -> Result<(), String> {
         self.search.validate()?;
+        if self.search.bootstrap_avoid_eyes && !matches!(self.engine, Engine::Mcts) {
+            return Err("bootstrap eye guidance requires --engine mcts".into());
+        }
         if matches!(self.engine, Engine::Random) && self.search.rollout.is_some() {
             return Err("rollout leaf evaluation requires a search engine".into());
         }
@@ -257,6 +260,9 @@ fn generate_inner<const PROFILE: bool>(
         }
     }
     let evaluation_game = opponent.is_some() || reference_color.is_some();
+    if evaluation_game && config.search.bootstrap_avoid_eyes {
+        return Err("bootstrap eye guidance is forbidden in evaluation games".into());
+    }
     let started = PROFILE.then(Instant::now);
     let mut profile = GameProfile::default();
     let mut rng = StdRng::seed_from_u64(seed);
@@ -561,6 +567,46 @@ mod tests {
     }
     use continugo_analysis::fills_small_eye;
     use continugo_rules::Play;
+
+    #[test]
+    fn guided_bootstrap_has_real_visits_natural_results_and_no_noncap_eye_targets() {
+        let config = SelfplayConfig {
+            engine: Engine::Mcts,
+            max_moves: 1024,
+            search: SearchConfig {
+                simulations: 8,
+                bootstrap_avoid_eyes: true,
+                ..SearchConfig::default()
+            },
+        };
+        let record = generate(Board::new(9).unwrap(), &config, 900000).unwrap();
+        let restored = replay(&record);
+        assert!(restored.is_finished());
+        assert!(record.metadata.result.is_some());
+        let mut game = Game::new(restored.board());
+        for (play, policy) in restored.record().iter().zip(&record.metadata.policies) {
+            let policy = policy.as_ref().unwrap();
+            assert_eq!(policy.iter().map(|v| v.visits).sum::<u32>(), 8);
+            for entry in policy {
+                if let Some(spot) = entry.action.spot() {
+                    let next = game.play(spot).unwrap();
+                    assert!(
+                        next.position().stones().len() < game.position().stones().len() + 1
+                            || !fills_small_eye(game.position(), game.on_move(), spot)
+                    );
+                }
+            }
+            game = match play {
+                Play::Place(stone) => game.play(stone.spot).unwrap(),
+                Play::Pass(_) => game.pass().unwrap(),
+            };
+        }
+        assert!(
+            generate_unguided_reference_match(restored.board(), &config, 1, true)
+                .unwrap_err()
+                .contains("forbidden in evaluation")
+        );
+    }
 
     fn config(engine: Engine) -> SelfplayConfig {
         SelfplayConfig {

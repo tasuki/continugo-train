@@ -54,6 +54,9 @@ struct Args {
     proposal_attempts: usize,
     #[arg(long, default_value_t = 0.25)]
     independent_exploration: f64,
+    /// Avoid noncapturing own-eye fills in bootstrap MCTS only (not neural play).
+    #[arg(long)]
+    bootstrap_avoid_eyes: bool,
     #[command(flatten)]
     rollout: RolloutArgs,
     /// ONNX model directory containing encoder.onnx and policy.onnx (neural engine).
@@ -134,6 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             widening_exponent: args.widening_exponent,
             proposal_attempts: args.proposal_attempts,
             independent_exploration: args.independent_exploration,
+            bootstrap_avoid_eyes: args.bootstrap_avoid_eyes,
             rollout: args.rollout.config(),
         },
     };

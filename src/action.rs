@@ -86,9 +86,34 @@ impl Proposals {
 
     /// Failure means the bounded MCTS budget was spent, NOT no legal move.
     pub fn legal(&mut self, game: &PreparedGame, attempts: usize) -> Option<(Action, Game)> {
+        self.legal_accepting(game, attempts, |_, _| true)
+    }
+
+    /// Bootstrap search guidance only: legality is unchanged, captures are exempt.
+    pub fn bootstrap_legal(
+        &mut self,
+        game: &Game,
+        prepared: &PreparedGame,
+        attempts: usize,
+    ) -> Option<(Action, Game)> {
+        let mut eyes = SmallEyeAnalysis::new(game.position());
+        self.legal_accepting(prepared, attempts, |action, next| {
+            next.position().stones().len() < game.position().stones().len() + 1
+                || !eyes.fills_small_eye(game.on_move(), action.spot().unwrap())
+        })
+    }
+
+    fn legal_accepting(
+        &mut self,
+        game: &PreparedGame,
+        attempts: usize,
+        mut accept: impl FnMut(Action, &Game) -> bool,
+    ) -> Option<(Action, Game)> {
         for _ in 0..attempts {
             let action = self.next()?;
-            if let Ok(next) = game.play(action.spot().expect("coordinate proposal")) {
+            if let Ok(next) = game.play(action.spot().expect("coordinate proposal"))
+                && accept(action, &next)
+            {
                 return Some((action, next));
             }
         }
@@ -323,6 +348,54 @@ mod tests {
             next.position().stones().len(),
             game.position().stones().len() - 3
         );
+    }
+
+    fn bootstrap_one(game: &Game, index: u32) -> Option<(Action, Game)> {
+        let mut proposals = Proposals {
+            order: Permutation {
+                next: index,
+                step: 1,
+                remaining: 1,
+                modulus: COORDINATE_ACTIONS,
+            },
+        };
+        proposals.bootstrap_legal(game, &game.prepare(), 1)
+    }
+
+    #[test]
+    fn bootstrap_guidance_rejects_eyes_but_keeps_connections_and_captures() {
+        let mut eye = Game::new(Board::new(3).unwrap());
+        for (x, y) in [
+            (498, 166),
+            (830, 166),
+            (166, 498),
+            (498, 498),
+            (830, 498),
+            (166, 830),
+            (498, 830),
+        ] {
+            eye = eye.play(Spot { x, y }).unwrap().pass().unwrap();
+        }
+        assert!(eye.play(Spot { x: 166, y: 166 }).is_ok());
+        assert!(bootstrap_one(&eye, 166_166).is_none());
+        // The opponent can fill that same pocket to capture after its protection
+        // is removed. Tactical eye fills must not be mistaken for own-eye waste.
+        let attack = eye.play(Spot { x: 830, y: 830 }).unwrap();
+        let (_, next) = bootstrap_one(&attack, 166_166).unwrap();
+        assert_eq!(next.position().stones().len(), 1);
+
+        let mut connection = Game::new(Board::new(3).unwrap());
+        for (x, y) in [(166, 498), (498, 166), (830, 498), (498, 830)] {
+            connection = connection.play(Spot { x, y }).unwrap().pass().unwrap();
+        }
+        assert!(bootstrap_one(&connection, 498_498).is_some());
+        let fixture = include_str!("../../continugo/fixtures/rules/capture-four.txt");
+        let record = fixture
+            .lines()
+            .find_map(|l| l.strip_prefix("record: "))
+            .unwrap();
+        let capture = Game::from_record(&sgf::decode(record).unwrap()).unwrap();
+        assert!(bootstrap_one(&capture, 240_839).is_some());
     }
 
     fn benchmark_game() -> Game {

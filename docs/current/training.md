@@ -11,9 +11,13 @@ playing-strength measurements.
 After `mise run setup`, generate a small corpus with policy visits and scored RE:
 
 ```sh
-mise run selfplay -- --engine mcts --games 24 --sizes 9,13,19 --seed 100 --simulations 32 --output runs/bootstrap
-mise run train -- --data runs/bootstrap --output runs/train-001 --device cuda --epochs 3 --steps-per-epoch 20 --positions-per-game 8 --validation-positions-per-game 4
+mise run selfplay -- --engine mcts --bootstrap-avoid-eyes --games 24 --sizes 9 --seed 100 --simulations 32 --output runs/bootstrap
+mise run train -- --data runs/bootstrap --output runs/train-001 --device cuda --epochs 3 --size-weights 9:1,13:0,19:0 --steps-per-epoch 20 --positions-per-game 8 --validation-positions-per-game 4
 ```
+
+Bootstrap eye guidance is optional, explicitly recorded, and restricted to
+non-neural bootstrap search. Keep it disabled for neural self-play and evaluation;
+see [search semantics](inference.md#search-semantics).
 
 Use a new output directory, or omit `--output` to reserve
 `runs/YYYYMMDD-HHMMSS-train` here automatically (UTC, collision-safe).

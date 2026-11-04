@@ -19,6 +19,9 @@ pub struct SearchConfig {
     pub proposal_attempts: usize,
     /// Neural placement proposal mixture: uniform legal exploration vs policy.
     pub independent_exploration: f64,
+    /// Explicit unguided bootstrap guidance; never enabled for neural search.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bootstrap_avoid_eyes: bool,
     /// Experimental cold-start evaluation; None retains the normal leaf evaluator.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rollout: Option<RolloutConfig>,
@@ -33,6 +36,7 @@ impl Default for SearchConfig {
             widening_exponent: 0.5,
             proposal_attempts: 128,
             independent_exploration: 0.25,
+            bootstrap_avoid_eyes: false,
             rollout: None,
         }
     }
@@ -42,6 +46,11 @@ impl SearchConfig {
     pub fn validate(&self) -> Result<(), String> {
         if let Some(rollout) = &self.rollout {
             rollout.validate()?;
+            if self.bootstrap_avoid_eyes {
+                return Err(
+                    "bootstrap eye guidance cannot be combined with rollout evaluation".into(),
+                );
+            }
         }
         if self.simulations == 0
             || !self.cpuct.is_finite()
@@ -311,12 +320,18 @@ impl Node {
         let placement_limit = (config.widening
             * f64::from(self.visits).powf(config.widening_exponent))
         .ceil() as usize;
-        if self.children.len() - 1 < placement_limit
-            && let Some((action, game)) = self.proposals.legal(
-                self.prepared.get_or_init(|| self.game.prepare()),
-                config.proposal_attempts,
-            )
-        {
+        let candidate = if self.children.len() - 1 < placement_limit {
+            let prepared = self.prepared.get_or_init(|| self.game.prepare());
+            if config.bootstrap_avoid_eyes {
+                self.proposals
+                    .bootstrap_legal(&self.game, prepared, config.proposal_attempts)
+            } else {
+                self.proposals.legal(prepared, config.proposal_attempts)
+            }
+        } else {
+            None
+        };
+        if let Some((action, game)) = candidate {
             // At most one new coordinate per simulation. Rejected coordinates
             // consume proposal work, but never become actions in the tree.
             self.children.push(Edge {
@@ -458,6 +473,9 @@ pub fn search_neural(
     config.validate()?;
     if game.is_finished() {
         return Err("Cannot search a finished game".into());
+    }
+    if config.bootstrap_avoid_eyes {
+        return Err("bootstrap eye guidance is forbidden in neural search".into());
     }
     let mut root = Node::new(game.clone(), rng);
     let value = root.evaluate_neural(evaluator, config, rng)?;
@@ -885,6 +903,27 @@ mod tests {
         assert_eq!(node.visits, 2);
         assert_eq!(node.value_visits, 1);
         assert_eq!(node.mean(), 1.0);
+    }
+
+    #[test]
+    fn bootstrap_guidance_preserves_exact_winning_pass_and_never_enters_neural_search() {
+        let game = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let config = SearchConfig {
+            bootstrap_avoid_eyes: true,
+            ..SearchConfig::default()
+        };
+        let mut rng = StdRng::seed_from_u64(8);
+        let result = search(&game, &config, &mut rng).unwrap();
+        assert_eq!(result.policy.len(), 1);
+        assert_eq!(result.policy[0].action, Action::PASS);
+        assert_eq!(result.policy[0].visits, config.simulations);
+        let mut evaluator = FixedEvaluator { calls: 0 };
+        assert!(search_neural(&game, &config, &mut evaluator, &mut rng).is_err());
+        assert_eq!(evaluator.calls, 0);
     }
 
     #[test]

@@ -108,8 +108,17 @@ Neural and unguided `--engine mcts` share PUCT, progressive widening, side-to-mo
 backup signs, terminal scoring, and visit-count move sampling. Terminal outcomes
 override estimates. Default nonterminal leaves use neural values or neutral
 unguided values. Selective policies are deferred until node expansion; their dense
-vectors are discarded after candidate sampling. Neither search applies the direct
-random reference's eye filter or a handcrafted positional value bonus.
+vectors are discarded after candidate sampling. By default neither search applies
+the direct random reference's eye filter or a handcrafted positional value bonus.
+
+For fresh bootstrap data only, `--engine mcts --bootstrap-avoid-eyes` rejects
+noncapturing own-small-eye fills from placement proposals throughout the tree,
+using shared `SmallEyeAnalysis`. Captures, connections between distinct groups,
+larger pockets and pass remain available. The flag is recorded as
+`search.bootstrap_avoid_eyes: true` in SGF root comments; when disabled the field
+is omitted. It changes proposal guidance, not rules, neural legality masks,
+visit accounting or outcome labels. Neural search and evaluation reject this
+guidance; combining it with rollout evaluation is also rejected.
 
 ### Exact terminal-pass checks
 

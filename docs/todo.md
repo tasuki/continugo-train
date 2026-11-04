@@ -5,27 +5,16 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
-## 1. Prepare and run a small-board learning trial
+## 1. Inspect the running small-board learning trial
 
-This is the next strength milestone; do not block it on speculative optimization.
+The [fresh size-9 campaign](history/2026-11-04-size9-training.md) has started:
+60 self-play rounds with four training epochs per round, rated every ten rounds.
+Do not block learning on speculative optimization.
 
-- [ ] Implement explicit bootstrap-only eye avoidance using shared
-  `SmallEyeAnalysis`, preserving the capture exemption. Keep game legality and
-  neural legality masks unchanged; check tactical eye fills and pass behavior.
-- [ ] Generate genuine bootstrap search visits and natural outcomes with that
-  guidance; record its configuration in SGFs. Do not invent policy/outcome labels.
-- [ ] Configure size-9-only self-play and training sampling consistently.
-- [ ] Set reference/actor match budgets, simulations, caps, and actor-match
-  thresholds for the trial; report uncertainty and truncation/censoring bias.
-- [ ] Check whether coarse-cell move selection misses captures or saves, including
-  a comparison against selecting coordinates directly. Treat this as a playing-
-  strength question; do not shrink move budgets just to improve timing results.
-- [ ] Run a short inspected trial from random weights with fresh optimizer state
-  and fresh bootstrap data, before committing to a long campaign.
 - [ ] Evaluate without eye guidance: eye preservation, connections, captures/saves,
   sensible passing, natural completion, and matches against the reference bot.
   Keep guidance disabled for normal neural self-play/evaluation. Expand tactical
-  test positions based on observed failures and compare move-selection choices.
+  test positions based on observed failures.
 
 ## Later, only if a bottleneck appears
 
