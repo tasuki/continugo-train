@@ -22,6 +22,34 @@ def read_csv(path):
         return list(csv.DictReader(stream))
 
 
+class NetworkOrderTests(unittest.TestCase):
+    def test_newest_first_id_ties_grouped_pools_and_reference_last(self):
+        tables = ratings.Tables(pools={"z": {}, "a": {}})
+        dates = {
+            "a" * 64: "2026-11-01T00:00:00+00:00",
+            "b" * 64: "2026-11-02T00:00:00+00:00",
+            "c" * 64: "2026-11-02T01:00:00+01:00",  # Same instant, different spelling.
+            "d" * 64: "",  # Unknown legacy registration.
+            ratings.REFERENCE_ID: "2050-01-01T00:00:00+00:00",
+        }
+        for network, date in reversed(dates.items()):
+            tables.networks[network] = {
+                **dict.fromkeys(ratings.META, ""),
+                "network_id": network,
+                "registered_at": date,
+            }
+        rows = list(tables.network_rows())
+        expected = ["b" * 64, "c" * 64, "a" * 64, "d" * 64, ratings.REFERENCE_ID]
+        self.assertEqual(
+            [(row["network_id"], row["pool"]) for row in rows],
+            [(network, pool) for network in expected for pool in ["a", "z"]],
+        )
+        self.assertTrue(all(row["status"] == "fixed" for row in rows[-2:]))
+        tables.pools.clear()
+        self.assertEqual([r["network_id"] for r in tables.network_rows()], expected)
+        self.assertTrue(all(r["pool"] == "" for r in tables.network_rows()))
+
+
 class RatingsTests(helpers.LoopHarness):
     def setUp(self):
         super().setUp()
@@ -90,6 +118,59 @@ class RatingsTests(helpers.LoopHarness):
             ratings.main(["--model-store", str(self.store), "--accepted-only"])
         accepted = list(csv.DictReader(io.StringIO(result.getvalue())))
         self.assertEqual(accepted, [])
+
+    def test_registration_time_is_persisted_and_cli_uses_the_same_order(self):
+        registered = datetime(2026, 11, 1, tzinfo=UTC)
+        with patch.object(ratings, "utc_now", return_value=registered):
+            self.rated_loop(self.root / "loop")
+        rows = self.rows()
+        self.assertEqual([row["registered_at"] for row in rows[:-1]], [registered.isoformat()] * 2)
+        self.assertEqual(
+            [row["network_id"] for row in rows[:-1]],
+            sorted(row["network_id"] for row in rows[:-1]),
+        )
+        self.assertEqual(rows[-1]["network_id"], ratings.REFERENCE_ID)
+        self.assertEqual(rows[-1]["status"], "fixed")
+        before = (self.directory / "networks.csv").read_bytes()
+        with patch.object(ratings, "utc_now", return_value=datetime(2050, 1, 1, tzinfo=UTC)):
+            ratings.register_checkpoint(self.store, self.source)
+            with redirect_stdout(io.StringIO()) as output:
+                ratings.main(["--model-store", str(self.store)])
+        self.assertEqual(list(csv.DictReader(io.StringIO(output.getvalue()))), rows)
+        self.assertEqual((self.directory / "networks.csv").read_bytes(), before)
+
+    def test_legacy_network_table_migrates_without_changing_history_or_ratings(self):
+        output = self.root / "loop"
+        self.rated_loop(output)
+        rows = self.rows()
+        ledger = (self.directory / "matches.csv").read_bytes()
+        evidence = {p.name: p.read_bytes() for p in (self.directory / "games").glob("*.sgf")}
+        legacy = [
+            {key: row[key] for key in ratings.LEGACY_NETWORK_COLUMNS} for row in reversed(rows)
+        ]
+        path = self.directory / "networks.csv"
+        ratings._atomic_csv(path, ratings.LEGACY_NETWORK_COLUMNS, legacy)
+        ratings.refresh(self.store)
+        migrated = self.rows()
+        expected = sorted(
+            legacy, key=lambda row: (row["network_id"] == ratings.REFERENCE_ID, row["network_id"])
+        )
+        self.assertEqual(migrated, [{**row, "registered_at": ""} for row in expected])
+        self.assertEqual((self.directory / "matches.csv").read_bytes(), ledger)
+        self.assertEqual(
+            {p.name: p.read_bytes() for p in (self.directory / "games").glob("*.sgf")}, evidence
+        )
+        before = path.read_bytes()
+        ratings.refresh(self.store)
+        self.assertEqual(path.read_bytes(), before)
+        # A genuinely new registration sorts ahead of unknown legacy dates.
+        registered = datetime(2050, 1, 1, tzinfo=UTC)
+        with patch.object(ratings, "utc_now", return_value=registered):
+            state = self.run_loop(output, resume=True, extra=["--iterations", "2"])
+        newest = self.rows()[0]
+        self.assertEqual(newest["network_id"], state["iterations"][-1]["checkpoint"]["sha256"])
+        self.assertEqual(newest["registered_at"], registered.isoformat())
+        self.assertTrue(all(row["registered_at"] == "" for row in self.rows()[1:]))
 
     def test_resume_reimport_and_future_clock_do_not_change_ratings(self):
         output = self.root / "loop"
@@ -223,7 +304,7 @@ class RatingsTests(helpers.LoopHarness):
         before = path.read_bytes()
         rows = self.rows()
         rows[0].update(rating="999999", deviation="1", games="999999")
-        ratings._atomic_csv(path, ratings.NETWORK_COLUMNS, rows)
+        ratings._atomic_csv(path, ratings.NETWORK_COLUMNS, reversed(rows))
         ratings.refresh(self.store)
         self.assertEqual(path.read_bytes(), before)
         (self.directory / "matches.csv").unlink()

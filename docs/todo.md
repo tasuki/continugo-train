@@ -34,8 +34,6 @@ as a reference, adapting it to ContinuGo.
 
 ## 2. Organize ratings and evidence
 
-- [ ] Order `networks.csv` newest registration first with deterministic ties and
-  each network's pool rows together; keep the reference clearly identifiable.
 - [ ] Order `matches.csv` newest batch first, games stable within each batch.
   Keep rating reconstruction independent of display order; check refresh/recovery.
 - [ ] Give rating SGFs readable, collision-safe dated names including players,

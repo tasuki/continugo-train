@@ -128,7 +128,8 @@ ratings/
   .lock
 ```
 
-`networks.csv` contains readable names, full IDs, parent IDs, progress counters,
+`networks.csv` contains readable names, full IDs, first-registration timestamps
+(`registered_at`, UTC), parent IDs, progress counters,
 `accepted` (1/0), acceptance dates/bundle paths, status, rating, deviation, `rating ± RD`,
 and completed W/D/L/truncation counts. **Filter `accepted=1` for all accepted networks**;
 rejected candidates remain in the same table. The reference has `accepted=0`.
@@ -148,8 +149,18 @@ A writer lock serializes updates. CSVs are fsynced and atomically replaced, not
 appended in place. Metadata is saved before committing match rows. On restart or
 refresh, current numeric ratings/counts are rebuilt from **committed match rows**,
 repairing an ahead/behind network-table cache without replaying the math or
-inflating uncertainty. Network rows are sorted by pool and network ID, not by
-registration time; match rows retain ledger insertion order, not newest-first.
+inflating uncertainty. Network rows show newest registrations first, with full
+network ID ascending to break timestamp ties and pool ID ascending within each
+network. The fixed reference stays last, identified by its full name and `fixed`
+status. Registration timestamps never change on re-registration, acceptance, or
+refresh. Match rows retain ledger insertion order, not newest-first.
+
+Existing network CSVs without `registered_at` migrate automatically on the next
+successful refresh/update (`mise run ratings` also refreshes). Their unknown dates
+remain blank and sort after dated networks, by full ID, before the reference;
+no registration history is invented from acceptance or checkpoint dates. The
+migration preserves metadata, match history, and SGF evidence, and numeric ratings
+are rebuilt from the unchanged ledger as usual.
 Evidence uses `ratings/games/<full-SGF-SHA>.sgf`. Keep both CSVs; a missing match
 ledger is an error, not permission to reset ratings. Back up the whole store and quiesce writers while
 copying the two CSVs. Do not edit rating snapshots or processed hashes by hand.

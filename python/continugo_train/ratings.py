@@ -23,6 +23,7 @@ import tempfile
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import torch
@@ -38,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[2]
 META = [
     "network_id",
     "network",
+    "registered_at",
     "parent",
     "samples_seen",
     "data_positions",
@@ -47,6 +49,7 @@ META = [
 ]
 COUNTS = ["games", "wins", "draws", "losses", "truncated"]
 NETWORK_COLUMNS = META + ["pool", "status", "rating", "deviation", "rating ± RD"] + COUNTS
+LEGACY_NETWORK_COLUMNS = [column for column in NETWORK_COLUMNS if column != "registered_at"]
 SEARCH_TYPES = {
     "simulations": int,
     "cpuct": float,
@@ -146,23 +149,34 @@ def _atomic_csv(path, columns, rows):
         Path(name).unlink(missing_ok=True)
 
 
-def _read_csv(path, columns):
+def _read_csv(path, columns, *, legacy_columns=()):
     if path.is_symlink():
         raise ValueError(f"unexpected CSV symlink: {path}")
     if not path.exists():
         return []
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
-        if reader.fieldnames != columns:
+        if reader.fieldnames not in (columns, legacy_columns):
             raise ValueError(f"incompatible rating CSV header: {path}")
         rows = list(reader)
-        if any(set(row) != set(columns) or None in row.values() for row in rows):
+        if any(set(row) != set(reader.fieldnames) or None in row.values() for row in rows):
             raise ValueError(f"incomplete rating CSV row: {path}")
-        return rows
+        return [{**dict.fromkeys(columns, ""), **row} for row in rows]
 
 
 def _valid_id(value):
     return value == REFERENCE_ID or isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+
+
+def _registration_time(meta):
+    value = meta["registered_at"]
+    if not value:
+        # Legacy registration times are unknown, not the time of migration.
+        return datetime.min.replace(tzinfo=UTC)
+    moment = datetime.fromisoformat(value)
+    if moment.utcoffset() is None:
+        raise ValueError("network registration time must include a timezone")
+    return moment
 
 
 @dataclass
@@ -188,8 +202,14 @@ class Tables:
         return self.states[key]
 
     def network_rows(self):
-        for pool in sorted(self.pools) or [""]:
-            for network, meta in sorted(self.networks.items()):
+        # Stable ID order breaks timestamp ties; keep the fixed reference last.
+        networks = sorted(self.networks.items())
+        networks.sort(
+            key=lambda item: (item[0] != REFERENCE_ID, _registration_time(item[1])),
+            reverse=True,
+        )
+        for network, meta in networks:
+            for pool in sorted(self.pools) or [""]:
                 state = self.states.get((pool, network))
                 fixed = network == REFERENCE_ID
                 if fixed and state is None:
@@ -247,12 +267,15 @@ def _set_rating(state, network, rating, deviation, anchored):
 
 def _load(directory):
     tables = Tables()
-    rows = _read_csv(directory / "networks.csv", NETWORK_COLUMNS)
+    rows = _read_csv(
+        directory / "networks.csv", NETWORK_COLUMNS, legacy_columns=LEGACY_NETWORK_COLUMNS
+    )
     for row in rows:
         meta = {k: row[k] for k in META}
         network = meta["network_id"]
         if not _valid_id(network) or meta["accepted"] != str(int(bool(meta["accepted_at"]))):
             raise ValueError("invalid network metadata in networks.csv")
+        _registration_time(meta)
         if network in tables.networks and tables.networks[network] != meta:
             raise ValueError("conflicting network metadata across pools")
         tables.networks[network] = meta
@@ -321,6 +344,7 @@ def _register(tables, checkpoint):
         tables.networks[checksum] = {
             "network_id": checksum,
             "network": network_name(saved),
+            "registered_at": utc_now().isoformat(),
             "parent": saved.get("initialization", {}).get("source", {}).get("sha256") or "",
             "samples_seen": ""
             if progress["samples_seen"] is None
