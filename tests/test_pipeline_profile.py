@@ -8,12 +8,26 @@ import torch
 from test_train import fixtures
 
 from continugo_train.data import scan_corpus
+from continugo_train.loop import LoopConfig
+from continugo_train.loop import parse_args as parse_loop_args
 from continugo_train.model import NetworkConfig, PolicyValueNet
 from continugo_train.pipeline_profile import main, representative_plies, select_positions
 from continugo_train.train import Options, run_phase
+from continugo_train.train import parse_args as parse_train_args
 
 
 class PipelineProfileTests(unittest.TestCase):
+    def test_six_worker_defaults_allow_explicit_and_saved_settings(self):
+        self.assertEqual(Options().workers, 6)
+        self.assertEqual(LoopConfig().workers, 6)
+        for count in (0, 2, 6):
+            args = ["--workers", str(count)]
+            self.assertEqual(parse_train_args(["--data", "unused", *args]).workers, count)
+            self.assertEqual(parse_loop_args(args).workers, count)
+        # Omitted CLI settings must not override saved checkpoint/loop options.
+        self.assertIsNone(parse_train_args(["--data", "unused"]).workers)
+        self.assertIsNone(parse_loop_args([]).workers)
+
     def test_training_window_counts_are_validated_before_measurement(self):
         for invalid in (["--positions-per-game", "-1"], ["--warmup-steps", "0"]):
             with self.subTest(invalid=invalid), patch("sys.stderr"):

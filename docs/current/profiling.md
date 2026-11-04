@@ -51,7 +51,7 @@ The profiler:
 6. Runs real FP32 SGD twice from the supplied weights and fresh optimizer state:
    an ordinary baseline and synchronized stage diagnostics. Each gets one untimed
    warmup step by default, then weights, BatchNorm buffers, RNG and optimizer reset.
-   Default caps: 12 steps, batch two, at most 12 sampled positions per game, two
+   Default caps: 12 steps, batch two, at most 12 sampled positions per game, six
    feature workers. Short caps can skew the size mix; inspect `samples_by_size`.
    Use `--positions-per-game 0 --steps 120 --warmup-steps 20` for a longer
    fixed-corpus window. These are caps, not promises: corpus exhaustion can end
@@ -135,7 +135,9 @@ loader's round-robin sample order and hence SGD trajectories, even with the same
 seed; compare throughput and actual board counts, not loss as a strength result.
 Worker scaling need not be monotonic because of shard imbalance/backpressure.
 The [feature-transport diagnostic](../history/2026-11-04-feature-transport.md)
-records a hardware-specific three-worker recipe; it is not a new global default.
+found six workers fastest among the tested counts on the current machine. Six is
+now the user-selected default for fresh training, new loops and profiling;
+`--workers` can override it. Recheck allocation on other machines/workloads.
 
 ## Lower-level diagnostics
 

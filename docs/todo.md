@@ -16,7 +16,7 @@ as a reference, adapting it to ContinuGo.
   positions and value-only cache misses in subsequent measurements.
 - [ ] Extend training measurements to sustained, warmed persistent-loader windows;
   current fixed-corpus phases still include worker startup/shutdown. Recheck
-  worker allocation on the trial corpus/actor before changing global defaults.
+  the six-worker default on the trial corpus/actor.
   Retain extraction timing, exposed loader wait, Rust child RSS and sampled
   driver GPU memory in subsequent measurements.
 - [ ] Remeasure actual self-play and training after each change, alongside the fixed

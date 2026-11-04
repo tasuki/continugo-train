@@ -63,7 +63,7 @@ class LoopConfig:
     positions_per_game: int = 8
     validation_positions_per_game: int = 4
     batch_size: int = 2
-    workers: int = 2
+    workers: int = Options().workers
     shuffle_buffer: int = 8
     validation_fraction: float = 0.2
     lr: float | None = None

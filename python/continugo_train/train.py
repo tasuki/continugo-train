@@ -36,7 +36,7 @@ from .sampling import DEFAULT_SIZE_WEIGHTS, parse_weights
 @dataclass
 class Options:
     batch_size: int = 2
-    workers: int = 2
+    workers: int = 6
     shuffle_buffer: int = 8
     samples_per_diameter: int = 4
     positions_per_game: int = 0

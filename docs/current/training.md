@@ -23,8 +23,10 @@ otherwise CPU; `--device cpu` forces CPU. Inspect options with
 `mise run train -- --help`. Architecture options include `--channels`, `--blocks`, `--policy-hidden`,
 `--value-hidden`, and `--chunk-size`. Defaults are the existing 32-channel/4-block
 network, FP32 eager mode, SGD lr 0.01 / momentum 0.9 / weight decay 1e-4, gradient
-norm clipping at 5, batch size 2, and two feature workers. Execution is FP32 eager;
-memory use depends on batch size, feature buffers, and resolution.
+norm clipping at 5, batch size 2, and six feature workers. Execution is FP32 eager;
+memory use depends on batch size, feature buffers, and resolution. `--workers`
+remains configurable; checkpoint-based runs retain saved worker settings unless
+explicitly overridden.
 
 The example deliberately limits the run. With omitted limits (all default to
 zero), all eligible positions are candidates before board-mixture downsampling.

@@ -3,7 +3,8 @@
 Follow-up to [coarse-feature optimization](2026-11-04-coarse-features.md).
 Throughput diagnostics with **random weights**, not a learning/strength trial.
 No search, legality, feature schema, cell budget, cache or shared-rule changes.
-No checkpoints were saved/promoted and the global two-worker default is unchanged.
+No checkpoints were saved/promoted. Measurements below preceded the user-approved
+change to six feature workers by default.
 
 ## Instrumentation and controlled change
 
@@ -132,11 +133,13 @@ not a controlled same-trajectory speedup. Non-monotonic scaling is consistent
 with shard imbalance and ordered-queue backpressure; do not infer a universal
 CPU-core scaling law.
 
-For this machine/workload, retain **`--workers 3` as a measured recipe**: about
-1.60× the two-worker throughput. Six uses all six CPU cores for another ~4%
-throughput. Keep the global two-worker default until trial-corpus/trained-actor
-measurements justify a general change. Do not alter caches or cross-game
-concurrency in the same comparison.
+Three workers give about 1.60× the two-worker throughput; six uses all six CPU
+cores for another ~4%. Following these measurements, the user selected
+**`--workers 6` as the default** for fresh training, new loops and profiling.
+This is the fastest tested count on this machine, not a universal optimum;
+recheck on the trial corpus/trained actor. Existing saved configurations retain
+their worker settings. Do not alter caches or cross-game concurrency in the same
+comparison.
 
 Separate synchronized memory diagnostics:
 
@@ -214,7 +217,7 @@ Git-ignored `runs/20261104-feature-transport/` contains:
 
 The saved scripts swap **only** the decoder function for before/after measurements;
 Rust extraction is unchanged. Run from the repository root, sequentially. The
-expanded fixed-corpus three-worker recipe is:
+expanded fixed-corpus six-worker recipe is:
 
 ```sh
 mise run pipeline-profile -- \
@@ -223,6 +226,6 @@ mise run pipeline-profile -- \
   --checkpoint runs/20261104-000500-cell-policy-bench/selective.pt \
   --data runs/20261104-representative-cpu/selfplay \
          runs/20261104-feature-transport/extra-selfplay \
-  --device cuda --iterations 20 --workers 3 --steps 600 \
+  --device cuda --iterations 20 --workers 6 --steps 600 \
   --positions-per-game 0 --warmup-steps 20 --output runs/NEW-OUTPUT
 ```
