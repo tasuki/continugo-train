@@ -50,8 +50,10 @@ metrics, current phase, available disk space and live training/self-play log tai
 Detailed warnings/matches remain in `loop.log` and stage logs.
 
 Use `mise run loop -- --help` for defaults; these are setup budgets, not calibrated
-strength settings. Standalone self-play has different concurrency defaults; see
-[inference batching](inference.md#cross-game-batching). `--device cpu` selects CPU.
+strength settings. New loops and standalone neural self-play default to twelve
+concurrent games / batch limit twelve / collection wait two ms; see
+[inference batching](inference.md#cross-game-batching). Active slots are capped by
+`--games-per-iteration` (default ten); that budget is unchanged. `--device cpu` selects CPU.
 Play, training, and export are
 separate supervised processes; export verification uses CPU.
 

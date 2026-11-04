@@ -144,7 +144,7 @@ def transport_samples(games, iterations):
     return results
 
 
-def main(argv=None):
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--positions",
@@ -163,6 +163,9 @@ def main(argv=None):
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--feature-threads", type=int, default=6)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--concurrent-games", type=int, default=12)
+    parser.add_argument("--inference-batch-size", type=int, default=12)
+    parser.add_argument("--inference-batch-wait-ms", type=int, default=2)
     parser.add_argument("--workers", type=int, default=Options().workers)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--steps", type=int, default=12)
@@ -189,9 +192,20 @@ def main(argv=None):
         or min(args.seed, args.workers, args.positions_per_game) < 0
     ):
         parser.error("counts must be positive; seed/workers/positions-per-game must be nonnegative")
+    if (
+        not 1 <= args.concurrent_games <= 64
+        or not 1 <= args.inference_batch_size <= 32
+        or not 0 <= args.inference_batch_wait_ms <= 1000
+    ):
+        parser.error("concurrent games must be 1..64, inference batch 1..32, wait 0..1000 ms")
     for binary in ("infer", "features", "continugo-train"):
         if not (ROOT / "target/release" / binary).is_file():
             parser.error("build first: cargo build --locked --release --bins")
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
     library, environment = inference_environment(args.device)
     positions = select_positions(args.positions)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
@@ -325,6 +339,12 @@ def main(argv=None):
             str(args.feature_threads),
             "--inference-threads",
             str(args.threads),
+            "--concurrent-games",
+            str(args.concurrent_games),
+            "--inference-batch-size",
+            str(args.inference_batch_size),
+            "--inference-batch-wait-ms",
+            str(args.inference_batch_wait_ms),
             "--output",
             str(games_path),
             "--stats-json",

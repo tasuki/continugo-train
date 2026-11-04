@@ -64,12 +64,12 @@ struct Args {
     ort_library: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     inference_threads: usize,
-    /// Active independent neural games, sharing one model and feature pool (1..=64).
-    #[arg(long, default_value_t = 1)]
-    concurrent_games: usize,
-    /// Maximum inference batch, bucketed by resolution (1..=32).
-    #[arg(long, default_value_t = 8)]
-    inference_batch_size: usize,
+    /// Active independent games (1..=64; default 12 for neural, 1 otherwise).
+    #[arg(long)]
+    concurrent_games: Option<usize>,
+    /// Maximum neural inference batch, bucketed by resolution (1..=32; default 12).
+    #[arg(long)]
+    inference_batch_size: Option<usize>,
     /// Maximum collection delay; partial batches always run (0..=1000 ms).
     #[arg(long, default_value_t = 2)]
     inference_batch_wait_ms: u64,
@@ -92,28 +92,38 @@ struct Args {
     output: PathBuf,
 }
 
+impl Args {
+    fn parallel_config(&self) -> Result<ParallelConfig, String> {
+        let neural = matches!(self.engine, Engine::Neural);
+        let parallel = ParallelConfig {
+            games: self.games,
+            seed: self.seed,
+            concurrent_games: self.concurrent_games.unwrap_or(if neural { 12 } else { 1 }),
+            batching: BatchingConfig {
+                max_batch: self
+                    .inference_batch_size
+                    .unwrap_or(if neural { 12 } else { 8 }),
+                max_wait: Duration::from_millis(self.inference_batch_wait_ms),
+            },
+        };
+        parallel.validate()?;
+        if !neural
+            && (parallel.concurrent_games != 1
+                || parallel.batching.max_batch != 8
+                || self.inference_batch_wait_ms != 2)
+        {
+            return Err("concurrent games/inference batching require --engine neural".into());
+        }
+        Ok(parallel)
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     if args.profile && !matches!(args.engine, Engine::Random) {
         return Err("--profile currently requires --engine random".into());
     }
-    let parallel = ParallelConfig {
-        games: args.games,
-        seed: args.seed,
-        concurrent_games: args.concurrent_games,
-        batching: BatchingConfig {
-            max_batch: args.inference_batch_size,
-            max_wait: Duration::from_millis(args.inference_batch_wait_ms),
-        },
-    };
-    parallel.validate()?;
-    if !matches!(args.engine, Engine::Neural)
-        && (args.concurrent_games != 1
-            || args.inference_batch_size != 8
-            || args.inference_batch_wait_ms != 2)
-    {
-        return Err("concurrent games/inference batching require --engine neural".into());
-    }
+    let parallel = args.parallel_config()?;
     let config = SelfplayConfig {
         engine: args.engine,
         max_moves: args.max_moves,
@@ -149,8 +159,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             args.inference_threads,
             args.feature_threads,
             args.cache_positions,
-            args.concurrent_games,
-            args.inference_batch_size,
+            parallel.concurrent_games,
+            parallel.batching.max_batch,
             args.inference_batch_wait_ms
         );
     }
@@ -230,7 +240,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Ok(())
     };
-    let parallel_stats = if args.concurrent_games > 1 {
+    let parallel_stats = if parallel.concurrent_games.min(args.games as usize) > 1 {
         Some(generate_parallel(
             &boards,
             &config,
@@ -300,4 +310,42 @@ fn save_record(directory: &Path, number: u32, record: &GameRecord) -> Result<(),
         .open(&sgf_path)?;
     sgf_file.write_all(record.sgf.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neural_batching_defaults_do_not_change_baseline_engines() {
+        for engine in ["random", "mcts", "neural"] {
+            let args = Args::parse_from(["selfplay", "--engine", engine]);
+            let config = args.parallel_config().unwrap();
+            let neural = engine == "neural";
+            assert_eq!(config.concurrent_games, if neural { 12 } else { 1 });
+            assert_eq!(config.batching.max_batch, if neural { 12 } else { 8 });
+            assert_eq!(config.batching.max_wait, Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn explicit_neural_batching_settings_override_defaults() {
+        let args = Args::parse_from([
+            "selfplay",
+            "--engine",
+            "neural",
+            "--concurrent-games",
+            "1",
+            "--inference-batch-size",
+            "4",
+            "--inference-batch-wait-ms",
+            "0",
+        ]);
+        let config = args.parallel_config().unwrap();
+        assert_eq!(config.concurrent_games, 1);
+        assert_eq!(config.batching.max_batch, 4);
+        assert_eq!(config.batching.max_wait, Duration::ZERO);
+        let baseline = Args::parse_from(["selfplay", "--concurrent-games", "2"]);
+        assert!(baseline.parallel_config().unwrap_err().contains("neural"));
+    }
 }

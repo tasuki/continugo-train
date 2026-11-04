@@ -173,18 +173,27 @@ coordinate sampling inside selected cells; it does not recover omitted cells.
 
 ## Cross-game batching
 
-Standalone neural self-play defaults to one active game. For concurrency:
+Neural self-play and new loops default to twelve active games, a twelve-request
+batch limit and a two-ms collection wait. Actual concurrency is capped by the
+number of games requested; request at least twelve games to use all slots:
 
 ```sh
-mise run neural-selfplay -- --model runs/model-001 --games 12 --concurrent-games 6 --inference-batch-size 6 --inference-batch-wait-ms 2 --output runs/batched-001
+mise run neural-selfplay -- --model runs/model-001 --games 18 --concurrent-games 12 --inference-batch-size 12 --inference-batch-wait-ms 2 --output runs/batched-001
 ```
 
-- `--concurrent-games`: 1..64, default 1; capped by games requested.
-- `--inference-batch-size`: 1..32, default 8; capped by active game slots.
+See the [concurrency measurements](../history/2026-11-04-concurrency.md) for the
+fixed workload, parity checks and memory costs. These user-selected defaults are
+hardware/model-specific, not a universal optimum; override them when appropriate.
+Training feature workers are separate and unchanged. Random/unguided self-play
+remains sequential. Existing loops restore their frozen configuration.
+
+- `--concurrent-games`: 1..64, neural default 12; capped by games requested.
+- `--inference-batch-size`: 1..32, default 12; capped by active game slots.
 - `--inference-batch-wait-ms`: 0..1000, default 2. Zero drains immediately available
   requests; a single active game never waits to collect a batch. The bound covers
   collection, not queueing/execution latency. Batch-one concurrency is a control
-  for overlap without neural batching. [Loop](loop.md) defaults may differ.
+  for overlap without neural batching. Use `--concurrent-games 1` for a sequential
+  control. [Loop](loop.md) resumes may retain older saved settings.
 
 Each synchronous tree has one outstanding query. One model-owning worker drains a
 bounded channel; one feature pool serves all games. There is no intra-tree

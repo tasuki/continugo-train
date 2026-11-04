@@ -12,6 +12,7 @@ from continugo_train.loop import LoopConfig
 from continugo_train.loop import parse_args as parse_loop_args
 from continugo_train.model import NetworkConfig, PolicyValueNet
 from continugo_train.pipeline_profile import main, representative_plies, select_positions
+from continugo_train.pipeline_profile import parse_args as parse_profile_args
 from continugo_train.train import Options, run_phase
 from continugo_train.train import parse_args as parse_train_args
 
@@ -28,8 +29,42 @@ class PipelineProfileTests(unittest.TestCase):
         self.assertIsNone(parse_train_args(["--data", "unused"]).workers)
         self.assertIsNone(parse_loop_args([]).workers)
 
+    def test_twelve_game_defaults_allow_explicit_and_saved_settings(self):
+        required = ["--positions", "unused", "--model", "unused", "--checkpoint", "unused"]
+        defaults = LoopConfig()
+        profile = parse_profile_args(required)
+        for name, expected in (
+            ("concurrent_games", 12),
+            ("inference_batch_size", 12),
+            ("inference_batch_wait_ms", 2),
+        ):
+            self.assertEqual(getattr(defaults, name), expected)
+            self.assertEqual(getattr(profile, name), expected)
+            self.assertIsNone(getattr(parse_loop_args([]), name))
+        overrides = [
+            "--concurrent-games",
+            "6",
+            "--inference-batch-size",
+            "8",
+            "--inference-batch-wait-ms",
+            "0",
+        ]
+        for args in (parse_profile_args([*required, *overrides]), parse_loop_args(overrides)):
+            self.assertEqual(args.concurrent_games, 6)
+            self.assertEqual(args.inference_batch_size, 8)
+            self.assertEqual(args.inference_batch_wait_ms, 0)
+
     def test_training_window_counts_are_validated_before_measurement(self):
-        for invalid in (["--positions-per-game", "-1"], ["--warmup-steps", "0"]):
+        for invalid in (
+            ["--positions-per-game", "-1"],
+            ["--warmup-steps", "0"],
+            ["--concurrent-games", "0"],
+            ["--concurrent-games", "65"],
+            ["--inference-batch-size", "0"],
+            ["--inference-batch-size", "33"],
+            ["--inference-batch-wait-ms", "-1"],
+            ["--inference-batch-wait-ms", "1001"],
+        ):
             with self.subTest(invalid=invalid), patch("sys.stderr"):
                 with self.assertRaises(SystemExit) as error:
                     main(

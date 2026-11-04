@@ -265,6 +265,7 @@ class NativeInferenceTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("calls: 2, value_calls: 8", result.stderr)
+        self.assertIn("requests: 0", result.stderr)  # One actual game bypasses the queue.
         # The chosen first move was already a value-only leaf: its next root
         # reuses that context rather than rebuilding coarse facts/encoding.
         self.assertIn("encoder_positions: 9", result.stderr)
@@ -345,10 +346,8 @@ class NativeInferenceTests(unittest.TestCase):
                     "4",
                     "--max-moves",
                     "3",
-                    "--concurrent-games",
-                    str(concurrency),
-                    "--inference-batch-size",
-                    str(batch),
+                    *(["--concurrent-games", str(concurrency)] if concurrency is not None else []),
+                    *(["--inference-batch-size", str(batch)] if batch is not None else []),
                     "--inference-batch-wait-ms",
                     "20",
                     "--output",
@@ -371,9 +370,14 @@ class NativeInferenceTests(unittest.TestCase):
         output, batched, stats = run("concurrent-batched", 6, 6)
         self.assertEqual(sequential.keys(), batched.keys())
         self.assertGreater(int(re.search(r"scorer_max_batch: (\d+)", stats)[1]), 1)
-        for name in batched:
-            sample = load_position(output / name, 0)
-            self.assertEqual(sample.visits.sum().item(), 4)
+        default_output, default_records, default_stats = run("concurrent-defaults", None, None)
+        self.assertEqual(sequential.keys(), default_records.keys())
+        self.assertIn("concurrent_games=12 batch_size=12", default_stats)
+        self.assertGreater(int(re.search(r"scorer_max_batch: (\d+)", default_stats)[1]), 1)
+        for folder, records in ((output, batched), (default_output, default_records)):
+            for name in records:
+                sample = load_position(folder / name, 0)
+                self.assertEqual(sample.visits.sum().item(), 4)
         # Output failure cancels new games but drains in-flight queries and joins.
         failure = subprocess.run(
             [
