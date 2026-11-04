@@ -66,6 +66,39 @@ fn default_mix_and_truncation_warnings_are_explicit() {
 }
 
 #[test]
+fn structured_run_stats_report_truncation_without_overwriting_evidence() {
+    let directory = TestDir::new("stats-json");
+    let path = directory.0.join("stats.json");
+    let run = || {
+        cli()
+            .args([
+                "--engine",
+                "random",
+                "--sizes",
+                "9",
+                "--max-moves",
+                "1",
+                "--stats-json",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(output.status.success(), "{:?}", output);
+    let bytes = fs::read(&path).unwrap();
+    let stats: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(stats["games"], 1);
+    assert_eq!(stats["completed"], 0);
+    assert_eq!(stats["truncated"], 1);
+    assert_eq!(stats["moves"], 1);
+    assert!(stats["seconds"].as_f64().unwrap() > 0.0);
+    assert!(stats["inference"].is_null());
+    assert!(!run().status.success());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
 fn stdout_previews_use_the_main_repo_sgf_codec() {
     for size in [9, 13, 19] {
         let output = cli()

@@ -117,6 +117,38 @@ class NativeInferenceTests(unittest.TestCase):
             json.loads(value.stdout)["value"], json.loads(cached.stdout)["value"], places=7
         )
 
+    def test_structured_profile_excludes_warmup_and_preserves_outputs(self):
+        source = self.root / "profile.sgf"
+        source.write_text(SGF)
+        for value_only in (False, True):
+            result = self.infer(
+                source,
+                [1000000],
+                value_only=value_only,
+                extra=[
+                    "--profile-json",
+                    "--cache-positions",
+                    "0",
+                    "--warmup",
+                    "1",
+                    "--iterations",
+                    "2",
+                ],
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["iterations"], 2)
+            self.assertGreater(report["seconds"], 0)
+            self.assertEqual(report["stats"]["encoder_positions"], 2)
+            self.assertEqual(report["stats"]["value_calls" if value_only else "calls"], 2)
+            self.assertEqual(report["stats"]["cache_hits"], 0)
+            if value_only:
+                self.assertEqual(report["stats"]["scorer_batches"], 0)
+            plain = self.infer(source, [1000000], value_only=value_only)
+            for key in ("iterations", "seconds", "stats"):
+                report.pop(key)
+            self.assertEqual(report, json.loads(plain.stdout))
+
     def test_real_selected_cell_native_outputs_match_torch_across_sizes(self):
         self.assertLess(self.error, 1e-5)
         for size in [9, 13, 19]:

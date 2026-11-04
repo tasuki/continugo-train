@@ -85,7 +85,7 @@ struct Metadata {
     feature_spec: FeatureSpec,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct InferenceStats {
     pub calls: u64,
     pub value_calls: u64,

@@ -88,8 +88,15 @@ description = "Native ONNX diagnostics (CUDA by default; --device cpu for CPU)"
 run = ".venv/bin/python -m continugo_train.runtime infer"
 
 [tasks.model-bench]
-description = "Benchmark synthetic coarse/dense inference and training (FP32)"
+description = "Benchmark synthetic coarse/selected-cell inference and training (FP32)"
 run = ".venv/bin/python -m continugo_train.benchmark"
+
+[tasks.pipeline-profile]
+description = "Profile real 9/13/19 positions, neural self-play, feature transport and SGD"
+run = [
+  "cargo build --locked --release --bins",
+  ".venv/bin/python -m continugo_train.pipeline_profile",
+]
 
 [tasks.selfplay]
 description = "Generate baseline MCTS games (arguments are forwarded)"

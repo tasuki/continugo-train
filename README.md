@@ -41,6 +41,7 @@ mise run check
 mise run selfplay -- --engine random --games 3 --output runs/random
 mise run selfplay -- --help
 mise run model-bench -- --device cuda
+mise run pipeline-profile -- --help
 mise run train -- --help
 mise run loop -- --help
 mise run loop-status -- --help
@@ -54,6 +55,7 @@ Self-play saves self-contained SGF records; nonstandard training data goes in co
 
 - [Current implementation and operating instructions](docs/current/)
 - [Open work and proposed experiments](docs/todo.md)
+- [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Network architecture](docs/current/network.md)
 

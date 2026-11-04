@@ -2,20 +2,39 @@
 
 This is a living document. When something is implemented, remove it from here.
 
-Prioritize playing strength per wall-clock hour. Complete optimization and ratings
-cleanup before the next training trial. Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md) as a reference, adapting it to ContinuGo.
+Prioritize playing strength per wall-clock hour. Complete the prioritized pipeline
+fixes and ratings cleanup before the next training trial; defer speculative tuning.
+Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
+as a reference, adapting it to ContinuGo.
 
-## 1. Optimize the pipeline
+## 1. Optimize the measured CPU bottleneck
 
-- [ ] Profile `PreparedPosition::analyze_move`: legality, tactical summaries,
-  child-position construction, repeated scans, and allocations.
-- [ ] Add a shared-rules summary-only analysis path that avoids discarded child
-  positions and repeated work. Verify against the existing validator, including
-  captures and suicide.
-- [ ] Compare cell-size/budget choices by tactical coverage and end-to-end speed,
-  then playing strength in the trial. Include coordinate-first sampling as a control.
-- [ ] Benchmark feature extraction, loader wait/transport, encoder, scorer, memory,
-  and overall throughput. Tune concurrency/batching/cache settings from measurements.
+- [ ] Split coarse/rules feature extraction into preparation/group construction,
+  exact liberty spans, liberty-area integration, one-move capturability, and raster
+  painting; identify repeated scans and allocations. Include value-only cache
+  misses, not just full-policy queries, and populated early/middle/late positions
+  across sizes 9/13/19.
+- [ ] Optimize the largest measured coarse-feature cost, reusing immutable-position
+  work where justified. Preserve shared-rule decisions and feature semantics;
+  differential-check coarse inputs, captures/suicide, borders, and numerical area
+  accuracy. Do not assume `analyze_move` or reduced numerical precision is the fix.
+- [ ] Split the training feature-server round trip into extraction, serialization,
+  pipe transport, decoding/tensor copies, and exposed loader wait. Repeat longer,
+  warmed training phases with a fixed genuine-policy corpus and controlled worker
+  counts; account for Rust child RSS and native GPU memory, not only parent RSS
+  and live PyTorch allocation.
+- [ ] Remeasure actual self-play and training after each change, alongside the fixed
+  positions. Keep model/search settings and source games fixed for comparisons;
+  check decoded moves/visits/results when deterministic and report changed
+  trajectories rather than claiming a controlled speedup. Expand seeds and
+  tactical coverage; repeat with a trained actor when one becomes available.
+- [ ] Use those results to tune coarse-context caching, feature-worker allocation,
+  and cross-game concurrency/batching within bounded memory. Change one factor
+  at a time and retain settings only for measured end-to-end benefit.
+- [ ] Audit cell-size/budget choices for missed captures/saves, including a
+  coordinate-first control, then compare playing strength in the trial. Treat
+  tactical coverage as a correctness/strength question; do not shrink budgets
+  merely to accelerate the currently small exact-feature/scorer stages.
 
 ## 2. Organize ratings and evidence
 
@@ -46,7 +65,15 @@ cleanup before the next training trial. Use [KataGo's self-play training](https:
 
 ## Later, if measurements justify it
 
-- [ ] Investigate CPU/GPU pipelining, GPU-resident contexts, and loader/transport overhead.
+- [ ] Profile `PreparedPosition::analyze_move` internals if exact move analysis
+  becomes a significant end-to-end cost: legality, tactical summaries, discarded
+  child construction, repeated scans, and allocations. Add a shared-rules
+  summary-only path only if justified; differential-check against the validator,
+  including captures and suicide.
+- [ ] Tune scorer batching and cell budgets for speed if their measured cost
+  becomes significant; retain tactical-coverage and strength checks.
+- [ ] Investigate CPU/GPU pipelining and GPU-resident contexts if the remaining
+  compute/transfer split justifies them. Loader/transport measurement is above.
 - [ ] Batch independent evaluation games.
 - [ ] Measure rollout cost/strength before adding it to the supervised loop/rating protocol.
 - [ ] Tune search/training budgets and manually scale network capacity; consider

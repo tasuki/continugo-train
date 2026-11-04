@@ -9,7 +9,7 @@ use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator},
     replay::load_position,
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Instant};
 
 #[derive(Parser)]
 struct Args {
@@ -41,6 +41,19 @@ struct Args {
     warmup: usize,
     #[arg(long, default_value_t = 1)]
     iterations: usize,
+    /// Include measured wall time and structured stage counters in stdout JSON.
+    #[arg(long)]
+    profile_json: bool,
+}
+
+fn report(mut value: serde_json::Value, args: &Args, evaluator: &OnnxEvaluator, seconds: f64) {
+    if args.profile_json {
+        value["seconds"] = seconds.into();
+        value["iterations"] = args.iterations.into();
+        value["stats"] =
+            serde_json::to_value(&evaluator.stats).expect("finite inference statistics");
+    }
+    println!("{value}");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,14 +85,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     evaluator.stats = Default::default();
+    let started = Instant::now();
     if args.value_only {
         let mut value = 0.0;
         for _ in 0..args.iterations {
             value = evaluator.value(&position.game)?;
         }
-        println!(
-            "{}",
-            serde_json::json!({"value": value, "device": args.device.name()})
+        report(
+            serde_json::json!({"value": value, "device": args.device.name()}),
+            &args,
+            &evaluator,
+            started.elapsed().as_secs_f64(),
         );
         eprintln!("{:?}", evaluator.stats);
         return Ok(());
@@ -88,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..args.iterations {
         last = Some(evaluator.evaluate(&position.game)?);
     }
+    let seconds = started.elapsed().as_secs_f64();
     let evaluation = last.unwrap();
     let logits: Vec<Option<f32>> = args
         .actions
@@ -110,9 +127,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|(id, _)| continugo_train::cells::cell(id as u32, size))
         .collect();
     let policy_mass: f64 = evaluation.logits.iter().map(|&p| f64::from(p).exp()).sum();
-    println!(
-        "{}",
-        serde_json::json!({"value": evaluation.value, "actions": args.actions, "logits": logits, "device": args.device.name(), "cells": cells, "policy_mass": policy_mass})
+    report(
+        serde_json::json!({"value": evaluation.value, "actions": args.actions, "logits": logits, "device": args.device.name(), "cells": cells, "policy_mass": policy_mass}),
+        &args,
+        &evaluator,
+        seconds,
     );
     eprintln!("{:?}", evaluator.stats);
     Ok(())

@@ -295,4 +295,6 @@ CUDA memory excludes reserved allocator/context/desktop usage. Parent peak RSS i
 the process lifetime high-water mark including Python threads, **not** Rust child
 RSS. More workers/buffering use more memory. Feature extraction and binary
 transport are included in end-to-end timings; historical measurements belong in
-[benchmarks.md](../benchmarks.md).
+[benchmarks.md](../benchmarks.md). The [pipeline profiler](profiling.md) also
+measures the real loader/SGD path with optional synchronized transfer, encoder,
+scorer, and loss/backward/optimizer stages, without saving training checkpoints.

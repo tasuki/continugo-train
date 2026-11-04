@@ -169,7 +169,9 @@ def sync(device):
         torch.cuda.synchronize(device)
 
 
-def run_phase(model, optimizer, games, options, epoch, device, binary, training):
+def run_phase(
+    model, optimizer, games, options, epoch, device, binary, training, *, profile_stages=False
+):
     model.train(training)
     model.zero_grad(set_to_none=True)
     if device.type == "cuda":
@@ -178,6 +180,19 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, training)
     samples_by_size = Counter()
     totals = [0.0, 0.0, 0.0]
     wait = compute = 0.0
+    stage_seconds = Counter()
+
+    @contextmanager
+    def stage(name):
+        if not profile_stages:
+            yield
+            return
+        sync(device)
+        tick = time.perf_counter()
+        yield
+        sync(device)
+        stage_seconds[name] += time.perf_counter() - tick
+
     started = time.perf_counter()
     stream = batches(
         games,
@@ -202,25 +217,38 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, training)
             wait += time.perf_counter() - tick
             tick = time.perf_counter()
             samples_by_size.update(cpu_batch.board_sizes.tolist())
-            batch = cpu_batch.to(device)
+            with stage("transfer"):
+                batch = cpu_batch.to(device)
             if training:
                 optimizer.zero_grad(set_to_none=True)
-            logits, values = model(batch.coarse, batch.exact, batch.actions, batch.legal)
-            loss = hierarchical_policy_value_loss(
-                logits, values, batch.indices, batch.visits, batch.outcomes
-            )
-            if not torch.isfinite(loss.total):
-                raise RuntimeError("nonfinite policy/value loss")
-            if training:
-                loss.total.backward()
-                norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(),
-                    options.grad_clip if options.grad_clip else math.inf,
-                    error_if_nonfinite=True,
+            if profile_stages:
+                # Same operations as PolicyValueNet.forward; synchronization is
+                # diagnostic-only and may change overlap/throughput.
+                with stage("encoder"):
+                    spatial, pass_logit, values = model.encode(batch.coarse)
+                with stage("scorer"):
+                    logits = model.policy(
+                        spatial, pass_logit, batch.exact, batch.actions, batch.legal
+                    )
+                del spatial, pass_logit
+            else:
+                logits, values = model(batch.coarse, batch.exact, batch.actions, batch.legal)
+            with stage("loss_backward_optimizer"):
+                loss = hierarchical_policy_value_loss(
+                    logits, values, batch.indices, batch.visits, batch.outcomes
                 )
-                if not torch.isfinite(norm):
-                    raise RuntimeError("nonfinite gradient norm")
-                optimizer.step()
+                if not torch.isfinite(loss.total):
+                    raise RuntimeError("nonfinite policy/value loss")
+                if training:
+                    loss.total.backward()
+                    norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        options.grad_clip if options.grad_clip else math.inf,
+                        error_if_nonfinite=True,
+                    )
+                    if not torch.isfinite(norm):
+                        raise RuntimeError("nonfinite gradient norm")
+                    optimizer.step()
             sync(device)
             compute += time.perf_counter() - tick
             count = batch.outcomes.numel()
@@ -247,6 +275,7 @@ def run_phase(model, optimizer, games, options, epoch, device, binary, training)
         if device.type == "cuda"
         else None,
         "parent_peak_rss_mib": parent_peak_rss(),
+        **({"stage_seconds": dict(stage_seconds)} if profile_stages else {}),
     }
 
 

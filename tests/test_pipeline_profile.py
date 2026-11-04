@@ -1,0 +1,92 @@
+import copy
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import torch
+from test_train import fixtures
+
+from continugo_train.data import scan_corpus
+from continugo_train.model import NetworkConfig, PolicyValueNet
+from continugo_train.pipeline_profile import representative_plies, select_positions
+from continugo_train.train import Options, run_phase
+
+
+class PipelineProfileTests(unittest.TestCase):
+    def test_phase_proxies_are_nonterminal_and_reject_smoke_fixtures(self):
+        self.assertEqual(representative_plies(102), {"early": 10, "middle": 50, "late": 100})
+        with self.assertRaisesRegex(ValueError, "at least 10"):
+            representative_plies(3)
+
+    def test_selection_is_deterministic_complete_and_requires_all_sizes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("9", "13", "19", "short", "truncated"):
+                (root / f"{name}.sgf").write_text(name)
+
+            def info(path):
+                name = path.stem
+                return {
+                    "board_size": int(name) if name.isdigit() else 9,
+                    "completed": name != "truncated",
+                    "moves": 3 if name == "short" else 999 if name == "truncated" else 100,
+                    "game_id": name,
+                }
+
+            with patch("continugo_train.pipeline_profile.inspect_game", side_effect=info):
+                selected = select_positions([root])
+                self.assertEqual(len(selected), 9)
+                self.assertEqual({p["size"] for p in selected}, {9, 13, 19})
+                self.assertEqual({p["moves"] for p in selected}, {100})
+                self.assertEqual(select_positions([root, root]), selected)
+                (root / "19.sgf").unlink()
+                with self.assertRaisesRegex(ValueError, "size-19"):
+                    select_positions([root])
+
+    def test_detailed_training_matches_normal_forward_and_optimizer(self):
+        torch.set_num_threads(1)
+        torch.manual_seed(3)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = fixtures(Path(directory))
+            corpus = scan_corpus([str(p) for p in paths], 4, 0, 0.25)
+            initial = PolicyValueNet(
+                NetworkConfig(channels=4, blocks=1, policy_hidden=4, value_hidden=4)
+            )
+            states, metrics = [], []
+            for detailed in (False, True):
+                model = copy.deepcopy(initial)
+                optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+                metrics.append(
+                    run_phase(
+                        model,
+                        optimizer,
+                        corpus.train,
+                        Options(batch_size=2, workers=0, steps_per_epoch=1),
+                        0,
+                        torch.device("cpu"),
+                        None,
+                        True,
+                        profile_stages=detailed,
+                    )
+                )
+                states.append((model.state_dict(), optimizer.state_dict()))
+            self.assertNotIn("stage_seconds", metrics[0])
+            self.assertEqual(
+                set(metrics[1]["stage_seconds"]),
+                {"transfer", "encoder", "scorer", "loss_backward_optimizer"},
+            )
+            self.assertTrue(all(v >= 0 for v in metrics[1]["stage_seconds"].values()))
+            self.assertLessEqual(
+                sum(metrics[1]["stage_seconds"].values()), metrics[1]["compute_seconds"]
+            )
+            for key in ("loss", "policy_ce", "value_mse", "samples", "steps"):
+                self.assertEqual(metrics[0][key], metrics[1][key])
+            for key, value in states[0][0].items():
+                self.assertTrue(torch.equal(value, states[1][0][key]), key)
+            for key, state in states[0][1]["state"].items():
+                self.assertTrue(
+                    torch.equal(
+                        state["momentum_buffer"], states[1][1]["state"][key]["momentum_buffer"]
+                    )
+                )

@@ -76,6 +76,10 @@ runtime conditioning on selected nonempty cells/pass. `--value-only` skips all
 cell selection and exact scoring.
 Set `CONTINUGO_ORT_PROFILE` to an existing directory for encoder/scorer runtime
 profiles, including actual operator placement. Timers exclude warmup/model load.
+`--profile-json` adds structured stage counters and total query seconds to stdout;
+ordinary diagnostic JSON remains unchanged. Self-play can write run totals with
+`--stats-json NEW_FILE`. For representative positions plus real training/self-play,
+use the [pipeline profiler](profiling.md).
 
 ## Feature extraction and context caching
 

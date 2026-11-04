@@ -84,6 +84,9 @@ struct Args {
     /// Time random-engine stages and moves; embed diagnostics in SGF comments.
     #[arg(long)]
     profile: bool,
+    /// Write machine-readable run totals and inference stages to a new JSON file.
+    #[arg(long)]
+    stats_json: Option<PathBuf>,
     /// Directory for self-contained .sgf records, or '-' for stdout.
     #[arg(long, default_value = "-")]
     output: PathBuf,
@@ -267,6 +270,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("native inference: {stats:?}");
     } else if let Some(evaluator) = &evaluator {
         eprintln!("native inference: {:?}", evaluator.stats);
+    }
+    if let Some(path) = &args.stats_json {
+        let stats = parallel_stats
+            .as_ref()
+            .or_else(|| evaluator.as_ref().map(|e| &e.stats));
+        let summary = serde_json::json!({
+            "games": args.games, "completed": completed, "draws": draws,
+            "truncated": args.games as usize - completed, "moves": total_moves,
+            "seconds": elapsed, "moves_per_second": total_moves as f64 / elapsed,
+            "inference": stats,
+        });
+        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        serde_json::to_writer_pretty(file, &summary)?;
     }
     Ok(())
 }
