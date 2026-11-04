@@ -46,7 +46,8 @@ fn native_batch_parity_and_worker_lifecycle() {
     assert_eq!(evaluator.stats.coarse_stages.positions, 6);
     assert_eq!(evaluator.stats.coarse_stages.stones, 9);
     assert_eq!(evaluator.stats.coarse_stages.preparation.calls, 6);
-    assert_eq!(evaluator.stats.coarse_stages.group_construction.calls, 12);
+    assert_eq!(evaluator.stats.coarse_stages.liberty_spans.calls, 9);
+    assert_eq!(evaluator.stats.coarse_stages.capturability.calls, 9);
     assert_eq!(evaluator.stats.encoder_max_batch, 2);
     assert_eq!(evaluator.stats.scorer_max_batch, 2);
     assert_eq!(evaluator.stats.calls, 6);

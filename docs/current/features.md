@@ -3,7 +3,11 @@
 Extraction lives in `src/features.rs`; rule facts come from `continugo-rules`.
 `Position::liberty_spans` returns the exact integer liberty-center intervals used
 for UI-style geometry. `PreparedPosition::analyze_group` reuses those spans and
-finds an exact legal one-placement capture witness when one exists.
+finds an exact legal one-placement capture witness when one exists. Coarse
+extraction borrows the prepared groups rather than rebuilding them. Group analysis
+lazily builds a per-position union of blocker intervals on each board row, shared
+by exact span extraction and capture-cover scanning. Move-only preparation never
+builds that index; it does not change validation, witnesses or capture decisions.
 `PreparedPosition::analyze_move` uses the existing prepared validator for
 connections, captures and resulting group size. Area integration
 lives in `src/liberty_area.rs`; normal move validation never pays for it. No game

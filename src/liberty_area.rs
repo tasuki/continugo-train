@@ -56,6 +56,13 @@ fn measure(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
             }
             let mut left = f64::from(span.left) - extension;
             let mut right = f64::from(span.right) + extension;
+            // Most slices have one connected union. Updating it directly avoids
+            // binary searches and Vec draining for every overlapping source row.
+            if intervals.len() == 1 && left <= intervals[0].1 && right >= intervals[0].0 {
+                intervals[0].0 = intervals[0].0.min(left);
+                intervals[0].1 = intervals[0].1.max(right);
+                continue;
+            }
             let first = intervals.partition_point(|&(_, end)| end < left);
             let mut last = first;
             while last < intervals.len() && intervals[last].0 <= right {

@@ -63,7 +63,9 @@ The profiler:
 
 `summary.json` retains configuration, revision/dirty status, source hashes, model
 hashes, native binary hashes, corpus manifest, per-position results, self-play
-and training metrics. Raw native stdout/stderr and generated SGFs remain beside it. Intermediate
+and training metrics. `shared_rules` also records the sibling ContinuGo revision,
+dirty status and hashes of all Rust rule sources; local training-repo provenance
+alone does not identify changes in a path dependency. Raw native stdout/stderr and generated SGFs remain beside it. Intermediate
 results are saved before subsequent stages, so a corpus error does not lose the
 native measurements. SGFs remain the only primary game records.
 
@@ -73,9 +75,12 @@ native measurements. SGFs remain the only primary game records.
   host output handling/transfer; coarse includes shared-rule analysis. Overall
   query seconds include normalization, dense result construction and other work.
   `stats.coarse_stages` splits preparation (including shared group/witness work),
-  a second group construction, shared spans + capturability, area integration,
-  and raster allocation/painting/borders. The shared rules API still combines
-  spans and capturability; those are **not** independently measured yet.
+  `liberty_spans`, `capturability`, area integration, and raster
+  allocation/painting/borders. Span/capturability clocks live inside the shared
+  rule implementation, not a duplicate capture algorithm. The span stage includes
+  lazy blocker-row index construction on the first nonempty group; later groups
+  reuse it. Raster extraction borrows prepared groups, so the former second
+  `group_construction` stage and combined `spans_and_capturability` field are gone.
   These subtotals sit **inside** `coarse_seconds`. They exclude flattening and
   instrumentation/bookkeeping overhead. For concurrent extraction, subtotals
   sum worker wall times and may exceed elapsed batch time; never add them

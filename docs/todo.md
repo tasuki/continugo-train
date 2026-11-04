@@ -7,26 +7,18 @@ fixes before the next training trial; defer speculative tuning.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
-## 1. Optimize the measured CPU bottleneck
-
-- [ ] Split the remaining shared `analyze_group` timing into exact liberty spans
-  and one-move capturability without copying shared-rule decisions. Audit its
-  repeated blocker scans/allocations and duplicate group construction during
-  preparation versus raster extraction. Keep populated early/middle/late 9/13/19
-  positions and value-only cache misses in subsequent measurements.
+## 1. Measure remaining pipeline limits
 - [ ] Extend training measurements to sustained, warmed persistent-loader windows;
   current fixed-corpus phases still include worker startup/shutdown. Recheck
   the six-worker default on the trial corpus/actor.
   Retain extraction timing, exposed loader wait, Rust child RSS and sampled
   driver GPU memory in subsequent measurements.
-- [ ] Remeasure actual self-play and training after each change, alongside the fixed
-  positions. Keep model/search settings and source games fixed for comparisons;
-  check decoded moves/visits/results when deterministic and report changed
-  trajectories rather than claiming a controlled speedup. Expand seeds and
-  tactical coverage; repeat with a trained actor when one becomes available.
-- [ ] Use those results to tune coarse-context caching, feature-worker allocation,
-  and cross-game concurrency/batching within bounded memory. Change one factor
-  at a time and retain settings only for measured end-to-end benefit.
+- [ ] Expand tactical coverage and repeat pipeline measurements with a trained
+  actor when one becomes available. Keep populated early/middle/late 9/13/19
+  positions and value-only cache misses in subsequent measurements.
+- [ ] Measure coarse-context caching and cross-game concurrency/batching within
+  bounded memory. Change one factor at a time and retain settings only for
+  measured end-to-end benefit.
 - [ ] Audit cell-size/budget choices for missed captures/saves, including a
   coordinate-first control, then compare playing strength in the trial. Treat
   tactical coverage as a correctness/strength question; do not shrink budgets

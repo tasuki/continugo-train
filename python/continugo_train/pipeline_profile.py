@@ -218,6 +218,18 @@ def main(argv=None):
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True),
+        "shared_rules": {
+            "revision": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT.parent / "continugo", text=True
+            ).strip(),
+            "git_status": subprocess.check_output(
+                ["git", "status", "--short"], cwd=ROOT.parent / "continugo", text=True
+            ),
+            "source_sha256": {
+                str(path.relative_to(ROOT.parent / "continugo")): sha256(path)
+                for path in sorted((ROOT.parent / "continugo/backend/rules/src").rglob("*.rs"))
+            },
+        },
         "checkpoint_sha256": sha256(args.checkpoint),
         "model_sha256": {
             name: sha256(args.model / name) for name in ("encoder.onnx", "policy.onnx")

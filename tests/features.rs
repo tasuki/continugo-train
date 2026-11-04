@@ -54,8 +54,8 @@ fn profiled_coarse_features_preserve_bits_and_count_work() {
         assert_eq!(profile.groups, 2);
         assert!(profile.spans > 0);
         assert_eq!(profile.preparation.calls, 1);
-        assert_eq!(profile.group_construction.calls, 2);
-        assert_eq!(profile.spans_and_capturability.calls, 2);
+        assert_eq!(profile.liberty_spans.calls, 2);
+        assert_eq!(profile.capturability.calls, 2);
         assert_eq!(profile.liberty_area.calls, 2);
         assert_eq!(profile.painting.calls, 4); // allocation, two groups, borders
         let mut total = continugo_train::features::CoarseProfile::default();

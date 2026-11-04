@@ -145,8 +145,10 @@ class NativeInferenceTests(unittest.TestCase):
             stages = report["stats"]["coarse_stages"]
             self.assertEqual(stages["positions"], 2)
             self.assertEqual(stages["preparation"]["calls"], 2)
-            self.assertEqual(stages["group_construction"]["calls"], 4)
-            self.assertEqual(stages["spans_and_capturability"]["calls"], stages["groups"])
+            self.assertNotIn("group_construction", stages)
+            self.assertNotIn("spans_and_capturability", stages)
+            self.assertEqual(stages["liberty_spans"]["calls"], stages["groups"])
+            self.assertEqual(stages["capturability"]["calls"], stages["groups"])
             self.assertEqual(stages["liberty_area"]["calls"], stages["groups"])
             if value_only:
                 self.assertEqual(report["stats"]["scorer_batches"], 0)

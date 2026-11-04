@@ -10,8 +10,7 @@ use crate::profile::Stage;
 use rayon::prelude::*;
 use std::time::Instant;
 
-/// Per-extraction CPU stage totals. Shared rules currently return exact spans and
-/// capturability together; do not mistake that combined stage for area integration.
+/// Disjoint per-extraction CPU stage totals, including shared-rule group clocks.
 /// Parallel callers sum worker time, not elapsed batch time.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct CoarseProfile {
@@ -20,8 +19,8 @@ pub struct CoarseProfile {
     pub stones: u64,
     pub spans: u64,
     pub preparation: Stage,
-    pub group_construction: Stage,
-    pub spans_and_capturability: Stage,
+    pub liberty_spans: Stage,
+    pub capturability: Stage,
     pub liberty_area: Stage,
     pub painting: Stage,
 }
@@ -34,11 +33,8 @@ impl CoarseProfile {
         self.spans += other.spans;
         for (target, source) in [
             (&mut self.preparation, &other.preparation),
-            (&mut self.group_construction, &other.group_construction),
-            (
-                &mut self.spans_and_capturability,
-                &other.spans_and_capturability,
-            ),
+            (&mut self.liberty_spans, &other.liberty_spans),
+            (&mut self.capturability, &other.capturability),
             (&mut self.liberty_area, &other.liberty_area),
             (&mut self.painting, &other.painting),
         ] {
@@ -149,20 +145,22 @@ impl<'a> FeatureExtractor<'a> {
         }
         for color in [game.on_move(), game.on_move().other()] {
             let offset = usize::from(color != game.on_move());
-            let tick = PROFILE.then(Instant::now);
-            let groups = game.position().groups(color);
-            if let Some(tick) = tick {
-                profile.group_construction.record(tick);
-                profile.groups += groups.len() as u64;
-            }
-            for members in groups {
-                let size = count_feature(members.len());
-                let tick = PROFILE.then(Instant::now);
-                let analysis = this.prepared.analyze_group(&members);
-                if let Some(tick) = tick {
-                    profile.spans_and_capturability.record(tick);
-                    profile.spans += analysis.liberty_spans.len() as u64;
+            for members in this.prepared.groups(color) {
+                if PROFILE {
+                    profile.groups += 1;
                 }
+                let size = count_feature(members.len());
+                let analysis = if PROFILE {
+                    let (analysis, stages) = this.prepared.analyze_group_profiled(members);
+                    profile.liberty_spans.calls += 1;
+                    profile.liberty_spans.seconds += stages.liberty_spans_seconds;
+                    profile.capturability.calls += 1;
+                    profile.capturability.seconds += stages.capturability_seconds;
+                    profile.spans += analysis.liberty_spans.len() as u64;
+                    analysis
+                } else {
+                    this.prepared.analyze_group(members)
+                };
                 let tick = PROFILE.then(Instant::now);
                 let liberty_area = crate::liberty_area::in_stone_discs(
                     &analysis.liberty_spans,
@@ -173,9 +171,12 @@ impl<'a> FeatureExtractor<'a> {
                 }
                 let capturable = u8::from(analysis.capture_in_one.is_some()) as f32;
                 let tick = PROFILE.then(Instant::now);
-                for i in members {
+                for &i in members {
                     let spot = game.position().stones()[i].spot;
-                    this.paint(
+                    Self::paint(
+                        &mut this.coarse,
+                        resolution,
+                        board.stone_radius(),
                         spot,
                         &[
                             (offset, 1.0),
@@ -194,7 +195,7 @@ impl<'a> FeatureExtractor<'a> {
         let area = resolution * resolution;
         for y in 0..resolution {
             for x in 0..resolution {
-                let spot = this.grid_spot(x, y);
+                let spot = Self::grid_spot(resolution, x, y);
                 for (direction, value) in this.borders(spot).into_iter().enumerate() {
                     this.coarse[(8 + direction) * area + y * resolution + x] = value;
                 }
@@ -220,36 +221,38 @@ impl<'a> FeatureExtractor<'a> {
         })
     }
 
-    fn grid_spot(&self, x: usize, y: usize) -> Spot {
-        let coordinate = |i| {
-            ((i * (COORD_RANGE - 1) as usize + (self.resolution - 1) / 2) / (self.resolution - 1))
-                as i32
-        };
+    fn grid_spot(resolution: usize, x: usize, y: usize) -> Spot {
+        let coordinate =
+            |i| ((i * (COORD_RANGE - 1) as usize + (resolution - 1) / 2) / (resolution - 1)) as i32;
         Spot {
             x: coordinate(x),
             y: coordinate(y),
         }
     }
 
-    fn paint(&mut self, centre: Spot, planes: &[(usize, f32)]) {
-        let radius = self.game.board().stone_radius();
-        let scale = (self.resolution - 1) as f64 / f64::from(COORD_RANGE - 1);
+    fn paint(
+        coarse: &mut [f32],
+        resolution: usize,
+        radius: i32,
+        centre: Spot,
+        planes: &[(usize, f32)],
+    ) {
+        let scale = (resolution - 1) as f64 / f64::from(COORD_RANGE - 1);
         // One extra sample covers integer rounding at the raster boundary.
         let bounds = |c: i32| {
             let start = ((f64::from(c - radius) * scale).floor() as i32 - 1).max(0) as usize;
-            let end =
-                ((f64::from(c + radius) * scale).ceil() as usize + 1).min(self.resolution - 1);
+            let end = ((f64::from(c + radius) * scale).ceil() as usize + 1).min(resolution - 1);
             start..=end
         };
-        let area = self.resolution * self.resolution;
+        let area = resolution * resolution;
         for y in bounds(centre.y) {
             for x in bounds(centre.x) {
-                let spot = self.grid_spot(x, y);
+                let spot = Self::grid_spot(resolution, x, y);
                 let distance = (spot.x - centre.x).pow(2) + (spot.y - centre.y).pow(2);
                 // Physical stone disk, not the larger move-exclusion disk.
                 if distance < radius * radius {
                     for &(plane, value) in planes {
-                        self.coarse[plane * area + y * self.resolution + x] = value;
+                        coarse[plane * area + y * resolution + x] = value;
                     }
                 }
             }

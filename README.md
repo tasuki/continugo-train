@@ -14,6 +14,12 @@ Experimental actors may advance independently, but accepted networks require
 and convincing strength against the reference. The [loop](docs/current/loop.md)
 never promotes automatically.
 
+## Next work
+
+[Open work](docs/todo.md) lists only pending tasks toward the small-board learning
+trial. Completed work and measurements belong in [history](docs/history/), not in
+the todo or this README.
+
 ## Requirements
 
 - [mise](https://mise.jdx.dev/)
@@ -54,7 +60,6 @@ Self-play saves self-contained SGF records; nonstandard training data goes in co
 ## Documentation
 
 - [Current implementation and operating instructions](docs/current/)
-- [Open work and proposed experiments](docs/todo.md)
 - [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Network architecture](docs/current/network.md)
