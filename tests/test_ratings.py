@@ -48,8 +48,8 @@ class NetworkOrderTests(unittest.TestCase):
         self.assertNotIn("/", first)
         self.assertLess(len(first.encode()), 255)
 
-    def test_newest_first_id_ties_grouped_pools_and_reference_last(self):
-        tables = ratings.Tables(pools={"z": {}, "a": {}})
+    def test_newest_first_id_ties_and_reference_last(self):
+        tables = ratings.Tables()
         dates = {
             "a" * 64: "2026-11-01T00:00:00+00:00",
             "b" * 64: "2026-11-02T00:00:00+00:00",
@@ -65,14 +65,9 @@ class NetworkOrderTests(unittest.TestCase):
             }
         rows = list(tables.network_rows())
         expected = ["b" * 64, "c" * 64, "a" * 64, "d" * 64, ratings.REFERENCE_ID]
-        self.assertEqual(
-            [(row["network_id"], row["pool"]) for row in rows],
-            [(network, pool) for network in expected for pool in ["a", "z"]],
-        )
-        self.assertTrue(all(row["status"] == "fixed" for row in rows[-2:]))
-        tables.pools.clear()
-        self.assertEqual([r["network_id"] for r in tables.network_rows()], expected)
-        self.assertTrue(all(r["pool"] == "" for r in tables.network_rows()))
+        self.assertEqual([row["network_id"] for row in rows], expected)
+        self.assertEqual(rows[-1]["status"], "fixed")
+        self.assertTrue(all("pool" not in row for row in rows))
 
 
 class RatingsTests(helpers.LoopHarness):
@@ -312,7 +307,7 @@ class RatingsTests(helpers.LoopHarness):
             sorted(original, key=lambda r: (-int(r["batch_number"]), int(r["game_number"]))),
         )
 
-    def test_evidence_lookup_pool_filter_and_invalid_ledger_metadata(self):
+    def test_evidence_lookup_and_invalid_ledger_metadata(self):
         self.rated_loop(self.root / "loop")
         rows = self.matches()
         row = rows[0]
@@ -323,8 +318,6 @@ class RatingsTests(helpers.LoopHarness):
                     str(self.store),
                     "--sgf",
                     row["sgf_sha256"],
-                    "--pool",
-                    row["pool"],
                 ]
             )
         self.assertEqual(result.getvalue().strip(), str(ratings.evidence_path(self.store, row)))
@@ -370,32 +363,83 @@ class RatingsTests(helpers.LoopHarness):
         for name, content in before.items():
             self.assertEqual((self.directory / name).read_bytes(), content)
 
-    def test_pools_are_separate_and_wrong_budget_evidence_is_rejected(self):
+    def test_global_dedup_across_settings_and_wrong_budget_is_rejected(self):
         state = self.rated_loop(self.root / "loop")
         settings = state["rating_protocol"]
-        gate_rows = [row for row in self.matches() if row["kind"] == "gate"]
-        paths = [ratings.evidence_path(self.store, row) for row in gate_rows]
-        original = {row["network_id"]: row for row in self.rows()}
+        paths = [
+            ratings.evidence_path(self.store, row)
+            for row in self.matches()
+            if row["kind"] == "gate"
+        ]
+        before = {
+            name: (self.directory / name).read_bytes() for name in ("networks.csv", "matches.csv")
+        }
         changed = dict(settings, neural_max_moves=settings["neural_max_moves"] + 1)
-        new = ratings.ingest(self.store, changed, paths)
-        self.assertEqual(new["new_games"], 2)
-        for row in self.matches():
-            if row["pool"] == new["pool"]:
-                previous = next(r for r in gate_rows if r["sgf_sha256"] == row["sgf_sha256"])
-                self.assertEqual(
-                    ratings.evidence_path(self.store, row).stat().st_ino,
-                    ratings.evidence_path(self.store, previous).stat().st_ino,
-                )
-        for row in self.rows():
-            if row["pool"] == ratings.identity(settings):
-                self.assertEqual(row, original[row["network_id"]])
-            elif row["network_id"] != ratings.REFERENCE_ID:
-                self.assertEqual(row["status"], "unrated")  # No reference connection in this pool.
-        before = (self.directory / "matches.csv").read_bytes()
+        self.assertEqual(ratings.ingest(self.store, changed, paths)["new_games"], 0)
+        for name, content in before.items():
+            self.assertEqual((self.directory / name).read_bytes(), content)
         wrong = dict(settings, search={**settings["search"], "simulations": 33})
         with self.assertRaisesRegex(ValueError, "evaluation protocol"):
             ratings.ingest(self.store, wrong, paths)
+        self.assertEqual((self.directory / "matches.csv").read_bytes(), before["matches.csv"])
+
+    def test_merge_old_split_ratings_replays_once_and_preserves_evidence(self):
+        state = self.rated_loop(self.root / "loop")
+        settings = state["rating_protocol"]
+        original = self.matches()
+        old = [{**row, "pool": ratings.identity(settings)} for row in original]
+        changed = dict(settings, neural_max_moves=settings["neural_max_moves"] + 1)
+        old.extend(
+            {
+                **row,
+                **ratings._protocol_columns(changed),
+                "pool": ratings.identity(changed),
+                "batch_number": "4",
+                "event": "other",
+            }
+            for row in original
+            if row["kind"] == "gate"
+        )
+        ratings._atomic_csv(self.directory / "matches.csv", ratings.POOLED_MATCH_COLUMNS, old)
+        ratings._atomic_csv(
+            self.directory / "networks.csv",
+            ratings.POOLED_NETWORK_COLUMNS,
+            [{**row, "pool": ratings.identity(settings)} for row in self.rows()],
+        )
+        ratings.refresh(self.store)
+        self.assertEqual(len(self.matches()), len(original))
+        self.assertEqual(len(self.rows()), 3)
+        self.assertEqual(sum(row["network_id"] == ratings.REFERENCE_ID for row in self.rows()), 1)
+        self.assertTrue(all("pool" not in row for row in self.rows() + self.matches()))
+        for row in self.matches():
+            ratings.evidence_path(self.store, row)
+        self.assertTrue(list((self.directory / "backups").glob("*/matches.csv")))
+        before = (self.directory / "matches.csv").read_bytes()
+        with patch.object(ratings.subprocess, "run", side_effect=AssertionError("no replay")):
+            ratings.refresh(self.store)
         self.assertEqual((self.directory / "matches.csv").read_bytes(), before)
+
+    def test_plot_updates_only_after_new_committed_arena_batches(self):
+        with patch("continugo_train.plot_ratings.update") as update:
+            state = self.rated_loop(self.root / "autoplot")
+            self.assertEqual(update.call_count, 3)
+            self.assertEqual(len(self.matches()), 6)
+            update.reset_mock()
+            self.run_loop(self.root / "autoplot", resume=True)
+            paths = [ratings.evidence_path(self.store, row) for row in self.matches()]
+            ratings.ingest(self.store, state["rating_protocol"], paths)
+            update.assert_not_called()
+
+    def test_unscheduled_intermediates_not_registered(self):
+        state = self.run_loop(
+            self.root / "sparse",
+            extra=["--iterations", "3", "--reference-games", "2", "--evaluation-interval", "3"],
+        )
+        ids = {row["network_id"] for row in self.rows()}
+        self.assertIn(state["initial_actor_checkpoint"]["sha256"], ids)
+        self.assertIn(state["iterations"][2]["checkpoint"]["sha256"], ids)
+        self.assertNotIn(state["iterations"][0]["checkpoint"]["sha256"], ids)
+        self.assertNotIn(state["iterations"][1]["checkpoint"]["sha256"], ids)
 
     def test_rejected_candidates_are_kept_and_rated_but_not_marked_accepted(self):
         state = self.rated_loop(self.root / "loop", ["--acceptance-rate", "0.6"])
@@ -457,7 +501,7 @@ class RatingsTests(helpers.LoopHarness):
         self.assertTrue(all(row["games"] == "0" for row in self.rows()))
         self.run_loop(output, resume=True)
         self.assertEqual(len(self.matches()), 6)
-        self.assertEqual(len({(r["pool"], r["sgf_sha256"]) for r in self.matches()}), 6)
+        self.assertEqual(len({r["sgf_sha256"] for r in self.matches()}), 6)
         self.assertTrue(all(row["games"] == "4" for row in self.rows()))
 
     def test_crash_after_match_commit_reimport_does_not_rate_again(self):
@@ -569,7 +613,7 @@ class RatingsTests(helpers.LoopHarness):
             self.assertIsNone(info["result"])
             self.assertEqual(info["policy_visit_totals"], [1, None] if index == 0 else [None, 1])
             self.assertEqual(info["root_comment"]["evaluation"], settings["arena_sha256"])
-        ratings.ingest(self.store, settings, paths)
+        ratings.ingest(self.store, settings, paths, checkpoints=[self.source])
         network = next(r for r in self.rows() if r["network_id"] == archive.digest(self.source))
         self.assertEqual(network["accepted"], "0")
         self.assertEqual(

@@ -639,6 +639,9 @@ def train(args):
             log(
                 f"saved {destination}; network={name}; best_validation={best:.6f}; global_step={step}"
             )
+            from .plot_metrics import update
+
+            update(output)
     return output / "latest.pt"
 
 

@@ -1,6 +1,6 @@
 """Static-Glicko ratings in two CSVs; games remain authoritative SGFs.
 
-networks.csv holds model metadata and the current per-pool rating view.
+networks.csv holds scheduled/evaluated metadata and one global rating per network.
 matches.csv is the commit ledger: one row per SGF, with a batch ID, protocol,
 and both players' post-batch ratings. This preserves history without JSON/SQL.
 Under one lock, metadata is saved BEFORE the atomic match-ledger replacement;
@@ -48,8 +48,9 @@ META = [
     "bundle",
 ]
 COUNTS = ["games", "wins", "draws", "losses", "truncated"]
-NETWORK_COLUMNS = META + ["pool", "status", "rating", "deviation", "rating ± RD"] + COUNTS
+NETWORK_COLUMNS = META + ["status", "rating", "deviation", "rating ± RD"] + COUNTS
 LEGACY_NETWORK_COLUMNS = [column for column in NETWORK_COLUMNS if column != "registered_at"]
+POOLED_NETWORK_COLUMNS = META + ["pool", "status", "rating", "deviation", "rating ± RD"] + COUNTS
 SEARCH_TYPES = {
     "simulations": int,
     "cpuct": float,
@@ -77,7 +78,6 @@ SNAPSHOTS = [
 ]
 MATCH_COLUMNS = [
     "event",
-    "pool",
     "recorded_at",
     "batch_number",
     "game_number",
@@ -95,6 +95,7 @@ MATCH_COLUMNS = [
 LEGACY_MATCH_COLUMNS = [
     column for column in MATCH_COLUMNS if column not in {"batch_number", "game_number", "sgf_path"}
 ]
+POOLED_MATCH_COLUMNS = ["event", "pool", *MATCH_COLUMNS[1:]]
 
 
 def canonical(value):
@@ -162,7 +163,12 @@ def _read_csv(path, columns, *, legacy_columns=()):
         return []
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
-        if reader.fieldnames not in (columns, legacy_columns):
+        alternatives = (
+            [legacy_columns]
+            if not legacy_columns or isinstance(legacy_columns[0], str)
+            else legacy_columns
+        )
+        if reader.fieldnames not in (columns, *alternatives):
             raise ValueError(f"incompatible rating CSV header: {path}")
         rows = list(reader)
         if any(set(row) != set(reader.fieldnames) or None in row.values() for row in rows):
@@ -191,15 +197,13 @@ def _registration_time(meta):
 class Tables:
     networks: dict = field(default_factory=dict)
     matches: list = field(default_factory=list)
-    pools: dict = field(default_factory=dict)
     states: dict = field(default_factory=dict)
     seen: dict = field(default_factory=dict)
 
-    def state(self, pool, network):
-        key = (pool, network)
-        if key not in self.states:
-            parent = self.states.get((pool, self.networks[network]["parent"]))
-            self.states[key] = {
+    def state(self, network):
+        if network not in self.states:
+            parent = self.states.get(self.networks[network]["parent"])
+            self.states[network] = {
                 "rating": parent["rating"]
                 if parent and parent["anchored"] and parent["games"]
                 else 100.0,
@@ -207,7 +211,7 @@ class Tables:
                 "anchored": int(network == REFERENCE_ID),
                 **dict.fromkeys(COUNTS, 0),
             }
-        return self.states[key]
+        return self.states[network]
 
     def match_rows(self):
         return sorted(
@@ -222,34 +226,27 @@ class Tables:
             reverse=True,
         )
         for network, meta in networks:
-            for pool in sorted(self.pools) or [""]:
-                state = self.states.get((pool, network))
-                fixed = network == REFERENCE_ID
-                if fixed and state is None:
-                    state = {
-                        "rating": 100.0,
-                        "deviation": 0.0,
-                        "anchored": 1,
-                        **dict.fromkeys(COUNTS, 0),
-                    }
-                rated = state is not None and (fixed or state["anchored"] and state["games"])
-                rating, deviation = (state[k] if rated else "" for k in ["rating", "deviation"])
-                yield {
-                    **meta,
-                    "pool": pool,
-                    "status": "fixed" if fixed else "rated" if rated else "unrated",
-                    "rating": rating,
-                    "deviation": deviation,
-                    "rating ± RD": f"{rating:.1f} ± {deviation:.1f}" if rated else "unrated",
-                    **{k: state[k] if state else 0 for k in COUNTS},
-                }
+            state = self.states.get(network)
+            fixed = network == REFERENCE_ID
+            if fixed and state is None:
+                state = self.state(network)
+            rated = state is not None and (fixed or state["anchored"] and state["games"])
+            rating, deviation = (state[k] if rated else "" for k in ["rating", "deviation"])
+            yield {
+                **meta,
+                "status": "fixed" if fixed else "rated" if rated else "unrated",
+                "rating": rating,
+                "deviation": deviation,
+                "rating ± RD": f"{rating:.1f} ± {deviation:.1f}" if rated else "unrated",
+                **{k: state[k] if state else 0 for k in COUNTS},
+            }
 
 
-def _counts(tables, pool, black, white, result):
+def _counts(tables, black, white, result):
     if black == white:
         return
     for network, color in [(black, "B"), (white, "W")]:
-        state = tables.state(pool, network)
+        state = tables.state(network)
         if not result:
             state["truncated"] += 1
         else:
@@ -327,7 +324,13 @@ def _retain_rows(store, directory, rows, sources):
 def _load(directory):
     tables = Tables()
     rows = _read_csv(
-        directory / "networks.csv", NETWORK_COLUMNS, legacy_columns=LEGACY_NETWORK_COLUMNS
+        directory / "networks.csv",
+        NETWORK_COLUMNS,
+        legacy_columns=[
+            LEGACY_NETWORK_COLUMNS,
+            POOLED_NETWORK_COLUMNS,
+            [c for c in POOLED_NETWORK_COLUMNS if c != "registered_at"],
+        ],
     )
     for row in rows:
         meta = {k: row[k] or "" for k in META}
@@ -336,22 +339,33 @@ def _load(directory):
             raise ValueError("invalid network metadata in networks.csv")
         _registration_time(meta)
         if network in tables.networks and tables.networks[network] != meta:
-            raise ValueError("conflicting network metadata across pools")
+            raise ValueError("conflicting network metadata")
         tables.networks[network] = meta
     if (directory / "networks.csv").exists() and not (directory / "matches.csv").exists():
         raise ValueError(
             "matches.csv missing; restore the match ledger rather than resetting ratings"
         )
     tables.matches = _read_csv(
-        directory / "matches.csv", MATCH_COLUMNS, legacy_columns=LEGACY_MATCH_COLUMNS
+        directory / "matches.csv",
+        MATCH_COLUMNS,
+        legacy_columns=[
+            LEGACY_MATCH_COLUMNS,
+            POOLED_MATCH_COLUMNS,
+            [
+                c
+                for c in POOLED_MATCH_COLUMNS
+                if c not in {"batch_number", "game_number", "sgf_path"}
+            ],
+        ],
     )
+    pooled = any("pool" in row for row in tables.matches)
     legacy = bool(tables.matches) and all(row["batch_number"] is None for row in tables.matches)
     batches, games = {}, Counter()
     for row in tables.matches:
         if legacy:
             if row["game_number"] is not None or row["sgf_path"] is not None:
                 raise ValueError("incomplete match ordering metadata")
-            key = (row["pool"], row["event"])
+            key = row["event"]
             batches.setdefault(key, len(batches) + 1)
             games[key] += 1
             row.update(batch_number=str(batches[key]), game_number=str(games[key]))
@@ -367,25 +381,25 @@ def _load(directory):
     events = {}
     for row in chronological:
         number = int(row["batch_number"])
-        batch = tuple(row[key] for key in ["pool", "event", "recorded_at", "kind", "decision"])
+        batch = tuple(row[key] for key in ["event", "recorded_at", "kind", "decision"])
         if number in batches and batches[number] != batch:
             raise ValueError("conflicting match batch metadata")
-        if batch[:2] in events and events[batch[:2]] != number:
+        if batch[0] in events and events[batch[0]] != number:
             raise ValueError("duplicate match batch identity")
         batches[number] = batch
-        events[batch[:2]] = number
+        events[batch[0]] = number
         games[number] += 1
         if int(row["game_number"]) != games[number]:
             raise ValueError("duplicate or missing game number in match batch")
-        pool, black, white = (row[k] for k in ["pool", "black", "white"])
+        black, white = (row[k] for k in ["black", "white"])
         settings = _protocol_from_row(row)
-        key = (pool, row["sgf_sha256"])
+        key = row["sgf_sha256"]
         if (
-            identity(settings) != pool
+            (pooled and identity(settings) != row["pool"])
             or not re.fullmatch(r"[0-9a-f]{64}", row["sgf_sha256"])
             or black not in tables.networks
             or white not in tables.networks
-            or key in tables.seen
+            or (not pooled and key in tables.seen)
             or row["result"]
             and not re.fullmatch(r"0|[BW]\+\d+\.\d", row["result"])
         ):
@@ -394,16 +408,16 @@ def _load(directory):
             row["sgf_path"] = str(Path("games") / _sgf_name(tables, row))
         _check_sgf_path(row)
         tables.seen[key] = row
-        tables.pools[pool] = settings
-        _counts(tables, pool, black, white, row["result"])
-        for color, network in [("black", black), ("white", white)]:
-            _set_rating(
-                tables.state(pool, network),
-                network,
-                float(row[f"{color}_rating_after_batch"]),
-                float(row[f"{color}_deviation_after_batch"]),
-                int(row[f"{color}_anchored_after_batch"]),
-            )
+        if not pooled:
+            _counts(tables, black, white, row["result"])
+            for color, network in [("black", black), ("white", white)]:
+                _set_rating(
+                    tables.state(network),
+                    network,
+                    float(row[f"{color}_rating_after_batch"]),
+                    float(row[f"{color}_deviation_after_batch"]),
+                    int(row[f"{color}_anchored_after_batch"]),
+                )
     if legacy:
         # Publish new links before the ledger replacement; keep all old links so
         # interrupted migrations and older backups still have their evidence.
@@ -414,7 +428,61 @@ def _load(directory):
                 [row],
                 {row["sgf_sha256"]: directory / "games" / f"{row['sgf_sha256']}.sgf"},
             )
+    if pooled:
+        _merge_legacy_ratings(directory, tables, chronological)
     return tables
+
+
+def _merge_legacy_ratings(directory, tables, chronological):
+    """One-time replay of old split ledgers into a single chronological scale."""
+    # Preserve exact source CSVs before replacing either table. Retrying after a
+    # crash is safe: committed matches still select the old or the new format.
+    backup = (
+        directory / "backups" / ("before-global-" + archive.digest(directory / "matches.csv")[:16])
+    )
+    backup.mkdir(parents=True, exist_ok=True)
+    for name in ("networks.csv", "matches.csv"):
+        target = backup / name
+        if not target.exists():
+            target.write_bytes((directory / name).read_bytes())
+            archive.seal_file(target)
+    archive.sync_directory(backup)
+    tables.matches, tables.states, tables.seen = [], {}, {}
+    groups = {}
+    for old in chronological:
+        evidence_path(directory.parent, old)
+        previous = tables.seen.get(old["sgf_sha256"])
+        if previous:
+            if any(previous[k] != old[k] for k in ("black", "white", "result", "board_size")):
+                raise ValueError("conflicting duplicate SGF in legacy ledger")
+            continue
+        row = {key: old[key] for key in MATCH_COLUMNS}
+        tables.seen[row["sgf_sha256"]] = row
+        groups.setdefault(row["batch_number"], []).append(row)
+    for rows in groups.values():
+        _rate(
+            tables,
+            [{**row, "result": row["result"] or None} for row in rows],
+            ROOT / "target/release/rating",
+        )
+        for number, row in enumerate(rows, 1):
+            row["game_number"] = str(number)
+            for color in ("black", "white"):
+                state = tables.state(row[color])
+                row.update(
+                    {
+                        f"{color}_{key}_after_batch": str(state[key])
+                        for key in ("rating", "deviation", "anchored")
+                    }
+                )
+            tables.matches.append(row)
+    # Historical archive publication registered every intermediate checkpoint.
+    # Only evaluated networks (including truncations) and approved ones belong
+    # in the registry. Future evaluations explicitly register their candidates.
+    used = {row[color] for row in tables.matches for color in ("black", "white")}
+    tables.networks = {
+        key: meta for key, meta in tables.networks.items() if key in used or meta["accepted"] == "1"
+    }
 
 
 @contextmanager
@@ -535,13 +603,13 @@ def _inspect(path, settings, names, feature_binary):
     }
 
 
-def _rate(tables, pool, records, rating_binary):
+def _rate(tables, records, rating_binary):
     participants = sorted({r[k] for r in records for k in ["black", "white"]})
-    states = {network: tables.state(pool, network) for network in participants}
+    states = {network: tables.state(network) for network in participants}
     scored, anchored = [], set()
     for record in records:
         black, white, result = (record[k] for k in ["black", "white", "result"])
-        _counts(tables, pool, black, white, result)
+        _counts(tables, black, white, result)
         if black == white or result is None:
             continue
         score = 0.5 if result == "0" else float(result.startswith("B+"))
@@ -597,7 +665,6 @@ def ingest(
         raise ValueError("rating protocol is not in canonical CSV form")
     if archive.digest(rating_binary) != settings["rating_sha256"]:
         raise ValueError("rating executable changed from the frozen protocol")
-    pool = identity(settings)
     with transaction(store) as (tables, directory):
         for checkpoint in checkpoints:
             _register(tables, checkpoint)
@@ -615,28 +682,26 @@ def ingest(
         records = {
             r["sha256"]: r for r in (_inspect(p, settings, names, feature_binary) for p in paths)
         }
-        event = identity({"pool": pool, "games": sorted(records)})
+        event = identity({"games": sorted(records)})
         for record in records.values():
-            previous = tables.seen.get((pool, record["sha256"]))
+            previous = tables.seen.get(record["sha256"])
             if previous and any(
                 previous[k] != (str(record[k]) if record[k] is not None else "")
                 for k in ["black", "white", "result", "board_size"]
             ):
                 raise ValueError("match ledger disagrees with its authoritative SGF")
-        existing = [tables.seen[(pool, sha)] for sha in records if (pool, sha) in tables.seen]
+        existing = [tables.seen[sha] for sha in records if sha in tables.seen]
         if existing:
             _retain_rows(store, directory, existing, {sha: r["path"] for sha, r in records.items()})
-        new = [r for sha, r in sorted(records.items()) if (pool, sha) not in tables.seen]
+        new = [r for sha, r in sorted(records.items()) if sha not in tables.seen]
         if new:
-            tables.pools[pool] = settings
-            _rate(tables, pool, new, rating_binary)
+            _rate(tables, new, rating_binary)
             recorded = utc_now().isoformat()
             batch_number = max((int(row["batch_number"]) for row in tables.matches), default=0) + 1
             rows = []
             for game_number, record in enumerate(new, 1):
                 row = {
                     "event": event,
-                    "pool": pool,
                     "recorded_at": recorded,
                     "batch_number": str(batch_number),
                     "game_number": str(game_number),
@@ -650,7 +715,7 @@ def ingest(
                     **_protocol_columns(settings),
                 }
                 for color in ["black", "white"]:
-                    state = tables.state(pool, record[color])
+                    state = tables.state(record[color])
                     row.update(
                         {
                             f"{color}_{key}_after_batch": state[key]
@@ -661,7 +726,12 @@ def ingest(
                 rows.append(row)
             _retain_rows(store, directory, rows, {r["sha256"]: r["path"] for r in new})
             tables.matches.extend(rows)
-        return {"pool": pool, "event": event, "new_games": len(new)}
+        result = {"event": event, "new_games": len(new)}
+    if new:
+        from .plot_ratings import update
+
+        update(store)
+    return result
 
 
 def refresh(store):
@@ -688,7 +758,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-store", type=Path, default=ROOT / "models")
     parser.add_argument("--ingest", nargs="+", type=Path, help="manual arena SGFs/directories")
-    parser.add_argument("--pool", help="filter by full pool ID; required for --ingest")
+    parser.add_argument(
+        "--protocol-from",
+        metavar="SGF_SHA256",
+        help="reuse evaluation settings from this match for --ingest (default: latest match)",
+    )
     parser.add_argument("--checkpoints", nargs="*", type=Path, default=[])
     parser.add_argument("--rating-binary", type=Path, default=ROOT / "target/release/rating")
     parser.add_argument("--feature-binary", type=Path)
@@ -703,17 +777,20 @@ def main(argv=None):
         parser.error("--accepted-only applies only to the network view")
     if args.sgf and (args.ingest or not re.fullmatch(r"[0-9a-f]{64}", args.sgf)):
         parser.error("--sgf requires a full SGF hash and cannot be combined with --ingest")
-    if args.ingest and not args.pool:
-        parser.error("--ingest requires --pool")
     if not (args.model_store / "STORE.pt").is_file():
         print("No durable model store yet.")
         return
     refresh(args.model_store)
     if args.ingest:
         with transaction(args.model_store) as (tables, _):
-            if args.pool not in tables.pools:
-                raise ValueError("unknown rating pool")
-            settings = tables.pools[args.pool]
+            rows = [
+                row
+                for row in tables.match_rows()
+                if not args.protocol_from or row["sgf_sha256"] == args.protocol_from
+            ]
+            if not rows:
+                raise ValueError("no committed match to supply evaluation settings")
+            settings = _protocol_from_row(rows[0])
         paths = [
             p
             for source in args.ingest
@@ -730,14 +807,8 @@ def main(argv=None):
             )
         )
     with transaction(args.model_store) as (tables, _):
-        if args.pool and args.pool not in tables.pools:
-            raise ValueError("unknown rating pool")
         if args.sgf:
-            rows = [
-                row
-                for row in tables.match_rows()
-                if row["sgf_sha256"] == args.sgf and (not args.pool or row["pool"] == args.pool)
-            ]
+            rows = [row for row in tables.match_rows() if row["sgf_sha256"] == args.sgf]
             if not rows:
                 raise ValueError("SGF hash is not in the match ledger")
             output = "".join(
@@ -752,8 +823,7 @@ def main(argv=None):
             writer.writerows(
                 row
                 for row in (tables.match_rows() if args.matches else tables.network_rows())
-                if (not args.pool or row["pool"] == args.pool)
-                and (not args.accepted_only or row["accepted"] == "1")
+                if not args.accepted_only or row["accepted"] == "1"
             )
             output = output.getvalue()
     print(output, end="")

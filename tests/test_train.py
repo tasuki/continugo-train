@@ -257,6 +257,21 @@ class OfflineTrainerTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             return train(parse_args([*arguments, *extra]))
 
+    def test_plots_update_after_each_durable_saved_epoch(self):
+        output = self.root / "live"
+        observed = []
+
+        def update(run):
+            self.assertEqual(run, output)
+            count = len(observed) + 1
+            self.assertTrue((run / f"epoch-{count:04d}.pt").is_file())
+            self.assertIn(f"epoch-{count:04d}.pt; network=", (run / "training.log").read_text())
+            observed.append(count)
+
+        with patch("continugo_train.plot_metrics.update", update):
+            self.run_training(output, epochs=2)
+        self.assertEqual(observed, [1, 2])
+
     def test_checkpoints_resume_cpu_training_exactly_and_keep_optimizer_and_split(self):
         continuous = self.run_training(self.root / "continuous", epochs=2)
         resumed = self.run_training(self.root / "resumed")

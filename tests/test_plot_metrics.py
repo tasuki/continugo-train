@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -12,6 +13,7 @@ from continugo_train.plot_metrics import (
     plot,
     plot_draws,
     read_epochs,
+    update,
 )
 
 
@@ -111,6 +113,26 @@ class PlotMetricsTests(unittest.TestCase):
             ],
         )
         self.assertEqual(collect_draws(loop), rates)
+
+    def test_auto_update_targets_campaign_from_epoch_directory(self):
+        loop = self.draw_state()
+        epoch_dir = loop / "iteration-0001/train-attempt-0001"
+        self.log("loop/iteration-0001/train-attempt-0001/training.log", epoch(1))
+        with (
+            patch("continugo_train.plot_metrics.plot") as losses,
+            patch("continugo_train.plot_metrics.plot_draws") as draws,
+        ):
+            update(epoch_dir)
+        self.assertEqual(losses.call_args.args[1], self.root / "metrics.png")
+        self.assertEqual(draws.call_args.args[1], self.root / "draws.png")
+
+    def test_auto_draw_update_before_first_saved_epoch_and_plot_failure(self):
+        loop = self.draw_state()
+        with patch("continugo_train.plot_metrics.plot_draws") as draws:
+            update(loop)
+        draws.assert_called_once()
+        with patch("continugo_train.plot_metrics.plot_draws", side_effect=RuntimeError("failed")):
+            update(loop)  # Diagnostics cannot stop self-play/training.
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "install plotting extra")
     def test_draw_plot_and_cli_generate_both_without_changing_loop_state(self):

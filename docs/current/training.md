@@ -310,8 +310,12 @@ runs, not while a job is loading it.
 
 ## Loss plots
 
-Install the optional plotting dependency, then plot an offline job, a loop output,
-or a campaign containing `initial-training/` and `loop/`:
+Metrics refresh automatically after every saved training epoch and completed
+self-play batch. Loop trainers update their enclosing campaign's `metrics.png`
+and `draws.png`; standalone trainers update their own output directory. Images
+are atomically replaced; plotting failures warn without stopping training.
+`mise run setup` includes plotting dependencies. To install them separately or
+manually plot an offline job, loop output, or campaign:
 
 ```sh
 .venv/bin/python -m pip install -e '.[plot]'
@@ -334,7 +338,7 @@ cross-entropy and value MSE for epochs with a logged checkpoint save. Live parti
 epochs are omitted. Resumed logs and numbered training attempts are combined by
 local epoch, with the latest saved occurrence taking precedence, rather than
 counting repeated epochs twice. It does not load checkpoints or alter training.
-Rerun to refresh the plot during a campaign.
+The command can also manually regenerate the automatically maintained plots.
 
 Epochs are stitched across jobs, with round labels/boundaries and separate line
 segments at replay changes. Missing/unlogged epochs or jobs cannot be recovered

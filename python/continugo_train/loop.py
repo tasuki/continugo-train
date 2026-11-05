@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from . import archive, gate, promote, ratings
+from . import archive, gate, plot_metrics, promote, ratings
 from .data import inspect_corpus, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
@@ -935,6 +935,10 @@ class LoopRunner:
             }
             self.save()
         initial = self.state["initial_reference"]
+        if self.config.reference_games:
+            ratings.register_checkpoint(
+                self.config.model_store, self.check(self.state["initial_actor_checkpoint"])
+            )
         gate.evaluate(self, initial, reference=True)
         self.rate_evaluation(initial, "reference", [self.state["initial_actor_checkpoint"]])
         stop = min(
@@ -970,8 +974,10 @@ class LoopRunner:
                 continue
             parent = load_training(self.check(iteration["parent_checkpoint"]))
             self.selfplay(iteration)
+            plot_metrics.update(self.root)
             options = self.replay(iteration, parent)
             self.training(iteration, parent, options)
+            plot_metrics.update(self.root)
             if iteration["training_archive"] is None:
                 iteration["training_archive"] = self.recovery(
                     iteration["checkpoint"], "training", iteration=iteration
@@ -988,6 +994,14 @@ class LoopRunner:
                 )
                 self.save()
             if number % self.config.evaluation_interval == 0:
+                if self.config.gate_games or self.config.reference_games:
+                    ratings.register_checkpoint(
+                        self.config.model_store, self.check(iteration["checkpoint"])
+                    )
+                if self.config.gate_games:
+                    ratings.register_checkpoint(
+                        self.config.model_store, self.check(iteration["parent_actor_checkpoint"])
+                    )
                 report = gate.evaluate(self, iteration)
                 self.rate_evaluation(
                     iteration,
@@ -1225,6 +1239,11 @@ def run_loop(args):
         config = LoopConfig(**state["config"])
         config.validate()
         store = Path(config.model_store).resolve()
+        shared = (ROOT / "models").resolve()
+        if store != shared and store.is_relative_to(shared):
+            raise ValueError(
+                "all campaigns share models/; per-training model-store subdirectories are not supported"
+            )
         if (
             store.is_relative_to(root)
             or root.is_relative_to(store)

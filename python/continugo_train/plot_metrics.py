@@ -6,8 +6,10 @@ Install the optional plotting dependency with: pip install -e '.[plot]'
 
 import argparse
 import math
+import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -154,10 +156,17 @@ def pyplot(output):
 
 def save_figure(plt, figure, output):
     output = Path(output)
+    temporary = None
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
-        figure.savefig(output, dpi=150)
+        fd, name = tempfile.mkstemp(prefix=".plot-", suffix=output.suffix, dir=output.parent)
+        os.close(fd)
+        temporary = Path(name)
+        figure.savefig(temporary, dpi=150)
+        os.replace(temporary, output)
     finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
         plt.close(figure)
 
 
@@ -259,6 +268,32 @@ def plot_draws(rates, output, title):
     )
     figure.tight_layout(rect=(0, 0.05, 1, 1))
     save_figure(plt, figure, output)
+
+
+def update(run):
+    """Refresh campaign plots after epochs/batches; plotting cannot stop learning."""
+    run = Path(run).resolve()
+    for parent in (run, *run.parents):
+        if (parent / "loop.pt").is_file():
+            run = parent.parent if parent.name == "loop" else parent
+            break
+        if (parent / "loop" / "loop.pt").is_file():
+            run = parent
+            break
+    try:
+        try:
+            jobs = collect_jobs(run)
+        except ValueError as error:
+            if "no saved-epoch" not in str(error):
+                raise
+            jobs = []
+        if jobs:
+            plot(jobs, run / "metrics.png", f"Training losses — {run.name}")
+        rates = collect_draws(run)
+        if rates:
+            plot_draws(rates, run / "draws.png", f"Self-play draws — {run.name}")
+    except Exception as error:  # noqa: BLE001 — diagnostics must never abort training
+        print(f"WARNING: metrics plots not updated: {error}", file=sys.stderr)
 
 
 def main(argv=None):

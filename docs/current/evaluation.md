@@ -109,12 +109,13 @@ otherwise 100. That prior is **not** a measured strength: untested networks and
 networks without completed evidence connecting them to the reference show
 **unrated**, with blank rating/RD cells. RD is not a 95% confidence interval.
 
-Pools separate different simulation/search settings, board mixes, move caps, and
-native evaluation/rating executable fingerprints. The arena stamps its fingerprint
-in each SGF root comment. A running loop freezes these fingerprints and refuses
-to resume after an executable change; fork a new loop instead. Equal simulations
-are not equal wall-clock compute across architectures. A rating is relative to
-this reference/protocol, not a human rank or an external strength scale.
+There is **one shared rating table**, with one rating per checkpoint and one fixed
+random reference. Training runs, board mixes, search budgets and executable
+versions do not create separate leaderboards. Each match retains its complete
+evaluation settings and arena fingerprint for audit. A running loop still freezes
+its executables and refuses to resume after a binary change; fork a new loop in
+that case, using the same model store. Ratings summarize the recorded playing
+conditions, not a human rank; equal simulations are not equal compute.
 
 ## Ratings storage
 
@@ -122,11 +123,16 @@ Inside the durable model store:
 
 ```text
 ratings/
-  networks.csv   all archived/evaluated networks, one row per network/pool
+  networks.csv   scheduled/evaluated networks, exactly one row per network
   matches.csv    one row per processed SGF, batch history and post-batch ratings
   games/*.sgf    dated, readable immutable evidence (store-owned hardlinks)
   .lock
 ```
+
+Only networks evaluated or explicitly scheduled for evaluation enter the registry.
+Recovery-only intermediate checkpoints are not registered just because they were
+archived. Interrupted/truncated evaluations retain their entries for later rating.
+Approved publications are also retained; recovery backups themselves are not deleted.
 
 `networks.csv` contains readable names, full IDs, first-registration timestamps
 (`registered_at`, UTC), parent IDs, progress counters,
@@ -142,7 +148,7 @@ experimental verdicts; migration preserves their historical values.
 unknown), board size, protocol columns, audit dates, batch IDs and each player's
 **post-batch** rating/RD/anchor state. Snapshots repeat across a batch's rows, not
 per-game updates. It indexes evidence/history, not moves or training targets:
-SGFs remain the game records. One `(pool, SGF hash)` is counted at most once, even
+SGFs remain the game records. Each SGF hash is counted at most once globally, even
 across overlapping imports or a crash after the CSV commit but before supervisor
 acknowledgement.
 
@@ -165,17 +171,25 @@ network names with short checkpoint IDs (or the unmistakable reference name).
 Names are for browsing; full player IDs and SGF hashes in the ledger remain the
 identities. The full SGF hash prevents filename collisions even when readable
 labels, dates, or short hashes coincide. Distinct links for the same SGF share a
-single store-owned blob/inode, including across rating pools.
+single store-owned blob/inode.
 
 A writer lock serializes updates. CSVs are fsynced and atomically replaced, not
 appended in place. Metadata is saved before committing match rows. On restart or
 refresh, current numeric ratings/counts are rebuilt from **committed match rows**,
 repairing an ahead/behind network-table cache without replaying the math or
 inflating uncertainty. Network rows show newest registrations first, with full
-network ID ascending to break timestamp ties and pool ID ascending within each
-network. The fixed reference stays last, identified by its full name and `fixed`
+network ID ascending to break timestamp ties. The fixed reference stays last,
+identified by its full name and `fixed`
 status. Registration timestamps never change on re-registration, acceptance, or
 refresh.
+
+Old split rating tables migrate automatically on refresh: original CSVs are backed
+up under `ratings/backups/before-global-*/`, SGF hashes are verified and deduplicated,
+and outcomes are replayed in commit order to produce global batch snapshots.
+Unplayed intermediate registry entries are removed; archived recovery packs remain.
+This one-time replay changes ratings that previously had separate histories.
+Subsequent refreshes restore snapshots without replaying rating math. Do not run
+old and new software concurrently against a store during migration.
 
 Existing network CSVs without `registered_at` migrate automatically on the next
 successful refresh/update (`mise run ratings` also refreshes). Their unknown dates
@@ -202,15 +216,29 @@ Do not edit rating snapshots or processed hashes by hand.
 ```sh
 mise run ratings
 mise run ratings -- --accepted-only
+# Read-only plot; default output models/ratings.png:
+mise run plot-ratings
+mise run plot-ratings -- --output runs/ratings.svg --labels
+# X is cumulative unique training games from ancestral checkpoint split histories,
+# excluding validation and deduplicating replay/epochs. It is NOT arena games.
+# The main x axis is logarithmic from 100; a separate zero tick contains the
+# fully visible random-bot star. Error bars are ±RD, not 95% confidence.
+# Missing checkpoints/history are errors, never replaced by evaluation counts.
 mise run ratings -- --matches
-mise run ratings -- --matches --pool FULL_POOL_ID
-# Resolve and hash-verify exact evidence; optional --pool disambiguates pools:
+# Resolve and hash-verify exact evidence:
 mise run ratings -- --sgf FULL_SGF_SHA
-# Additional arena SGFs must match the chosen existing pool's full protocol:
-mise run ratings -- --pool FULL_POOL_ID --ingest runs/arena-001 --checkpoints PATH/TO/CANDIDATE/checkpoint.pt
+# Ingest using the latest committed match's evaluation settings, or explicitly
+# select settings with --protocol-from EXISTING_SGF_SHA:
+mise run ratings -- --ingest runs/arena-001 --checkpoints PATH/TO/CANDIDATE/checkpoint.pt
 # Standalone neural-vs-reference matches (ingest separately to update the table):
 mise run arena -- --candidate PATH/TO/NETWORK --reference-random --games 10 --simulations 32 --max-moves 2048 --output runs/reference-001
 ```
+
+Every newly committed arena batch automatically refreshes `models/ratings.png`.
+Updates happen after the CSV commit and use atomic image replacement. A missing
+plot dependency, checkpoint history, or rendering failure logs a warning without
+rolling back results or stopping training. `mise run setup` includes plotting
+dependencies; manual environments can install `.[plot]`.
 
 The stateless Rust adapter uses JSON **only as stdin/stdout IPC**, not persistent
 rating storage or SGF sidecars. Python validates/replays SGFs through Rust, pins

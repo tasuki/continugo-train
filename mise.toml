@@ -9,7 +9,7 @@ run = [
   "cargo build --locked --release --bin features",
   "python -m venv .venv",
   '.venv/bin/python -m pip install torch==2.7.1 --index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu118}"',
-  ".venv/bin/python -m pip install -e '.[dev,inference]'",
+  ".venv/bin/python -m pip install -e '.[dev,inference,plot]'",
 ]
 
 [tasks.test]
@@ -57,6 +57,10 @@ run = ".venv/bin/python -m continugo_train.loop"
 [tasks.plot-metrics]
 description = "Plot saved training/validation losses from a campaign, loop or offline job"
 run = ".venv/bin/python -m continugo_train.plot_metrics"
+
+[tasks.plot-ratings]
+description = "Plot global ratings against cumulative training games (log x from 100, random at 0)"
+run = ".venv/bin/python -m continugo_train.plot_ratings"
 
 [tasks.loop-status]
 description = "Read-only training, experimental actor, accepted identity and live loop progress"

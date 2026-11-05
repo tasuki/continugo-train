@@ -1,6 +1,10 @@
 # Model storage, approval, and recovery
 
-Default store: `models/`, outside disposable `runs/`. Model roles and actor
+One shared store: `models/`, outside disposable `runs/`. Do not create a store
+subdirectory for each training campaign; all campaigns share the same registry,
+ratings and content-addressed recovery bundles. Run-specific files belong under
+`runs/`. Only scheduled/evaluated networks enter the rating registry; intermediate
+recovery backups are separate from registry entries. Model roles and actor
 selection are defined in [loop](loop.md#three-independent-roles-v5).
 
 ## Layout and protection
@@ -16,7 +20,8 @@ models/
   accepted/<UTC-dated-name>/      experimental contents + embedded approval
   approvals/                     immutable intents and publication receipts
   sgf-blobs/YYYY-MM-DD/<SHA>.sgf   deduplicated store-owned SGFs
-  ratings/                       CSV ledger and match evidence; see evaluation
+  ratings/                       global CSV ledger and match evidence; see evaluation
+  ratings.png                    automatically updated global strength plot
 ```
 
 Bundles contain `checkpoint.pt`, `replay/<raw-SHA>.sgf`, `recovery.pt`, and a

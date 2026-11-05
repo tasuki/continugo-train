@@ -185,7 +185,7 @@ def _publish(
                 "LATEST-EXPERIMENTAL tracks the selected self-play actor independently of training. "
                 "Accepted publication requires a hash-pinned explicit user approval; "
                 "approvals/ retains immutable approval intents and publication receipts.\n\n"
-                "ratings/networks.csv lists all networks (filter accepted=1); "
+                "ratings/networks.csv lists scheduled/evaluated networks, one global rating per checkpoint (filter accepted=1); "
                 "ratings/matches.csv lists newest batches first, with full SGF hashes, "
                 "stable batch/game numbers, evidence paths, and rating history. "
                 "ratings/games/ retains dated, readable authoritative SGF evidence; "
@@ -413,11 +413,10 @@ def retain_evidence(store, records, destination, *, filenames=None):
 
 def publish(store, kind, checkpoint, **kwargs):
     reference = _publish(store, kind, checkpoint, **kwargs)
-    from .ratings import register_accepted, register_checkpoint
+    from .ratings import register_accepted
 
-    # Release the archive lock before taking the rating-ledger lock.
+    # Recovery backups are not network-registry entries. Evaluation scheduling
+    # registers candidates explicitly; approval also makes a network durable.
     if kind == "accepted":
         register_accepted(store, reference)
-    else:
-        register_checkpoint(store, Path(reference["directory"]) / "checkpoint.pt")
     return reference

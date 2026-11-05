@@ -28,7 +28,9 @@ the todo or this README.
 All generated artifacts stay here: timestamped experiments in **`runs/`**, durable
 accepted models in **`models/accepted/`**, training recovery packs in
 **`models/training/`**, and unaccepted actors in **`models/experimental/`**. Names start with UTC `YYYYMMDD-HHMMSS`; counters handle
-collisions. ONNX alone cannot resume training. `models/` is Git-ignored: keep an
+collisions. All campaigns share this single store and global ratings; do not
+nest separate stores by training run. Only scheduled/evaluated networks enter
+the rating registry. ONNX alone cannot resume training. `models/` is Git-ignored: keep an
 off-machine backup and exclude it from destructive Git-clean commands.
 
 ## Setup
@@ -51,6 +53,8 @@ mise run pipeline-profile -- --help
 mise run train -- --help
 mise run loop -- --help
 mise run loop-status -- --help
+mise run plot-ratings
+mise run plot-metrics -- --run runs/YOUR_CAMPAIGN
 mise run promote -- --help
 mise run arena -- --help
 ```

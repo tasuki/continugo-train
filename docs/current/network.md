@@ -87,7 +87,8 @@ validated SGF visit/outcome records remain usable. Feature schema 4 is unchanged
 The pass-preserving normalization correction changes native execution only, not
 weights, features, graph outputs, or the training objective. Existing `cells-v1`
 checkpoints/graphs remain compatible; changed native fingerprints require a new
-loop/protocol pool rather than replacing a running loop's frozen binaries.
+loop rather than replacing a running loop's frozen binaries. The new loop uses
+the same shared model store and global rating table.
 
 ```sh
 mise run model-bench -- --device cuda
