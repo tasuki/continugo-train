@@ -96,3 +96,45 @@ cleanup. Interrupt its PID with SIGINT; never remove a live lock. Review value
 prediction spread, held-out error by stage, natural completion and reference
 strength before another large extension. Actual reference/round results should
 be appended as they arrive.
+
+## User-authorized extension to 60 local iterations
+
+On 2026-11-05, after all ten initial leaky-value iterations completed, the user
+requested continuing **the same run directory to 60 total local iterations**:
+50 additional rounds, reaching global lineage round 120. No reset or new campaign.
+
+Resumed `runs/20261105-092434-leaky-value/run.py --iterations 60`; the saved launcher
+now defaults to 60 too. Verified that local iteration 11 uses the final round-10
+checkpoint `79f776a011e48792c45e486a253d3cfda3458afab2fac5565a2f131209411fd2`,
+with all ten completed iterations and the training/actor references retained.
+A pre-resume control snapshot and receipt live under the run's
+`continuation-20261105-135442/` directory.
+
+All frozen settings remain unchanged: **32 simulations**, 50 games/round, four
+training epochs, optimizer keep, existing replay/holdouts, 12 concurrent games,
+and reference evaluation every ten rounds. No eye feature/filter, temperature
+schedule, 128-simulation override, or automatic acceptance was introduced.
+
+## Requested round-30 boundary stop
+
+Later on 2026-11-05, the user requested pausing after **local round 30's scheduled
+reference match and rating update**, without lowering the total target of 60.
+The saved launcher now forwards `--stop-after-iteration` (default 30) to the
+existing loop boundary mechanism. Evaluation, rating ingestion, archives and actor
+commit all happen before the round is marked complete and the loop exits.
+
+To avoid discarding ongoing round-29 games, the watcher under the campaign's
+`boundary-stop-20261105-182350/` waits for round 29 to commit, signals the old
+launcher cleanly, waits for both inherited locks to release, and resumes with
+`--iterations 60 --stop-after-iteration 30`. It checks process identity and saves
+control snapshots; no live control file or binary is patched. The existing
+boundary-stop/resume regression test passes.
+
+Resume commands, only with no live launcher holding the campaign lock:
+
+```sh
+# Preserve the requested pause after round 30, including rating.
+.venv/bin/python -u runs/20261105-092434-leaky-value/run.py --iterations 60 --stop-after-iteration 30
+# Later, explicitly continue through the original total target.
+.venv/bin/python -u runs/20261105-092434-leaky-value/run.py --iterations 60 --stop-after-iteration 60
+```

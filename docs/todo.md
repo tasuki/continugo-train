@@ -16,6 +16,22 @@ Do not block learning on speculative optimization.
   Keep guidance disabled for normal neural self-play/evaluation. Expand tactical
   test positions based on observed failures.
 
+## Next learning experiment: score and ownership heads
+
+- [ ] Investigate KataGo-style auxiliary heads predicting **final score margin**
+  and **final ownership**, alongside the existing win/loss head. Use authoritative
+  completed-game labels, not current territory as an intermediate reward.
+- [ ] Test predominantly win/loss search utility with a small, bounded score
+  contribution, normalized across board sizes, to distinguish losing narrowly
+  from destructive losing continuations. Keep terminal utility and MCTS backups
+  consistent; use ownership primarily as auxiliary supervision. Check for unwanted
+  trades of winning chances for score.
+- [ ] Warm-start a separate experiment from a saved checkpoint; retain the current
+  leaky-value campaign unchanged as the baseline. Measure passing, eye preservation,
+  score/value calibration, unassisted playing strength, and wall-clock cost—not
+  just auxiliary losses. More search and visit-sampling behavior remain separate
+  possible causes of eye filling; extra heads are not assumed to solve them.
+
 ## Later, only if a bottleneck appears
 
 - [ ] Tune the existing search cache: test whether retaining more already-computed
