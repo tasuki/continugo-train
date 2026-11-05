@@ -14,6 +14,11 @@ Experimental actors may advance independently, but accepted networks require
 and convincing strength against the reference. The [loop](docs/current/loop.md)
 never promotes automatically.
 
+New campaigns automatically use [adaptive rated matchmaking](docs/current/loop.md#automatic-adaptive-rating-precision)
+for scheduled candidates, targeting RD ≤ 25 plus substantial paired-color evidence,
+without gating the latest actor. `--adaptive-max-games 0` explicitly opts out for
+smoke tests; existing saved loops retain their frozen settings.
+
 ## Next work
 
 [Open work](docs/todo.md) lists only pending tasks toward the small-board learning
@@ -57,6 +62,7 @@ mise run plot-ratings
 mise run plot-metrics -- --run runs/YOUR_CAMPAIGN
 mise run promote -- --help
 mise run arena -- --help
+mise run rate-models -- --help
 ```
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.

@@ -82,6 +82,93 @@ ordinals put the candidate on black. Each pair advances the seed once.
 The standalone binary writes records and raw outcome totals; it does not move
 models or update any accepted pointer by itself.
 
+## Adaptive rated matching
+
+Random is a calibration baseline, not a sufficient opponent pool after models
+consistently beat it. **Prefer adaptive near-strength matching**, not a fixed
+round-robin, when the purpose is rating precision:
+
+```sh
+mise run rate-models -- --loop PATH/TO/LOOP --latest 3 --target-rd 25 --min-pairs 60 --min-opponents 2 --min-opponent-pairs 10 --batch-games 4 --max-games 600 --seed 9400000 --output runs/adaptive-ratings
+mise run rate-models -- --output runs/adaptive-ratings --resume
+```
+
+The newest three **registered** neural checkpoints are the precision targets;
+`--targets FULL_CHECKPOINT_ID...` instead pins exact targets independently of
+registration order. All registered neural checkpoints with compatible recovery bundles form the
+opponent pool (or restrict it with `--pool-latest N`). No random opponents are
+scheduled. After every four games (two same-seed color pairs), ingest outcomes
+and reread current ratings. Choose the matchup with greatest expected reduction
+in unfinished targets' rating variance, using Glicko's per-game Fisher information.
+Near-equal strengths are most informative; opponent uncertainty and observed
+truncation rates reduce the expected information. Until opponent diversity is
+covered, substantially discount already-covered matchups. Selection, pre-match
+ratings and expected score are saved **before** launching the batch. Unexpected
+results therefore change subsequent opponents, not a precomputed bracket.
+
+Each target must meet **all** of:
+
+- Global Glicko RD ≤ 25, anchored to the reference through actual evidence.
+- At least **60 complete, distinct color-swapped seed pairs** (120 games) of
+  compatible head-to-head evidence; prior ledger evidence counts too.
+- At least **two neural opponents with ten complete pairs each**.
+
+This is a substantially stricter evidence/precision policy than twenty games or
+RD ≈ 55–76. **RD is model-based uncertainty, not a guaranteed 95% confidence
+interval**; paired-game correlation, model misspecification and adaptive sampling
+limit such interpretations. Close ratings may remain statistically indistinguishable;
+meeting the policy does not force a ranking or imply a particular win probability.
+The hard cap is **600 additional games**, counting truncations against the budget.
+A budget stop explicitly says the target was **not met**. Truncations, incomplete
+pairs, repeated seeds and repeated colors cannot satisfy the paired-evidence gate.
+Paired evidence is filtered to the source loop's exact evaluation protocol.
+
+`progress.json` records each target's rating/RD, complete pair count, opponent
+coverage and stop reason. Graph/checkpoint snapshots, source-loop settings,
+policy and fresh seed stream are frozen in the evaluation control file. Resume
+finishes its pending batch before choosing another opponent and does not retrain,
+republish models, change actors, or double-count committed games. Training stays
+separate. The loop's ordinary 20-game parent match remains a progress diagnostic,
+not a claim of meeting this stronger precision policy. New campaigns enable the
+loop's [automatic adaptive phase](loop.md#automatic-adaptive-rating-precision) by
+default, applying the stronger policy to scheduled candidates without manual runs.
+Older saved loops retain their frozen settings and can be explicitly upgraded.
+
+## Rated round-robin
+
+An explicit fixed round-robin is still available for deliberate all-pairs studies;
+it is **not** the precision-driven default:
+
+```sh
+mise run round-robin -- --loop PATH/TO/LOOP --latest 4 --games 20 --seed 9200000 --output runs/rated-comparison
+# Interrupted evaluation resumes missing games, without retraining or double rating:
+mise run round-robin -- --output runs/rated-comparison --resume
+```
+
+The source loop is read-only and supplies frozen binaries, board mix, search
+budget, device and neural move cap. `--latest 4` selects the four newest registered
+neural checkpoints (not the four highest ratings); `--bundles PATH...` instead
+chooses explicit experimental/accepted recovery bundles. Each unordered pair gets
+20 games, so four models schedule six matchups / 120 games. Both colors share each
+pair's seed. Use a fresh seed for a genuinely new comparison.
+
+Graphs/checkpoints are verified and snapshotted into the evaluation directory.
+The existing arena's SGF validation, partial-game recovery and inherited process
+lock are reused. Each completed matchup is ingested into the shared ratings ledger
+and refreshes its plot; rerunning `--resume` does not duplicate evidence. Truncations
+remain unknown outcomes. Neither training state, actor pointers nor accepted
+publication is changed. Keep evaluation evidence out of training replay.
+
+To retire an interrupted round-robin while preserving finished games without
+launching the rest of its schedule:
+
+```sh
+mise run round-robin -- --output runs/rated-comparison --resume --ingest-only
+```
+
+Stop its supervisor/child cleanly first. This validates/adopts partial-attempt
+SGFs and ingests only those games; the remaining schedule is not played.
+
 ## Baseline-anchored static Glicko
 
 The reference is the existing **direct random-but-not-eye-filling bot**, versioned

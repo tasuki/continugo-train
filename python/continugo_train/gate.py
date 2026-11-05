@@ -58,7 +58,7 @@ def summarize(records, threshold):
     }
 
 
-def evaluate(runner, iteration, *, reference=False):
+def evaluate(runner, iteration, *, reference=False, adopt_only=False):
     config = runner.config
     key = "reference" if reference else "gate"
     count = config.reference_games if reference else config.gate_games
@@ -161,6 +161,8 @@ def evaluate(runner, iteration, *, reference=False):
             runner.save()
 
     adopt()
+    if adopt_only:
+        return None
     missing = [i for i, record in enumerate(gate["games"]) if record is None]
     groups = []
     for index in missing:

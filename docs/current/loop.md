@@ -27,6 +27,11 @@ zero gate games disables that actor guard. Neither policy publishes acceptance.
 An actor checkpoint might already have been approved separately; its actor role
 itself neither grants nor removes acceptance.
 
+**Disabling actor gating does not require disabling evaluation.** Keep
+`--actor-policy latest --gate-games 20` to measure head-to-head progress and update
+ratings while always advancing the actor. Random-only results cannot distinguish
+checkpoints once they consistently beat that baseline.
+
 ## Start, resume, inspect
 
 Requires a full training checkpoint, inference dependencies and the CPU/CUDA setup
@@ -35,7 +40,7 @@ requires POSIX process groups and `flock`.
 
 ```sh
 # Small bounded example; zero matches does NOT accept anything:
-mise run loop -- --checkpoint PATH/TO/checkpoint.pt --bootstrap-data PATH/TO/replay --iterations 2 --games-per-iteration 10 --train-epochs 1 --steps-per-epoch 20 --gate-games 0 --reference-games 0
+mise run loop -- --checkpoint PATH/TO/checkpoint.pt --bootstrap-data PATH/TO/replay --iterations 2 --games-per-iteration 10 --train-epochs 1 --steps-per-epoch 20 --gate-games 0 --reference-games 0 --adaptive-max-games 0
 # Use the dated path printed by the first command:
 mise run loop -- --output runs/YYYYMMDD-HHMMSS-loop --resume
 # Increase the TOTAL iteration target, not an additional count:
@@ -76,6 +81,22 @@ specify `--actor-checkpoint` if the previous actor differs from the latest
 training checkpoint. `--incumbent-checkpoint` remains an alias for that flag, but
 no longer means “accept this checkpoint.” Historical accepted bundles stay intact.
 
+A narrow resume exception enables previously disabled head-to-head evaluation:
+
+```sh
+# Existing latest-actor loop with reference evaluation; stopped after round N:
+# Keep it paused while saving the new future evaluation setting:
+.venv/bin/python -m continugo_train.loop --output PATH/TO/LOOP --resume --enable-head-to-head 20 --stop-after-iteration N
+```
+
+This requires a completed round boundary, `actor_policy=latest`, and unchanged
+binaries/protocol. It enables only the game count, retaining the existing search,
+move cap, evaluation interval and actor policy. It saves `before-head-to-head.pt`
+and an audit entry in `loop.pt`; historical matches/decisions are not rewritten.
+It does not backfill old checkpoints or establish strong rating confidence. For
+that, use [adaptive rated matching](evaluation.md#adaptive-rated-matching) with an
+explicit uncertainty/evidence target and hard game budget.
+
 ## Periodic evaluation, not automatic publication
 
 `--evaluation-interval N` schedules candidate-vs-parent-actor and reference batches
@@ -84,6 +105,52 @@ scheduled candidate, even after a failed actor match. Other rounds record
 `not-evaluated`. Zero `--gate-games` / `--reference-games` disables that match type.
 See [evaluation](evaluation.md) for budgets, verdicts, ratings, and evidence handling.
 Training and actor advancement do not wait for manual promotion review.
+
+### Automatic adaptive rating precision
+
+**New campaigns run adaptive precision evaluation by default** for every scheduled
+candidate, in addition to the ordinary parent/reference diagnostics. Head-to-head
+progress matches alone do not meet this stronger policy. To upgrade an older
+saved loop, enable it explicitly at a completed boundary:
+
+```sh
+# New loops: already enabled; --adaptive-max-games 0 opts out for smoke tests.
+# Existing latest-actor loop, paused after round N: enable it without starting N+1.
+.venv/bin/python -m continugo_train.loop --output PATH/TO/LOOP --resume --enable-adaptive-ratings 600 --stop-after-iteration N
+```
+
+The resume operation requires a completed boundary and unchanged protocol. It
+backs up `before-adaptive-ratings.pt` and audits the setting change in `loop.pt`.
+It does not retroactively evaluate completed rounds or start training. Older v5
+loops preserve their frozen saved settings, including disabled evaluation; they
+are not silently upgraded into expensive extra work. New loops need no opt-in.
+Use `--adaptive-max-games 0` to explicitly disable only this precision phase; a
+smoke run with no evaluation at all must also set gate/reference games to zero.
+
+When enabled, scheduled rounds run ordinary parent/reference diagnostics, archive
+the candidate's inference bundle, then invoke adaptive matchmaking **automatically**
+before committing the round and advancing its actor. The target is the exact
+candidate checkpoint ID, not whichever network was most recently registered.
+Policy is frozen in these loop settings:
+
+- `--adaptive-target-rd 25`, `--adaptive-min-pairs 60` (120 paired-color games).
+- `--adaptive-min-opponents 2`, `--adaptive-min-opponent-pairs 10`.
+- `--adaptive-batch-games 4`, `--adaptive-max-games 600` (additional cap **per scheduled candidate**).
+
+Opponent selection and uncertainty interpretation follow
+[adaptive rated matching](evaluation.md#adaptive-rated-matching). Each batch
+updates the shared ledger and adapts its next opponent. A separate reserved seed
+stream avoids reusing gate/reference/backfill seeds. Native children inherit both
+the training-loop and evaluator locks. An interrupted round resumes its pending
+adaptive batch without retraining, reexporting, replaying games or rerating evidence.
+
+Evidence and `progress.json` live under `iteration-NNNN/adaptive-ratings/`; the
+round's `adaptive_rating` receipt records precision progress and stop reason.
+This evidence remains outside replay and in the durable ratings ledger. A budget
+stop, or too few opponents, explicitly reports an unmet precision target; it does
+**not** reject the latest actor or rewind training. Normal actor policy is unchanged.
+The phase can add hours at a scheduled boundary; `--stop-after-iteration` includes
+this phase too. Ordinary resume automatically retains the enabled policy.
 
 ## Training and replay
 

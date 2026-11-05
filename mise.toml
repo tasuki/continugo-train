@@ -91,6 +91,14 @@ description = "Refresh/migrate ratings; view networks, --matches, or --sgf HASH;
 depends = ["build-loop"]
 run = ".venv/bin/python -m continugo_train.ratings"
 
+[tasks.rate-models]
+description = "Adaptive near-strength neural matching until uncertainty/evidence targets or a hard game cap"
+run = ".venv/bin/python -m continugo_train.adaptive_ratings"
+
+[tasks.round-robin]
+description = "Restartable rated head-to-head tournament using a loop's frozen evaluation settings"
+run = ".venv/bin/python -m continugo_train.round_robin"
+
 [tasks.infer]
 description = "Native ONNX diagnostics (CUDA by default; --device cpu for CPU)"
 run = ".venv/bin/python -m continugo_train.runtime infer"

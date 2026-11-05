@@ -269,6 +269,36 @@ class AcceptanceTests(helpers.LoopHarness):
                 state["initial_checkpoint"]["sha256"],
             )
 
+    def test_enable_head_to_head_at_boundary_keeps_latest_actor_and_old_evidence(self):
+        output = self.root / "enable-matches"
+        before_state = self.run_loop(output, extra=["--reference-games", "2"])
+        before = (output / "loop.pt").read_bytes()
+        calls = len(self.jobs.calls)
+        state = self.run_loop(
+            output, resume=True, extra=["--enable-head-to-head", "2", "--stop-after-iteration", "1"]
+        )
+        self.assertEqual(len(self.jobs.calls), calls)
+        self.assertEqual((output / "before-head-to-head.pt").read_bytes(), before)
+        self.assertEqual(state["iterations"], before_state["iterations"])
+        self.assertEqual(state["actor"], before_state["actor"])
+        self.assertEqual(state["config"]["actor_policy"], "latest")
+        self.assertEqual(state["config"]["gate_games"], 2)
+        self.assertEqual(state["config_changes"][0]["after_iteration"], 1)
+        state = self.run_loop(output, resume=True, extra=["--iterations", "2"])
+        self.assertEqual(state["iterations"][1]["gate"]["report"]["games"], 2)
+        self.assertEqual(state["actor"]["model"], state["iterations"][1]["model"])
+
+    def test_enable_head_to_head_refuses_mid_iteration_and_invalid_counts(self):
+        output = self.root / "enable-mid-round"
+        self.jobs.fault = "epoch_gap"
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_loop(output, extra=["--reference-games", "2"])
+        before = (output / "loop.pt").read_bytes()
+        for count in ["2", "0", "3"]:
+            with self.assertRaises(ValueError):
+                self.run_loop(output, resume=True, extra=["--enable-head-to-head", count])
+            self.assertEqual((output / "loop.pt").read_bytes(), before)
+
     def test_unexpected_draws_are_visible_and_experimental_archives_are_complete(self):
         output = self.root / "draws"
         self.jobs.arena_mode = "draw"
