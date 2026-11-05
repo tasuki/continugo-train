@@ -6,6 +6,9 @@ use rand::Rng;
 use serde::Serializer;
 use std::time::Instant;
 
+#[cfg(test)]
+mod analysis_bench;
+
 // JSON is a training-record concern; keep the shared rules dependency-free.
 pub(crate) fn serialize<S: Serializer>(action: &Action, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_u32(action.index())

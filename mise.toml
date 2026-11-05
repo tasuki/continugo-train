@@ -99,6 +99,10 @@ run = ".venv/bin/python -m continugo_train.runtime infer"
 description = "Benchmark synthetic coarse/selected-cell inference and training (FP32)"
 run = ".venv/bin/python -m continugo_train.benchmark"
 
+[tasks.analysis-bench]
+description = "Compare Benson, eye traces, and random selection (set CONTINUGO_BENCH_SGFS/OUTPUT)"
+run = "cargo test --locked --release --lib action::analysis_bench::benchmark_benson_and_eyes -- --ignored --exact --nocapture --test-threads=1"
+
 [tasks.pipeline-profile]
 description = "Profile real 9/13/19 positions, neural self-play, feature transport and SGD"
 run = [

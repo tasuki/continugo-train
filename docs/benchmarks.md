@@ -3,7 +3,9 @@
 Historical measurements, not current defaults or a roadmap. See
 [current docs](current/) for supported behavior and [todo.md](todo.md) for open work.
 
-Latest: [cross-game concurrency and batching](history/2026-11-04-concurrency.md),
+Latest: [Benson versus cached eye analysis](history/2026-11-05-benson-benchmark.md),
+with separate whole-position, actual eye-query, and random-selection workloads.
+Also recent: [cross-game concurrency and batching](history/2026-11-04-concurrency.md),
 with controlled sweeps, repeated throughput/memory measurements and SGF parity.
 Earlier [shared group geometry and area-union optimization](history/2026-11-04-group-geometry.md),
 [feature transport and worker allocation](history/2026-11-04-feature-transport.md),

@@ -148,6 +148,59 @@ found six workers fastest among the tested counts on the current machine. Six is
 now the user-selected default for fresh training, new loops and profiling;
 `--workers` can override it. Recheck allocation on other machines/workloads.
 
+## Benson versus eye heuristics
+
+The opt-in Rust benchmark lives in `src/action/analysis_bench.rs` in **this repo**;
+it reads the shared analysis/rules crates without changing `../continugo/`.
+No network, GPU, training run, or model is required. Supply completed SGFs with
+at least ten moves. Each contributes early/middle/late snapshots using the same
+phase proxies described above. Replay and geometric-index initialization are
+outside the repeated timers. The availability list is rebuilt from each snapshot;
+its order is not reconstructed from the original self-play trajectory.
+
+```sh
+# Reuse dense random games, or generate sources with the selfplay command above.
+export CONTINUGO_BENCH_SGFS="runs/20261104-representative-positions/game-000001-size9-seed0.sgf:runs/20261104-representative-positions/game-000002-size13-seed1.sgf:runs/20261104-representative-positions/game-000003-size19-seed2.sgf"
+CONTINUGO_BENCH_OUTPUT="runs/$(date -u +%Y%m%d-%H%M%S)-benson/results.json" \
+  CONTINUGO_BENCH_FULL_SCAN=1 mise run analysis-bench
+```
+
+The output path must be new. Defaults: five samples, minimum 50 ms per measured
+batch; override `CONTINUGO_BENCH_SAMPLES` and `CONTINUGO_BENCH_MIN_MS`. Calibration
+batches and warmups are discarded. Each timed operation constructs and drops a
+fresh analysis, so repeated positions cannot hide work behind retained caches.
+Run sequentially without competing benchmarks. This uses the release **libtest
+system allocator**, not the production executable's mimalloc.
+
+The JSON preserves source/game hashes, revisions and dirty status, exact plies,
+counts, individual sample times/iteration counts, and median/min/max per operation:
+
+- `benson_both_colors`: complete Benson extraction for **both colors**, including
+  groups, geometry, allocations, pruning, and destruction. No raster painting.
+- `eye_trace`: only the cached eye queries actually needed for a random decision,
+  for the side to move. The real selector is first profiled outside timing; its
+  proposal prefix is replayed to recover legal, noncapturing eye queries, and
+  query/rejection counts are asserted equal. The timed trace uses a fresh
+  `SmallEyeAnalysis` and the existing availability index. No rule validation is
+  included. Seeds are `0..samples`; each sample fixes that seed during its timing
+  batches. Zero means that seed needed no eye queries, not a measured zero-cost
+  function. This median describes both query-order variation and timing noise.
+- `random_move`: the actual unprofiled production selector, with fresh RNG/cache
+  per decision and the same seeds. Includes preparation, legality, capture checks,
+  and eyes; **eye time is inside this total**, not an additional stage. Excludes
+  index construction/synchronization, committing the chosen move, and passing.
+- `eye_full_scan` (only with `CONTINUGO_BENCH_FULL_SCAN=1`): both colors over every
+  geometrically available coordinate, including suicidal moves, sharing one
+  fresh pocket cache per scan. Reports query and eye-filling counts. Query-vector
+  construction is outside timing. This intentionally exhaustive diagnostic is
+  **not** the normal random-selector workload and can take minutes in openings.
+
+Benson certifies pass-alive chains; the eye heuristic rejects candidate fills.
+They are not interchangeable computations. In particular, a fast whole-board
+Benson result versus an exhaustive eye scan does not establish a self-play
+speedup: normal play often asks only one eye question. Neither policy nor rules
+are changed by the benchmark. Keep measured results in dated history notes.
+
 ## Lower-level diagnostics
 
 `mise run infer -- ... --profile-json` adds `seconds`, `iterations`, and structured
