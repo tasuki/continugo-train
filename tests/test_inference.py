@@ -208,13 +208,20 @@ class NativeInferenceTests(unittest.TestCase):
             with torch.inference_mode():
                 logits, value = self.model(*sample.network_inputs())
                 spatial, pass_logit, _ = self.model.encode(sample.coarse[None])
-                coarse_probs = self.model.coarse_logits(spatial, pass_logit).softmax(dim=1)
-                expected_mass = coarse_probs[0, selected].sum() + coarse_probs[0, -1]
+                coarse_logp = self.model.coarse_logits(spatial, pass_logit).log_softmax(dim=1)
+                # Native inference preserves the global placement/pass strata,
+                # then conditions only the placement distribution on legal cells.
+                placement_shift = coarse_logp[0, :-1].logsumexp(0) - coarse_logp[
+                    0, selected
+                ].logsumexp(0)
             native = self.infer(source, actions)
             self.assertEqual(native.returncode, 0, native.stderr)
             result = json.loads(native.stdout)
             self.assertEqual(result["cells"], selected)
-            self.assertAlmostEqual(result["policy_mass"], expected_mass.item(), places=5)
+            self.assertAlmostEqual(result["policy_mass"], 1.0, places=5)
+            self.assertAlmostEqual(
+                result["logits"][actions.index(1000000)], coarse_logp[0, -1].item(), places=5
+            )
             self.assertAlmostEqual(result["value"], value.item(), places=5)
             value_only = self.infer(source, actions, value_only=True)
             self.assertEqual(value_only.returncode, 0, value_only.stderr)
@@ -224,6 +231,8 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertIn("calls: 0, value_calls: 1", value_only.stderr)
             for action, actual in zip(actions, result["logits"], strict=True):
                 expected = logits[0, action].item()
+                if action < 1000000:
+                    expected += placement_shift.item()
                 cell = (
                     cell_ids(torch.tensor(action), sample.resolution).item()
                     if action < 1000000
@@ -235,6 +244,53 @@ class NativeInferenceTests(unittest.TestCase):
                     self.assertIsNotNone(actual)
                     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-5)
             self.assertLess(int(re.search(r"exact_coordinates: (\d+)", native.stderr)[1]), 50000)
+
+    def test_pass_mass_does_not_depend_on_cell_budget_and_all_illegal_falls_back(self):
+        source = self.root / "pass-mass.sgf"
+        source.write_text(SGF.replace("SZ[13]", "SZ[9]").replace("RE[B+220.4]", ""))
+        for top, exploration in [(1, 1), (32, 8)]:
+            model = PolicyValueNet(
+                NetworkConfig(
+                    channels=4,
+                    blocks=1,
+                    policy_hidden=4,
+                    value_hidden=4,
+                    top_cells=top,
+                    exploration_cells=exploration,
+                )
+            ).eval()
+            for parameter in model.parameters():
+                parameter.data.zero_()
+            # Uniform 1444-cell opening, with exactly ten percent global pass.
+            model.pass_head.bias.data.fill_(np.log(1444 / 9))
+            checkpoint = self.root / f"mass-{top}.pt"
+            torch.save(
+                {
+                    "config": asdict(model.config),
+                    "model": model.state_dict(),
+                    "feature_spec": feature_spec(4),
+                    "epoch": 1,
+                },
+                checkpoint,
+            )
+            bundle = self.root / f"mass-{top}"
+            export_checkpoint(checkpoint, bundle)
+            result = self.infer(source, [1000000], model=bundle)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertTrue(report["cells"])
+            self.assertAlmostEqual(np.exp(report["logits"][0]), 0.1, places=6)
+            self.assertAlmostEqual(report["policy_mass"], 1.0, places=6)
+            # Size one has no legal placements, even though the coarse head
+            # assigns some mass to placements. Fallback must be exactly pass.
+            impossible = self.root / "no-placement.sgf"
+            impossible.write_text("(;FF[9071]GM[9071]SZ[1];B[])")
+            result = self.infer(impossible, [1000000], model=bundle)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["cells"], [])
+            self.assertEqual(report["logits"], [0.0])
+            self.assertEqual(report["policy_mass"], 1.0)
 
     def check_search(self, device="cpu", library=None, environment=None):
         output = self.root / f"games-{device}"

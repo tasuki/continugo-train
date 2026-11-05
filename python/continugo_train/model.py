@@ -141,9 +141,10 @@ class PolicyValueNet(nn.Module):
     ) -> Tensor:
         """Full hierarchical log probabilities at supplied complete cells + pass.
 
-        Omitted cells retain coarse probability mass. These outputs need not sum
-        to one: inference conditions on selected nonempty cells and pass; training
-        uses hierarchical_policy_value_loss without a candidate-only softmax.
+        Omitted cells retain coarse probability mass. These training outputs need
+        not sum to one. Native inference separately redistributes full placement
+        mass over selected nonempty cells, preserving global coarse P(pass).
+        Training uses hierarchical_policy_value_loss without a candidate-only softmax.
         """
         batch, count, features = exact.shape
         if (

@@ -4,6 +4,15 @@ Started **2026-11-04 15:14:54 UTC** in
 `runs/20261104-151420-size9-training/`. This is a launch report, not a completed
 campaign result or evidence of playing strength.
 
+## Round-30 handoff update
+
+The user subsequently requested a clean stop after round 30 and continuation
+with corrected pass normalization, preserving learning state. The supervised
+[handoff report](2026-11-04-pass-normalization.md) records the active boundary
+stop and the new run `runs/20261104-215404-pass-balanced/`. Do not independently
+launch the original `run.py` while that supervisor is running. The original
+launcher is now bounded at round 30; later rounds run in the corrected fork.
+
 ## Schedule correction and clean restart
 
 The user clarified the intended schedule: **60 self-play rounds, four training

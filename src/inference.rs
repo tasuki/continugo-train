@@ -5,6 +5,7 @@
 mod batch;
 pub mod batching;
 mod cache;
+mod normalization;
 mod proposals;
 pub use batch::InferenceOutput;
 use cache::ContextCache;
@@ -37,9 +38,10 @@ impl InferenceDevice {
 #[derive(Debug)]
 pub struct Evaluation {
     pub value: f64,
-    /// Hierarchical log probabilities in action-ID order, pass at 1,000,000.
-    /// Unselected or illegal coordinates are -inf. Consumers normalize over
-    /// selected nonempty cells and pass, not the full board.
+    /// Inference log probabilities in action-ID order, pass at 1,000,000.
+    /// Unselected/illegal coordinates are -inf. Selected nonempty cells share
+    /// the full placement mass, preserving the global coarse P(pass).
+    /// With no selected legal placement, pass has probability one.
     pub logits: Vec<f32>,
     /// Exact legality inside selected cells; zero also means unselected, not a
     /// claim of illegality across the whole board.

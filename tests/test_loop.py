@@ -279,6 +279,23 @@ class LoopHarness(unittest.TestCase):
 
 
 class LoopTests(LoopHarness):
+    def test_stop_at_round_boundary_keeps_total_target_and_can_resume(self):
+        output = self.root / "boundary"
+        state = self.run_loop(output, extra=["--iterations", "3", "--stop-after-iteration", "2"])
+        self.assertEqual(state["target_iterations"], 3)
+        self.assertEqual(len(state["iterations"]), 2)
+        self.assertTrue(all(it["completed"] for it in state["iterations"]))
+        self.assertEqual(state["actor"]["checkpoint"], state["iterations"][-1]["checkpoint"])
+        calls = len(self.jobs.calls)
+        self.run_loop(output, resume=True, extra=["--stop-after-iteration", "2"])
+        self.assertEqual(len(self.jobs.calls), calls)
+        for stop in ["0", "1", "4"]:
+            with self.assertRaisesRegex(ValueError, "stop-after-iteration"):
+                self.run_loop(output, resume=True, extra=["--stop-after-iteration", stop])
+        state = self.run_loop(output, resume=True)
+        self.assertEqual(len(state["iterations"]), 3)
+        self.assertTrue(state["iterations"][-1]["completed"])
+
     def test_two_iterations_handoff_replay_window_and_idempotent_resume(self):
         output = self.root / "loop"
         state = self.run_loop(output)

@@ -297,27 +297,19 @@ impl OnnxEvaluator {
                         sums[cell] += (f64::from(score) - maxima[cell]).exp();
                     }
                 }
-                let coarse_max = context.cells.iter().copied().fold(context.pass, f32::max) as f64;
-                let coarse_logsum = (context
-                    .cells
-                    .iter()
-                    .map(|&x| (f64::from(x) - coarse_max).exp())
-                    .sum::<f64>()
-                    + (f64::from(context.pass) - coarse_max).exp())
-                .ln();
+                let nonempty: Vec<_> = sums.iter().map(|&sum| sum > 0.0).collect();
+                let (cell_logp, pass_logp) =
+                    super::normalization::cell_log_probs(&context.cells, context.pass, &nonempty);
                 let evaluation = result[i].as_mut().unwrap();
                 for (action, &score) in actions[row].iter().zip(&raw[row]) {
                     if score.is_finite() {
                         let cell = crate::cells::cell(action.index(), size);
-                        let coarse_logp =
-                            f64::from(context.cells[cell]) - coarse_max - coarse_logsum;
                         let local_logp = f64::from(score) - maxima[cell] - sums[cell].ln();
                         evaluation.logits[action.index() as usize] =
-                            (coarse_logp + local_logp) as f32;
+                            (cell_logp[cell] + local_logp) as f32;
                     }
                 }
-                evaluation.logits[COORDINATE_ACTIONS as usize] =
-                    (f64::from(context.pass) - coarse_max - coarse_logsum) as f32;
+                evaluation.logits[COORDINATE_ACTIONS as usize] = pass_logp as f32;
             }
             self.stats.calls += batch as u64;
             self.stats.scorer_positions += batch as u64;

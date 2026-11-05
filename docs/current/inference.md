@@ -71,8 +71,9 @@ mise run infer -- --device cpu --model runs/model-001 --sgf FILE --ply 1 --warmu
 Stdout is a numeric JSON report, not a game record. `--actions` selects printed
 log probabilities, not evaluated coordinates. Diagnostics use the same selective
 policy as search; illegal **and unselected** scores print as null. `cells` lists
-selected nonempty cells; `policy_mass` reports hierarchical weight before the
-runtime conditioning on selected nonempty cells/pass. `--value-only` skips all
+selected nonempty cells; `policy_mass` is the sum of the returned inference
+probabilities (approximately one, including pass). Pass keeps its global coarse
+probability whenever a selected legal placement exists; otherwise it is one. `--value-only` skips all
 cell selection and exact scoring.
 Set `CONTINUGO_ORT_PROFILE` to an existing directory for encoder/scorer runtime
 profiles, including actual operator placement. Timers exclude warmup/model load.
@@ -155,11 +156,12 @@ not overlap. Exploration is seeded from each tree's RNG, so opening coverage can
 vary across games without depending on queue/batch order. Both budgets are pinned
 in model configuration (`--top-cells`, `--exploration-cells` at training/export).
 
-Hierarchical weights are coarse cell probability times exact within-cell legal
-probability; pass has its own coarse probability. Selected empty cells are dropped,
-then weights plus pass are normalized. All-unselected/all-illegal placements mean
-pass only, not proof that the board has no legal moves. See [network](network.md)
-for the training objective and the deliberate selection/conditioning bias.
+Pass retains its global coarse probability. Selected nonempty cells share the
+entire remaining placement mass, proportional to coarse cell weights and exact
+within-cell legal probabilities. Conditioning only the placement stratum avoids
+boosting pass merely because cells were pruned. All-unselected/all-illegal
+placements mean pass only, not proof that the board has no legal moves. See
+[network](network.md) for the formula and unchanged training objective.
 
 Finite candidate search then approximates PUCT **within that selected domain**
 using stratified importance sampling ([Sampled MuZero](https://arxiv.org/abs/2104.06303)):
@@ -171,7 +173,7 @@ using stratified importance sampling ([Sampled MuZero](https://arxiv.org/abs/210
 3. Sample with replacement; merge duplicates but retain multiplicity. Candidate
    weight is `multiplicity * r(a)/q(a)`. Deduplicating without counts changes the law.
 4. Admit candidates in first-sampled order under progressive widening. Their priors
-   share `P` proportional to those weights; pass retains its selected-policy mass.
+   share `P` proportional to those weights; pass retains its global coarse mass.
    If weights underflow to zero, admitted placements share mass uniformly.
 5. Every newly admitted coordinate gets a real leaf evaluation, even with tiny prior.
 

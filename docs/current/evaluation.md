@@ -29,9 +29,9 @@ Pairs share board size and RNG seed and swap candidate/incumbent colors. They st
 from the empty authoritative board; randomized opening positions are not implemented.
 The native `arena` binary selects maximum root visits with random tie breaks, rather
 than training's temperature-one move sampling. Both use the existing PUCT,
-progressive widening, independent exploration, exact legality and full-domain
-policy normalization. Each network evaluates its own search; neither uses a
-handcrafted value function or the random bot's eye filter.
+progressive widening, independent exploration, exact legality and pass-preserving
+selective policy normalization. Each network evaluates its own search; neither
+uses a handcrafted value function or the random bot's eye filter.
 
 Matching is currently sequential within one native process, with two frozen ONNX
 evaluators, bounded feature pools and context caches. It does not yet batch across

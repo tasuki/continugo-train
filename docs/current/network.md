@@ -29,13 +29,23 @@ scalar. Exact features are never interpolated. Pass is always available.
 ## Probabilities and training objective
 
 The coarse softmax covers **all cells and pass**. Each nonempty cell has a local
-softmax over all its exact legal coordinates. A placement's hierarchical weight
-is `P(cell) * P(coordinate | cell)`; pass uses its coarse probability. Unselected
-or illegal coordinates have zero weight. Inference drops selected cells with no
-legal coordinates and renormalizes remaining weights plus pass. If none remain,
-it passes. This is explicitly a **selective policy**, not the old full-board
-legal softmax. The coarse head need not know exact legality; it learns to avoid
-empty/illegal regions from targets.
+softmax over all its exact legal coordinates. Training uses hierarchical weights
+`P(cell) * P(coordinate | cell)`; pass uses its global coarse probability.
+
+Native inference preserves this **global pass/placement split**. Let `S` be the
+selected cells containing at least one legal coordinate, and `p = P(pass)`:
+
+- Pass retains probability `p`.
+- Selected cells divide the entire placement mass `1-p`, proportional to their
+  coarse weights: `P(move) = (1-p) * P(cell)/sum_S P(cell) * P(move | cell)`.
+- Illegal/unselected coordinates remain unavailable. If `S` is empty, pass has
+  probability one; this is not proof that the whole board has no legal placement.
+
+Do **not** normalize the selected hierarchical weights together with pass: dropping
+placement cells that way artificially boosts pass (for example, 10% can become
+74%). Computation uses stable log probabilities for both strata. This remains a
+selective policy, not an exhaustive full-board legal softmax. Cell selection
+changes placement locations, not the learned pass/placement balance.
 
 Training uses genuine sparse MCTS visit counts and natural game outcomes:
 
@@ -50,8 +60,8 @@ Training uses genuine sparse MCTS visit counts and natural game outcomes:
 
 `hierarchical_policy_value_loss` implements this factorized proposal objective.
 It does **not** apply another candidate-only softmax. The objective is not the
-inference-time CE conditioned on the chosen cells: selection and removal of empty
-cells change the inference distribution. Coarse proposals can put mass on empty
+inference-time CE: inference conditions the placement stratum on selected nonempty
+cells while preserving the global coarse pass probability. Coarse proposals can put mass on empty
 cells during learning; no claim of an exhaustively legal-normalized distribution
 is made. Illegal positive targets are rejected. Ragged batches pad exact rows with
 false legality and remap pass to the final column; pass-only targets need no rows.
@@ -65,6 +75,10 @@ estimating their partition function. Coverage/strength remain experimental.
 Checkpoint and ONNX metadata require policy version **`cells-v1`**. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. Feature schema 4 is unchanged.
+The pass-preserving normalization correction changes native execution only, not
+weights, features, graph outputs, or the training objective. Existing `cells-v1`
+checkpoints/graphs remain compatible; changed native fingerprints require a new
+loop/protocol pool rather than replacing a running loop's frozen binaries.
 
 ```sh
 mise run model-bench -- --device cuda

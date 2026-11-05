@@ -885,7 +885,7 @@ class LoopRunner:
             Path(self.state["actor"]["archive"]["directory"]),
         )
 
-    def run(self):
+    def run(self, stop_after_iteration=None):
         self.verify_committed()
         # Initial checkpoints are unaccepted experimental inputs, not implicit
         # permission to publish an accepted baseline.
@@ -937,7 +937,10 @@ class LoopRunner:
         initial = self.state["initial_reference"]
         gate.evaluate(self, initial, reference=True)
         self.rate_evaluation(initial, "reference", [self.state["initial_actor_checkpoint"]])
-        for number in range(1, self.state["target_iterations"] + 1):
+        stop = min(
+            stop_after_iteration or self.state["target_iterations"], self.state["target_iterations"]
+        )
+        for number in range(1, stop + 1):
             if len(self.state["iterations"]) < number:
                 self.state["iterations"].append(
                     {
@@ -1025,9 +1028,15 @@ class LoopRunner:
                 f"iteration {number} complete: match={decision}; experimental actor {'advanced' if update_actor else 'held'}; "
                 f"training progress retained at {iteration['checkpoint']['path']}; no automatic promotion"
             )
-        self.log(
-            f"loop complete: {self.state['target_iterations']} iterations; accepted publication requires explicit user approval"
-        )
+        if stop < self.state["target_iterations"]:
+            self.log(
+                f"loop paused after iteration {stop}; total target remains {self.state['target_iterations']}; "
+                "resume without --stop-after-iteration to continue"
+            )
+        else:
+            self.log(
+                f"loop complete: {self.state['target_iterations']} iterations; accepted publication requires explicit user approval"
+            )
         return self.state
 
 
@@ -1056,6 +1065,11 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--iterations", type=int, help="total target; default 1, or saved target on resume"
+    )
+    parser.add_argument(
+        "--stop-after-iteration",
+        type=int,
+        help="exit cleanly after this iteration (including evaluation/archive); does not lower the saved total target",
     )
     for field in fields(LoopConfig):
         name = "--" + field.name.replace("_", "-")
@@ -1228,6 +1242,14 @@ def run_loop(args):
             > 2**64
         ):
             raise ValueError("positive iteration target and nonoverflowing u64 game seeds required")
+        if args.stop_after_iteration is not None and (
+            args.stop_after_iteration <= 0
+            or args.stop_after_iteration > target
+            or len(state["iterations"]) > args.stop_after_iteration
+        ):
+            raise ValueError(
+                "stop-after-iteration must be positive, within the total target, and not precede recorded work"
+            )
         if not Path(config.selfplay_binary).is_file():
             raise ValueError("self-play binary missing; build release binaries first")
         if config.gate_games or config.reference_games:
@@ -1254,7 +1276,7 @@ def run_loop(args):
         torch.set_num_threads(config.threads)
         runner = LoopRunner(root, state, lock_fd)
         runner.save()
-        return runner.run()
+        return runner.run(args.stop_after_iteration)
 
 
 def main(argv=None):

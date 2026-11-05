@@ -58,7 +58,12 @@ Play, training, and export are
 separate supervised processes; export verification uses CPU.
 
 Resume restores frozen configuration. Explicit conflicting overrides fail; the
-total iteration target may increase, never decrease. Keep the same absolute path
+total iteration target may increase, never decrease. For a clean boundary pause,
+add `--stop-after-iteration N`: it exits after that round's training, scheduled
+matches and archives, before launching round N+1, without lowering the saved total
+target. The bound must not precede recorded work. It is invocation-only; resume
+without it to continue toward the saved total. A new executable/protocol still
+requires a fork, not an override of the frozen binaries. Keep the same absolute path
 and compatible Python/rules/runtime versions. Self-play/feature executable hashes
 are frozen even with matches disabled; arena/rating hashes are additionally
 frozen when evaluation is enabled. They are checked on resume and around child
