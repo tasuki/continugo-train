@@ -20,7 +20,10 @@ zero active units too. Gradient norms for the first value layer (weights and bia
 weights and first trunk convolution were **zero**. Only the final value bias
 received a loss gradient (norm 1.680222). Momentum/weight decay can still move
 other parameters; this finding concerns the value loss's learning signal.
-No model was optimized or overwritten by the diagnostic.
+No model was optimized or overwritten by the diagnostic. The subsequent
+[user-approved leaky-ReLU continuation](2026-11-05-leaky-value.md) unblocked value
+gradients without resetting learned weights or SGD state; its checked first epoch
+also improved held-out late-game prediction.
 
 ## Sample and method
 

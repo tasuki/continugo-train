@@ -505,6 +505,61 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(captured["python_rng"], random.Random(123).getstate())
         self.assertFalse(torch.equal(captured["torch_rng"], parent["rng_cpu"]))
 
+    def test_explicit_value_activation_warm_start_keeps_weights_momentum_and_provenance(self):
+        checkpoint = self.run_training(self.root / "parent", epochs=2)
+        parent = torch.load(checkpoint, weights_only=True)
+        parent["config"].pop("value_activation")  # Historical checkpoint.
+        legacy = self.root / "legacy.pt"
+        atomic_checkpoint(legacy, parent)
+        before = legacy.read_bytes()
+        captured = {}
+        original_phase = trainer.run_phase
+
+        def phase(model, optimizer, *args):
+            if not captured:
+                captured["model"] = copy.deepcopy(model.state_dict())
+                captured["optimizer"] = copy.deepcopy(optimizer.state_dict())
+                captured["config"] = model.config
+            return original_phase(model, optimizer, *args)
+
+        with patch.object(trainer, "run_phase", side_effect=phase):
+            warmed = self.run_training(
+                self.root / "leaky",
+                warm_start=legacy,
+                extra=["--warm-start-optimizer", "keep", "--value-activation", "leaky_relu"],
+            )
+        self.assertEqual(captured["config"].value_activation, "leaky_relu")
+        for name, value in parent["model"].items():
+            torch.testing.assert_close(captured["model"][name], value, atol=0, rtol=0)
+        for key, value in parent["optimizer"]["state"].items():
+            torch.testing.assert_close(
+                captured["optimizer"]["state"][key]["momentum_buffer"],
+                value["momentum_buffer"],
+                atol=0,
+                rtol=0,
+            )
+        actual = torch.load(warmed, weights_only=True)
+        self.assertEqual(actual["config"]["value_activation"], "leaky_relu")
+        self.assertEqual(
+            actual["initialization"]["value_activation_change"],
+            {
+                "from": "relu",
+                "to": "leaky_relu",
+                "negative_slope": 0.1,
+            },
+        )
+        self.assertEqual(actual["split_history"], parent["split_history"])
+        self.assertEqual(actual["progress"]["data_positions"], parent["progress"]["data_positions"])
+        self.assertEqual(legacy.read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, "resume restores --value-activation"):
+            self.run_training(
+                warmed.parent, epochs=2, resume=warmed, extra=["--value-activation", "relu"]
+            )
+        resumed = self.run_training(warmed.parent, epochs=2, resume=warmed)
+        self.assertEqual(
+            torch.load(resumed, weights_only=True)["config"]["value_activation"], "leaky_relu"
+        )
+
     def test_warm_start_persists_splits_for_games_absent_from_a_replay_window(self):
         checkpoint = self.run_training(self.root / "parent")
         parent = torch.load(checkpoint, weights_only=True)

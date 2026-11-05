@@ -775,7 +775,7 @@ class LoopRunner:
                 or saved["epoch"] != number
                 or number > self.config.train_epochs
                 or saved["options"] != asdict(options)
-                or saved["config"] != parent["config"]
+                or NetworkConfig(**saved["config"]) != NetworkConfig(**parent["config"])
                 or saved["feature_spec"] != parent["feature_spec"]
                 or saved["corpus_fingerprint"] != iteration["corpus_fingerprint"]
                 or saved.get("initialization", {}).get("source", {}).get("sha256")

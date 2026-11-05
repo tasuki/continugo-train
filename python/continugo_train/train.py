@@ -343,6 +343,11 @@ def parse_args(argv=None):
         "exploration_cells",
     ]:
         parser.add_argument("--" + name.replace("_", "-"), type=int)
+    parser.add_argument(
+        "--value-activation",
+        choices=["relu", "leaky_relu"],
+        help="value-head activation (leaky_relu slope 0.1); changing a checkpoint requires --warm-start",
+    )
     args = parser.parse_args(argv)
     if args.warm_start_optimizer is not None and args.warm_start is None:
         parser.error("--warm-start-optimizer requires --warm-start")
@@ -439,6 +444,10 @@ def train(args):
                     f"checkpoint architecture conflicts with --{name.replace('_', '-')}"
                 )
             settings[name] = value
+    if args.value_activation is not None:
+        if resuming and args.value_activation != config.value_activation:
+            raise ValueError("resume restores --value-activation; use --warm-start to change it")
+        settings["value_activation"] = args.value_activation
     config = NetworkConfig(**settings)
     if config.input_planes != len(COARSE_PLANES) or config.move_features != len(MOVE_FEATURES):
         raise ValueError("checkpoint feature widths do not match the real extractor")
@@ -511,6 +520,13 @@ def train(args):
                 "global_step": saved["global_step"],
             },
         }
+        previous_activation = NetworkConfig(**saved["config"]).value_activation
+        if previous_activation != config.value_activation:
+            initialization["value_activation_change"] = {
+                "from": previous_activation,
+                "to": config.value_activation,
+                "negative_slope": 0.1 if config.value_activation == "leaky_relu" else 0.0,
+            }
     del source_bytes
     with training_output(output, resuming) as logfile:
 

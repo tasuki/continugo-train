@@ -560,6 +560,11 @@ class LoopTests(LoopHarness):
         "install inference extra",
     )
     def test_real_cpu_two_iteration_loop_across_sizes_and_restart(self):
+        # Legacy metadata omits the activation; warm-start now writes explicit
+        # ReLU. Compare canonical configs rather than rejecting the added default.
+        legacy = torch.load(self.source, weights_only=True)
+        legacy["config"].pop("value_activation", None)
+        atomic_checkpoint(self.source, legacy)
         output = self.root / "real"
         arguments = [
             "--output",

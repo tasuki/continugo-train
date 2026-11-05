@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -244,6 +244,47 @@ class NativeInferenceTests(unittest.TestCase):
                     self.assertIsNotNone(actual)
                     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-5)
             self.assertLess(int(re.search(r"exact_coordinates: (\d+)", native.stderr)[1]), 50000)
+
+    def test_leaky_value_head_export_matches_native_cpu_and_cuda(self):
+        source = self.root / "leaky.sgf"
+        source.write_text(SGF)
+        model = PolicyValueNet(replace(self.model.config, value_activation="leaky_relu")).eval()
+        model.load_state_dict(self.model.state_dict())
+        with torch.no_grad():
+            model.value_head[0].weight.fill_(0.01)
+            model.value_head[0].bias.fill_(-1)
+            model.value_head[2].weight.fill_(0.1)
+            model.value_head[2].bias.zero_()
+        checkpoint = self.root / "leaky.pt"
+        torch.save(
+            {
+                "config": asdict(model.config),
+                "model": model.state_dict(),
+                "feature_spec": feature_spec(4),
+                "epoch": 1,
+            },
+            checkpoint,
+        )
+        bundle = self.root / "leaky-model"
+        self.assertLess(export_checkpoint(checkpoint, bundle), 1e-5)
+        sample = load_position(source, 1, actions=[500500])
+        with torch.inference_mode():
+            expected = model.encode(sample.coarse[None])[2].item()
+        self.assertLess(expected, -0.01)  # Would be zero with the old ReLU.
+        devices = ["cpu", "cuda"] if GPU_READY else ["cpu"]
+        for device in devices:
+            library, environment = inference_environment(device)
+            result = self.infer(
+                source,
+                [1000000],
+                model=bundle,
+                value_only=True,
+                device=device,
+                library=library,
+                environment=environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertAlmostEqual(json.loads(result.stdout)["value"], expected, places=5)
 
     def test_pass_mass_does_not_depend_on_cell_budget_and_all_illegal_falls_back(self):
         source = self.root / "pass-mass.sgf"

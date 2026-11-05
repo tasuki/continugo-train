@@ -175,8 +175,44 @@ class NetworkTests(unittest.TestCase):
             optimizer.step()
         self.assertLess(losses.total.item(), initial * 0.3)
 
+    def test_leaky_value_activation_restores_gradients_without_changing_policy_or_parameters(self):
+        config = small_config()
+        relu = PolicyValueNet(config).eval()
+        with torch.no_grad():
+            relu.value_head[0].weight.fill_(0.01)
+            relu.value_head[0].bias.fill_(-1)
+            relu.value_head[2].weight.fill_(0.1)
+            relu.value_head[2].bias.zero_()
+        leaky = PolicyValueNet(replace(config, value_activation="leaky_relu")).eval()
+        leaky.load_state_dict(relu.state_dict())
+        self.assertEqual(leaky.value_head[1].negative_slope, 0.1)
+        self.assertEqual(list(relu.state_dict()), list(leaky.state_dict()))
+        args = inputs(config)
+        torch.testing.assert_close(relu(*args)[0], leaky(*args)[0], atol=0, rtol=0)
+        for model, alive in [(relu, False), (leaky, True)]:
+            pooled = torch.full((2, config.channels), 0.5, requires_grad=True)
+            self.assertTrue((model.value_head[0](pooled) < 0).all())
+            model.value_head(pooled).sum().backward()
+            for grad in [
+                pooled.grad,
+                model.value_head[0].weight.grad,
+                model.value_head[2].weight.grad,
+            ]:
+                self.assertEqual(grad.abs().sum().item() > 0, alive)
+        legacy = asdict(config)
+        legacy.pop("value_activation")
+        self.assertEqual(NetworkConfig(**legacy).value_activation, "relu")
+        restored = PolicyValueNet(NetworkConfig(**asdict(leaky.config))).eval()
+        restored.load_state_dict(leaky.state_dict())
+        torch.testing.assert_close(restored(*args)[1], leaky(*args)[1], atol=0, rtol=0)
+
     def test_configuration_and_bad_action_inputs_are_rejected(self):
-        for kwargs in [{"channels": 0}, {"blocks": -1}, {"chunk_size": True}]:
+        for kwargs in [
+            {"channels": 0},
+            {"blocks": -1},
+            {"chunk_size": True},
+            {"value_activation": "bad"},
+        ]:
             with self.assertRaises(ValueError):
                 NetworkConfig(**kwargs)
         model = PolicyValueNet(small_config()).eval()

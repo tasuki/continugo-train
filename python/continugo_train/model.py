@@ -67,9 +67,18 @@ class NetworkConfig:
     chunk_size: int = 65536
     top_cells: int = 32
     exploration_cells: int = 8
+    # Missing in historical checkpoints: never silently reinterpret their ReLU.
+    value_activation: str = "relu"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.value_activation, str) or self.value_activation not in {
+            "relu",
+            "leaky_relu",
+        }:
+            raise ValueError("value_activation must be relu or leaky_relu (slope 0.1)")
         for name, value in vars(self).items():
+            if name == "value_activation":
+                continue
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
 
@@ -111,7 +120,9 @@ class PolicyValueNet(nn.Module):
         self.pass_head = nn.Linear(config.channels, 1)
         self.value_head = nn.Sequential(
             nn.Linear(config.channels, config.value_hidden),
-            nn.ReLU(),
+            nn.LeakyReLU(negative_slope=0.1)
+            if config.value_activation == "leaky_relu"
+            else nn.ReLU(),
             nn.Linear(config.value_hidden, 1),
             nn.Tanh(),
         )

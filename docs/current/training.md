@@ -232,6 +232,11 @@ The new run gets its own lock, log, epoch snapshots, `latest.pt` and `best.pt`.
 - Copy **all weights and BatchNorm buffers**. Architecture and feature semantics,
   including sample density, must match. Policy chunk size may change without
   changing weights. No partial loading, feature migration or network resizing.
+  The explicit exception is `--value-activation relu|leaky_relu`: a warm-start
+  may change this parameter-free activation (leaky slope 0.1), keeping identical
+  parameter names/shapes and optionally all SGD state with `keep`. The change is
+  recorded under `initialization.value_activation_change`; omitted settings inherit
+  the parent, including legacy ReLU. A strict resume rejects activation changes.
 - Inherit training options by default, including learning rate, seed and sampling
   caps. Warm-start may explicitly override any training option except incompatible
   feature density; unlike resume, its split seed/fraction and validation sampling
@@ -253,6 +258,21 @@ The new run gets its own lock, log, epoch snapshots, `latest.pt` and `best.pt`.
   SHA-256, source run/epoch/step and optimizer policy. Resume preserves it. The
   source file is loaded and hashed from the same byte snapshot. No metadata
   sidecar or new game-record format is introduced.
+
+### Continuing with a leaky value head
+
+```sh
+mise run train -- --data PATH/TO/REPLAY --warm-start PATH/TO/PARENT.pt --warm-start-optimizer keep --value-activation leaky_relu --output runs/leaky-recovery --epochs 1
+```
+
+This retains the learned policy/trunk, value weights, BatchNorm and SGD momentum;
+it does not reinitialize the value head. The activation change allows gradients
+through negative hidden preactivations. It is not a guarantee of immediate value
+accuracy: inspect held-out error, prediction spread and value gradients, then
+measure playing strength. Continue the new checkpoint normally, including in a
+new self-play loop. Historical checkpoints/graphs still evaluate with ReLU unless
+an explicit warm-start changes their activation. Features and natural-outcome
+labels are unchanged.
 
 ### Holdout safety across replay windows
 

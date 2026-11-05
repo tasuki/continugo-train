@@ -7,6 +7,15 @@ One set of weights handles multiple spatial resolutions; batches group matching
 resolutions. The value head globally pools the trunk and predicts side-to-move
 outcome in [-1,1]. Pass also uses global pooling.
 
+The value head is linear → activation → linear → tanh. Its checkpoint setting
+`value_activation` is `relu` or `leaky_relu` (fixed negative slope **0.1**).
+Historical checkpoints without this field retain ReLU; they are never silently
+reinterpreted. New jobs can explicitly choose `--value-activation leaky_relu`.
+A parameter-free activation change is supported by an explicit training
+warm-start, preserving all weights and optionally SGD momentum; strict resume
+cannot change it. It does not change the policy head, feature schema or parameter
+shapes. Activation choice is recorded in checkpoint and ONNX metadata.
+
 The coarse raster has four intervals per stone diameter by default: 38/54/78
 samples per side for 9/13/19. **Each sample owns the integer coordinates nearest
 it**, giving non-overlapping cells; edge cells are half-width. For an axis
