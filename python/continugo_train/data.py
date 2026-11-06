@@ -34,6 +34,8 @@ class GameEntry:
     diameter: int
     resolution: int
     plies: tuple[int, ...]
+    # None preserves legacy all-policy manifests; cheap positions still train value.
+    policy_plies: tuple[int, ...] | None = None
 
 
 @dataclass
@@ -94,6 +96,7 @@ def inspect_corpus(inputs: list[str], density: int, binary=None):
                     info["diameter"],
                     info["resolution"],
                     tuple(info["eligible_plies"]),
+                    tuple(info.get("policy_training_plies", info["eligible_plies"])),
                 )
             )
     # Deduplicate decoded board+plays, even if copied games have different comments.
@@ -172,6 +175,7 @@ class TrainingSample:
     board_size: int
     score: float
     ownership: Tensor
+    policy_weight: float = 1.0
 
 
 @dataclass
@@ -186,6 +190,7 @@ class Batch:
     board_sizes: Tensor
     scores: Tensor
     ownership: Tensor
+    policy_weights: Tensor
 
     def to(self, device) -> "Batch":
         return Batch(*(value.to(device) for value in vars(self).values()))
@@ -223,6 +228,7 @@ def collate(samples: list[TrainingSample]) -> Batch:
         torch.tensor([s.board_size for s in samples], dtype=torch.int64),
         torch.tensor([s.score for s in samples], dtype=torch.float32),
         torch.stack([s.ownership for s in samples]),
+        torch.tensor([s.policy_weight for s in samples], dtype=torch.float32),
     )
 
 
@@ -309,6 +315,7 @@ def _serial_samples(plans, density, binary, feature_profile=None):
                         game.board_size,
                         sample.score,
                         sample.ownership,
+                        float(game.policy_plies is None or ply in game.policy_plies),
                     )
                 except Exception as error:
                     raise ValueError(f"{game.path} ply {ply}: {error}") from error

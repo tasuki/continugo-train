@@ -24,6 +24,7 @@ pub struct ReplayPosition {
 pub struct ReplayGame {
     positions: Vec<Game>,
     policies: Vec<Option<Vec<PolicyTarget>>>,
+    policy_training: Vec<bool>,
     black_outcome: Option<f32>,
     final_targets: Option<Arc<FinalTargets>>,
     game_id: String,
@@ -45,6 +46,8 @@ pub struct GameInfo {
     pub completed: bool,
     pub labeled: bool,
     pub eligible_plies: Vec<usize>,
+    /// Real-policy plies enabled for policy loss, including unlabeled games for audit.
+    pub policy_training_plies: Vec<usize>,
     /// Shared-codec metadata for supervised loop artifact validation, not rules.
     pub root_comment: Option<serde_json::Value>,
     pub policy_visit_totals: Vec<Option<u64>>,
@@ -64,18 +67,25 @@ fn property<'a>(properties: &'a [sgf::Property], name: &str) -> Result<Option<&'
     }
 }
 
-fn policy(properties: &[sgf::Property], game: &Game) -> Result<Option<Vec<PolicyTarget>>, String> {
+fn policy(
+    properties: &[sgf::Property],
+    game: &Game,
+) -> Result<(Option<Vec<PolicyTarget>>, bool), String> {
     #[derive(Deserialize)]
     struct Comment {
         policy: Option<Vec<(String, u32)>>,
+        train_policy: Option<bool>,
     }
-    let targets = match property(properties, "C")? {
+    let (targets, train_policy) = match property(properties, "C")? {
         Some(comment) if comment.trim_start().starts_with('{') => {
-            serde_json::from_str::<Comment>(comment)
-                .map_err(|e| format!("invalid training comment: {e}"))?
-                .policy
+            let comment = serde_json::from_str::<Comment>(comment)
+                .map_err(|e| format!("invalid training comment: {e}"))?;
+            if comment.train_policy.is_some() && comment.policy.is_none() {
+                return Err("train_policy requires real visit-count policy targets".into());
+            }
+            (comment.policy, comment.train_policy.unwrap_or(true))
         }
-        _ => None,
+        _ => (None, true),
     };
     let targets = targets
         .map(|pairs| {
@@ -118,7 +128,8 @@ fn policy(properties: &[sgf::Property], game: &Game) -> Result<Option<Vec<Policy
             }
         }
     }
-    Ok(targets)
+    let train_policy = train_policy && targets.is_some();
+    Ok((targets, train_policy))
 }
 
 impl ReplayGame {
@@ -140,6 +151,7 @@ impl ReplayGame {
         let mut game = Game::new(Board::new(size)?);
         let mut positions = Vec::with_capacity(record.plays.len() + 1);
         let mut policies = Vec::with_capacity(record.plays.len());
+        let mut policy_training = Vec::with_capacity(record.plays.len());
         let mut identity = Sha256::new();
         identity.update(b"continugo-game\0");
         identity.update(size.to_le_bytes());
@@ -150,10 +162,10 @@ impl ReplayGame {
             if game.is_finished() {
                 return Err("move after natural completion".into());
             }
-            policies.push(
-                policy(&record.move_properties[index], &game)
-                    .map_err(|e| format!("move {}: {e}", index + 1))?,
-            );
+            let (targets, train_policy) = policy(&record.move_properties[index], &game)
+                .map_err(|e| format!("move {}: {e}", index + 1))?;
+            policies.push(targets);
+            policy_training.push(train_policy);
             positions.push(game.clone());
             let action = match play {
                 Play::Place(stone) => (stone.spot.x + 1000 * stone.spot.y) as u32,
@@ -195,6 +207,7 @@ impl ReplayGame {
         Ok(Self {
             positions,
             policies,
+            policy_training,
             black_outcome,
             final_targets,
             game_id: format!("{:x}", identity.finalize()),
@@ -229,6 +242,12 @@ impl ReplayGame {
                 .collect(),
             completed: self.positions.last().unwrap().is_finished(),
             labeled: self.black_outcome.is_some(),
+            policy_training_plies: self
+                .policy_training
+                .iter()
+                .enumerate()
+                .filter_map(|(ply, &enabled)| enabled.then_some(ply))
+                .collect(),
             eligible_plies: self
                 .policies
                 .iter()

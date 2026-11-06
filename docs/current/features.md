@@ -171,6 +171,17 @@ A final prediction on a truncated game does not supply a result.
   IDs internally; the feature transport and loss are unchanged. These are MCTS
   root visits, not raw network priors. Unannotated/random games do **not** acquire
   invented policy labels.
+- Randomized-budget self-play adds boolean `train_policy` to each move comment:
+  `true` for expensive searches, `false` for cheap ones. Both retain genuine,
+  fully validated `policy` visits; `false` masks only policy CE, not final labels.
+  Missing `train_policy` preserves legacy policy supervision. An explicit flag
+  without real visits, or a non-boolean flag, is rejected. The SGF root also
+  records `policy_search: {"simulations":256,"probability":0.25}` when enabled;
+  `search.simulations` remains the cheap budget.
+  `features --inspect` exposes `policy_training_plies` separately from
+  `eligible_plies` (all naturally labeled real-policy positions). The loader
+  carries this mask from hash-pinned inspection into training batches; CGFEAT02
+  tensors and raw `PositionFeatures.policy_targets()` remain unchanged.
 - A value label requires natural two-pass completion and a scored `RE` matching
   authoritative final scoring. It is +1/-1 for a win/loss from the chosen pre-move
   player's perspective, or 0 for a draw. Margin is not a value target. Games without

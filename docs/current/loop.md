@@ -154,6 +154,33 @@ stop, or too few opponents, explicitly reports an unmet precision target; it doe
 The phase can add hours at a scheduled boundary; `--stop-after-iteration` includes
 this phase too. Ordinary resume automatically retains the enabled policy.
 
+## Randomized policy-search budget
+
+New loops default to **32 simulations on 75% of moves and 256 on 25%**:
+`--simulations 32 --policy-simulations 256 --policy-search-probability 0.25`.
+The cap is sampled before each search from a separate per-game seeded RNG,
+independent of position evaluation, search RNG consumption and worker scheduling.
+The fraction is probabilistic, not an exact per-game quota. Expected search work
+is 88 simulations/move, not a wall-time guarantee.
+
+Only expensive positions contribute policy cross-entropy. Cheap positions retain
+outcome, final-score and ownership supervision, subject to the same sampling caps
+and natural-completion requirements. SGFs retain both budgets' real visits and a
+per-move `train_policy` mask; replay/adoption validates their correspondence.
+Phase logs report `samples` and the enabled subset `policy_samples` separately.
+
+`--policy-search-probability 0` restores fixed-budget, all-policy self-play;
+`1` searches/trains policy at the expensive budget on every move. When enabled,
+the cheap budget must be at least 32 and the policy budget at least the cheap one.
+Evaluation remains fixed-budget (`--gate-simulations`), never randomized.
+Standalone self-play opts in explicitly; see [inference](inference.md#randomized-policy-search-caps).
+
+Existing loops missing these settings resume with randomization **disabled**,
+not the new default. Budgets remain frozen on resume; start a new loop to change
+them, and keep old frozen executables intact. Legacy/bootstrap SGFs without a
+`train_policy` field retain their original all-policy supervision; their old
+visit counts are never relabeled as expensive searches.
+
 ## Training and replay
 
 `--warm-start-optimizer keep` is the default. SGD settings, architecture, feature

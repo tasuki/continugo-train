@@ -19,7 +19,7 @@ use crate::{
 };
 use continugo_analysis::GeometricAvailability;
 use continugo_rules::{Board, Color, Game, Play, Stone, sgf, territory};
-use rand::{SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use serde::Serialize;
 use std::{cmp::Reverse, time::Instant};
 
@@ -31,16 +31,34 @@ pub enum Engine {
     Neural,
 }
 
+/// Randomly spend extra search on policy-training positions. The cheap budget
+/// remains SearchConfig::simulations; this schedule never applies to evaluation.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct PolicySearchConfig {
+    pub simulations: u32,
+    pub probability: f64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct SelfplayConfig {
     pub engine: Engine,
     pub max_moves: usize,
     pub search: SearchConfig,
+    pub policy_search: Option<PolicySearchConfig>,
 }
 
 impl SelfplayConfig {
     pub fn validate(&self) -> Result<(), String> {
         self.search.validate()?;
+        if let Some(policy) = self.policy_search
+            && (matches!(self.engine, Engine::Random)
+                || self.search.simulations < 32
+                || policy.simulations < self.search.simulations
+                || !policy.probability.is_finite()
+                || !(0.0 < policy.probability && policy.probability <= 1.0))
+        {
+            return Err("policy search requires a search engine, cheap simulations >= 32, policy simulations >= cheap simulations, and probability in (0,1]".into());
+        }
         if self.search.bootstrap_avoid_eyes && !matches!(self.engine, Engine::Mcts) {
             return Err("bootstrap eye guidance requires --engine mcts".into());
         }
@@ -62,6 +80,8 @@ pub struct GameMetadata {
     pub config: SelfplayConfig,
     /// One entry per SGF move: sparse pre-move root visits, or None for random play.
     pub policies: Vec<Option<Vec<Visit>>>,
+    /// Whether each real visit distribution is eligible for policy supervision.
+    pub policy_training: Vec<bool>,
     /// Post-move estimates in the mover's perspective, aligned with SGF moves.
     pub move_evaluations: Vec<MoveEvaluation>,
     /// None for a truncated game; otherwise the authoritative scored outcome.
@@ -79,6 +99,8 @@ struct GameComment<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<&'a SearchConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    policy_search: Option<&'a PolicySearchConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<&'a GameProfile>,
@@ -95,6 +117,7 @@ impl GameMetadata {
         GameComment {
             seed: self.seed,
             search: (!matches!(self.config.engine, Engine::Random)).then_some(&self.config.search),
+            policy_search: self.config.policy_search.as_ref(),
             model: self.model.as_deref(),
             profile: self.profile.as_ref(),
             opponent: self.opponent.as_deref(),
@@ -162,6 +185,8 @@ struct MoveComment<'a> {
         serialize_with = "serialize_policy"
     )]
     policy: Option<&'a [Visit]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    train_policy: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<&'a MoveProfile>,
 }
@@ -344,9 +369,15 @@ fn generate_inner<const PROFILE: bool>(
     if evaluation_game && config.search.bootstrap_avoid_eyes {
         return Err("bootstrap eye guidance is forbidden in evaluation games".into());
     }
+    if evaluation_game && config.policy_search.is_some() {
+        return Err("randomized policy search is forbidden in evaluation games".into());
+    }
     let started = PROFILE.then(Instant::now);
     let mut profile = GameProfile::default();
     let mut rng = StdRng::seed_from_u64(seed);
+    // Separate stream: cap selection is independent of search/move RNG consumption
+    // and of cross-game batching. Disabled schedules consume no extra search RNG.
+    let mut cap_rng = StdRng::seed_from_u64(seed ^ 0x706f_6c69_6379_6361);
     let mut game = Game::new(board);
     let index_started = PROFILE.then(Instant::now);
     let mut availability = (matches!(config.engine, Engine::Random) || reference_color.is_some())
@@ -355,6 +386,7 @@ fn generate_inner<const PROFILE: bool>(
         profile.availability_init_seconds = started.elapsed().as_secs_f64();
     }
     let mut policies = Vec::new();
+    let mut policy_training = Vec::new();
     let mut move_evaluations = Vec::new();
     let mut rollout_stats = RolloutStats::default();
     while !game.is_finished() && policies.len() < config.max_moves {
@@ -369,6 +401,15 @@ fn generate_inner<const PROFILE: bool>(
         };
         let random_turn =
             matches!(config.engine, Engine::Random) || reference_color == Some(game.on_move());
+        // Decide before inspecting/searching the position, never from its result.
+        let train_policy = !random_turn
+            && config
+                .policy_search
+                .is_none_or(|policy| cap_rng.random_bool(policy.probability));
+        let mut search_config = config.search.clone();
+        if train_policy && let Some(policy) = config.policy_search {
+            search_config.simulations = policy.simulations;
+        }
         let (next, policy) = if random_turn {
             let candidate = random_move::<PROFILE>(
                 &game,
@@ -385,7 +426,7 @@ fn generate_inner<const PROFILE: bool>(
             match config.engine {
                 Engine::Random => unreachable!(),
                 Engine::Mcts => {
-                    let result = search(&game, &config.search, &mut rng)?;
+                    let result = search(&game, &search_config, &mut rng)?;
                     rollout_stats.merge(&result.rollout_stats);
                     let action = if evaluation_game {
                         result.best(&mut rng)
@@ -397,7 +438,7 @@ fn generate_inner<const PROFILE: bool>(
                 Engine::Neural => {
                     let result = search_neural(
                         &game,
-                        &config.search,
+                        &search_config,
                         if opponent.is_some() && game.on_move() == Color::White {
                             opponent.as_deref_mut().expect("opposing evaluator")
                         } else {
@@ -438,6 +479,7 @@ fn generate_inner<const PROFILE: bool>(
         }
         game = next;
         policies.push(policy);
+        policy_training.push(train_policy);
         if let Some(move_started) = move_started {
             move_profile.seconds = move_started.elapsed().as_secs_f64();
             move_profile.passed =
@@ -471,6 +513,7 @@ fn generate_inner<const PROFILE: bool>(
         board_size: board.size(),
         config: config.clone(),
         policies,
+        policy_training,
         move_evaluations,
         result,
         profile: PROFILE.then_some(profile),
@@ -506,6 +549,10 @@ fn generate_inner<const PROFILE: bool>(
         let comment = MoveComment {
             evaluation: metadata.move_evaluations[index],
             policy: policy.as_deref(),
+            train_policy: metadata
+                .config
+                .policy_search
+                .map(|_| metadata.policy_training[index]),
             profile: metadata.profile.as_ref().map(|p| &p.moves[index]),
         };
         record.move_properties.push(vec![(
@@ -550,6 +597,7 @@ mod tests {
                 score: Some(5.2),
             },
             policy: Some(&policy),
+            train_policy: None,
             profile: None,
         })
         .unwrap();
@@ -730,6 +778,7 @@ mod tests {
         };
         let config = SelfplayConfig {
             engine: Engine::Neural,
+            policy_search: None,
             max_moves: 4,
             search: SearchConfig {
                 simulations: 1,
@@ -783,6 +832,7 @@ mod tests {
         };
         let config = SelfplayConfig {
             engine: Engine::Neural,
+            policy_search: None,
             max_moves: 8,
             search: SearchConfig {
                 simulations: 4,
@@ -888,6 +938,7 @@ mod tests {
     fn guided_bootstrap_has_real_visits_natural_results_and_no_noncap_eye_targets() {
         let config = SelfplayConfig {
             engine: Engine::Mcts,
+            policy_search: None,
             max_moves: 1024,
             search: SearchConfig {
                 simulations: 8,
@@ -924,9 +975,87 @@ mod tests {
         );
     }
 
+    #[test]
+    fn randomized_caps_keep_real_visits_and_value_labels_but_mark_policy_positions() {
+        struct PassOnly;
+        impl Evaluator for PassOnly {
+            fn model_id(&self) -> &str {
+                "pass-only"
+            }
+            fn evaluate(&mut self, _: &Game) -> Result<crate::inference::Evaluation, String> {
+                let mut logits = vec![f32::NEG_INFINITY; 1_000_001];
+                logits[1_000_000] = 0.0;
+                Ok(crate::inference::Evaluation {
+                    value: 0.0,
+                    score: 0.0,
+                    logits,
+                    legal: vec![0; 1_000_000],
+                })
+            }
+        }
+        let mut config = config(Engine::Neural);
+        config.search.simulations = 32;
+        config.policy_search = Some(PolicySearchConfig {
+            simulations: 256,
+            probability: 0.25,
+        });
+        let mut counts = [0; 2];
+        for seed in 0..16 {
+            let record =
+                generate_neural(Board::new(9).unwrap(), &config, seed, &mut PassOnly).unwrap();
+            let again =
+                generate_neural(Board::new(9).unwrap(), &config, seed, &mut PassOnly).unwrap();
+            assert_eq!(record.sgf, again.sgf);
+            let loaded = crate::replay::ReplayGame::load(&record.sgf).unwrap();
+            let info = loaded.info(4).unwrap();
+            assert!(info.labeled);
+            assert_eq!(info.eligible_plies, vec![0, 1]);
+            assert_eq!(
+                info.root_comment.as_ref().unwrap()["policy_search"]["simulations"],
+                256
+            );
+            for (ply, &enabled) in record.metadata.policy_training.iter().enumerate() {
+                counts[usize::from(enabled)] += 1;
+                assert_eq!(
+                    info.policy_visit_totals[ply],
+                    Some(if enabled { 256 } else { 32 })
+                );
+                assert_eq!(info.policy_training_plies.contains(&ply), enabled);
+                assert_eq!(loaded.position(ply).unwrap().outcome, Some(0.0));
+            }
+            replay(&record);
+        }
+        assert!(counts[0] > 0 && counts[1] > 0);
+        assert!(
+            generate_match(
+                Board::new(9).unwrap(),
+                &config,
+                0,
+                &mut PassOnly,
+                &mut PassOnly
+            )
+            .unwrap_err()
+            .contains("forbidden in evaluation")
+        );
+        for (cheap, expensive, probability) in [
+            (8, 256, 0.25),
+            (64, 32, 0.25),
+            (32, 256, f64::NAN),
+            (32, 256, 1.1),
+        ] {
+            config.search.simulations = cheap;
+            config.policy_search = Some(PolicySearchConfig {
+                simulations: expensive,
+                probability,
+            });
+            assert!(config.validate().is_err());
+        }
+    }
+
     fn config(engine: Engine) -> SelfplayConfig {
         SelfplayConfig {
             engine,
+            policy_search: None,
             max_moves: 8,
             search: SearchConfig {
                 simulations: 8,
@@ -961,6 +1090,10 @@ mod tests {
             let comment = MoveComment {
                 evaluation: metadata.move_evaluations[index],
                 policy: policy.as_deref(),
+                train_policy: metadata
+                    .config
+                    .policy_search
+                    .map(|_| metadata.policy_training[index]),
                 profile: metadata.profile.as_ref().map(|p| &p.moves[index]),
             };
             assert_eq!(
@@ -1002,7 +1135,14 @@ mod tests {
             if let Some(policy) = policy {
                 assert_eq!(
                     policy.iter().map(|entry| entry.visits).sum::<u32>(),
-                    metadata.config.search.simulations
+                    if metadata.policy_training[index] {
+                        metadata
+                            .config
+                            .policy_search
+                            .map_or(metadata.config.search.simulations, |p| p.simulations)
+                    } else {
+                        metadata.config.search.simulations
+                    }
                 );
                 for entry in policy {
                     assert!(entry.action.apply(&game).is_ok());

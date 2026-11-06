@@ -70,8 +70,11 @@ Training uses genuine sparse MCTS visit counts and natural game outcomes:
   containing positive placement targets**, not just visited coordinates. Cells
   with zero target mass need no exact features, so their omission introduces no
   sampled-denominator bias or importance correction.
-- Value MSE has equal weight to total coarse-plus-local policy CE. Score MSE and
-  area-weighted ownership MSE each have weight 0.25 by default.
+- Value MSE has equal configured weight to total coarse-plus-local policy CE.
+  Randomized-budget SGFs mask cheap positions out of policy CE only, normalizing
+  over enabled positions per batch (zero when none). Value uses all sampled
+  positions; score MSE and area-weighted ownership MSE do too, each with weight
+  0.25 by default. See [loop budgets](loop.md#randomized-policy-search-budget).
 
 `joint_loss` adds the auxiliary terms to `hierarchical_policy_value_loss`, which
 implements this factorized proposal objective.

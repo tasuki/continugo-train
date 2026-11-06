@@ -103,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Engine::Neural
         },
         max_moves: args.max_moves,
+        policy_search: None,
         search: SearchConfig {
             simulations: args.simulations,
             cpuct: args.cpuct,

@@ -193,7 +193,7 @@ def run_phase(
     model.zero_grad(set_to_none=True)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    samples = steps = 0
+    samples = steps = policy_samples = 0
     samples_by_size = Counter()
     totals = [0.0] * 5
     score_abs = score_bias = consistency = 0.0
@@ -273,6 +273,7 @@ def run_phase(
                     batch.ownership,
                     score_weight=options.score_loss_weight,
                     ownership_weight=options.ownership_loss_weight,
+                    policy_weights=batch.policy_weights,
                 )
                 if not torch.isfinite(loss.total):
                     raise RuntimeError("nonfinite joint training loss")
@@ -289,8 +290,10 @@ def run_phase(
             sync(device)
             compute += time.perf_counter() - tick
             count = batch.outcomes.numel()
+            policy_count = int(cpu_batch.policy_weights.sum().item())
+            policy_samples += policy_count
             for index, term in enumerate(loss):
-                totals[index] += term.detach().item() * count
+                totals[index] += term.detach().item() * (policy_count if index == 1 else count)
             with torch.no_grad():
                 error = scores - batch.scores
                 score_abs += error.abs().sum().item()
@@ -310,9 +313,10 @@ def run_phase(
     return {
         "samples": samples,
         "steps": steps,
+        "policy_samples": policy_samples,
         "samples_by_size": dict(sorted(samples_by_size.items())),
         "loss": totals[0] / samples,
-        "policy_ce": totals[1] / samples,
+        "policy_ce": totals[1] / policy_samples if policy_samples else 0.0,
         "value_mse": totals[2] / samples,
         "score_mse": totals[3] / samples,
         "ownership_mse": totals[4] / samples,
@@ -653,7 +657,7 @@ def train(args):
                     if progress["samples_seen"] is not None:
                         progress["samples_seen"] += result["samples"]
                 log(
-                    f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} score_mse={result['score_mse']:.6f} ownership_mse={result['ownership_mse']:.6f} score_mae={result['score_mae']:.6f} score_bias={result['score_bias']:.6f} prediction_std={result['prediction_std']} samples={result['samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
+                    f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} score_mse={result['score_mse']:.6f} ownership_mse={result['ownership_mse']:.6f} score_mae={result['score_mae']:.6f} score_bias={result['score_bias']:.6f} prediction_std={result['prediction_std']} samples={result['samples']} policy_samples={result['policy_samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
                 )
             improved = metrics["validation"]["loss"] < best
             best = min(best, metrics["validation"]["loss"])

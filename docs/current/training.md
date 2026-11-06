@@ -73,7 +73,9 @@ old experiment. Warm-start/new runs use `9:2,13:2,19:1` unless otherwise specifi
 
 **Random SGFs have no MCTS policy labels.** They are not silently assigned played-
 move targets. The joint policy/value trainer uses only positions with
-both real visits and a completed-game outcome. It reports skipped unlabeled,
+both real visits and a completed-game outcome. Randomized self-play's
+`train_policy: false` positions still train outcome, score and ownership, but not
+policy; absence of the flag preserves legacy policy supervision. It reports skipped unlabeled,
 no-policy and duplicate games, and explicitly warns about draws and unlabeled/
 truncated SGFs. Invalid moves, policies or scores fail rather than
 being silently skipped. At least two eligible unique games in one resolution
@@ -360,8 +362,14 @@ change loss without a change in playing strength.
 `training.log` and stdout report policy cross-entropy, outcome/score/ownership
 MSE, score MAE/bias and prediction spread, sample/batch
 counts, end-to-end positions/s, loader wait, compute-plus-transfer time, CUDA peak
-live allocation/reservation and parent peak RSS. Metrics are weighted by **positions**, not
-batches, so leftovers do not bias validation. CUDA timings synchronize. Phase
+live allocation/reservation and parent peak RSS. `samples` counts all sampled
+positions; `policy_samples` counts only positions enabled for policy loss.
+Policy CE is normalized over enabled positions within each batch and phase;
+an all-cheap batch has differentiable zero policy loss and full other losses.
+A phase with no enabled positions reports zero policy CE and `policy_samples=0`,
+not evidence of a perfect policy. Other head metrics use all sampled positions;
+`loss` averages the actual per-batch joint objective by batch sample count.
+Metrics are weighted by **positions**, not batches, so leftovers do not bias validation. CUDA timings synchronize. Phase
 elapsed time includes loader startup/shuffle fill and shutdown of prefetched work;
 wait and compute subtotals need not sum to it.
 

@@ -320,6 +320,23 @@ fn replay_aligns_pre_move_targets_values_and_natural_completion() {
 }
 
 #[test]
+fn replay_preserves_cheap_visits_and_rejects_invalid_policy_masks() {
+    use continugo_train::replay::ReplayGame;
+    let text = r#"(;FF[9071]GM[9071]SZ[9]RE[0];B[]C[{"policy":[["",32\]\],"train_policy":false}];W[]C[{"policy":[["",256\]\],"train_policy":true}])"#;
+    let game = ReplayGame::load(text).unwrap();
+    let info = game.info(4).unwrap();
+    assert_eq!(info.eligible_plies, vec![0, 1]);
+    assert_eq!(info.policy_training_plies, vec![1]);
+    assert_eq!(info.policy_visit_totals, vec![Some(32), Some(256)]);
+    assert!(game.position(0).unwrap().final_targets.is_some());
+    assert!(ReplayGame::load(&text.replace("false", "0.5")).is_err());
+    assert!(ReplayGame::load(r#"(;SZ[9];B[]C[{"train_policy":false}])"#).is_err());
+    assert!(
+        ReplayGame::load(r#"(;SZ[9];B[]C[{"policy":[["",0\]\],"train_policy":false}])"#).is_err()
+    );
+}
+
+#[test]
 fn replay_loads_generated_mcts_visits_without_inventing_labels() {
     use continugo_train::{
         search::SearchConfig,
@@ -327,6 +344,7 @@ fn replay_loads_generated_mcts_visits_without_inventing_labels() {
     };
     let config = SelfplayConfig {
         engine: Engine::Mcts,
+        policy_search: None,
         max_moves: 512,
         search: SearchConfig {
             simulations: 8,

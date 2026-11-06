@@ -30,6 +30,7 @@ def policy_value_loss(
     outcomes: Tensor,
     *,
     normalize: bool = True,
+    policy_weights: Tensor | None = None,
 ) -> Losses:
     """Targets are output-column indices [B,K], counts [B,K], outcomes [B].
 
@@ -56,6 +57,14 @@ def policy_value_loss(
         or (outcomes.abs() > 1).any()
     ):
         raise ValueError("counts must be finite/nonnegative and outcomes in [-1,1]")
+    if policy_weights is None:
+        policy_weights = values.new_ones(batch)
+    if (
+        policy_weights.shape != (batch,)
+        or not torch.isfinite(policy_weights).all()
+        or ((policy_weights != 0) & (policy_weights != 1)).any()
+    ):
+        raise ValueError("policy weights must be a binary mask of shape [batch]")
     totals = visits.sum(dim=1)
     if not torch.isfinite(totals).all() or (totals <= 0).any():
         raise ValueError("every policy target needs positive visit mass")
@@ -71,7 +80,10 @@ def policy_value_loss(
     if not torch.isfinite(log_normalizer).all():
         raise ValueError("policy needs a finite legal normalization")
     selected = torch.where(positive, selected, 0.0)  # Avoid 0 * -inf for padding.
-    policy = (log_normalizer - (selected * (visits / totals[:, None])).sum(dim=1)).mean()
+    per_position = log_normalizer - (selected * (visits / totals[:, None])).sum(dim=1)
+    # Normalize over enabled positions, not all value samples. All-cheap batches
+    # retain a differentiable zero policy loss and full value/auxiliary losses.
+    policy = (per_position * policy_weights).sum() / policy_weights.sum().clamp_min(1)
     value = F.mse_loss(values, outcomes)
     return Losses(policy + value, policy, value)
 
@@ -97,8 +109,11 @@ def joint_loss(
     *,
     score_weight=0.25,
     ownership_weight=0.25,
+    policy_weights=None,
 ):
-    base = hierarchical_policy_value_loss(log_probs, values, target_indices, visits, outcomes)
+    base = hierarchical_policy_value_loss(
+        log_probs, values, target_indices, visits, outcomes, policy_weights=policy_weights
+    )
     if (
         scores.shape != outcomes.shape
         or ownership.shape != ownership_targets.shape
@@ -126,11 +141,21 @@ def joint_loss(
     )
 
 
-def hierarchical_policy_value_loss(log_probs, values, target_indices, visits, outcomes):
+def hierarchical_policy_value_loss(
+    log_probs, values, target_indices, visits, outcomes, *, policy_weights=None
+):
     """Exact hierarchical CE from full-coarse / complete-target-cell log probs.
 
     Every positive target's cell must be supplied in full. There is no sampled
     coordinate denominator or importance correction: omitted cells have zero
     target mass, but still participate in the global coarse softmax.
     """
-    return policy_value_loss(log_probs, values, target_indices, visits, outcomes, normalize=False)
+    return policy_value_loss(
+        log_probs,
+        values,
+        target_indices,
+        visits,
+        outcomes,
+        normalize=False,
+        policy_weights=policy_weights,
+    )

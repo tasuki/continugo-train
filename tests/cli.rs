@@ -37,6 +37,61 @@ impl Drop for TestDir {
 }
 
 #[test]
+fn policy_search_cli_records_budgets_and_rejects_sub_32_cheap_search() {
+    let directory = TestDir::new("policy-search");
+    let output = cli()
+        .args([
+            "--games",
+            "8",
+            "--sizes",
+            "9",
+            "--max-moves",
+            "1",
+            "--simulations",
+            "32",
+            "--policy-simulations",
+            "256",
+            "--policy-search-probability",
+            "0.25",
+            "--output",
+        ])
+        .arg(&directory.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let mut counts = [0; 2];
+    for entry in fs::read_dir(&directory.0).unwrap() {
+        let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+        let record = sgf::decode_record(&text).unwrap();
+        let root = comment(&record.root);
+        assert_eq!(root["search"]["simulations"], 32);
+        assert_eq!(root["policy_search"]["simulations"], 256);
+        let enabled = comment(&record.move_properties[0])["train_policy"]
+            .as_bool()
+            .unwrap();
+        counts[usize::from(enabled)] += 1;
+        let replay = continugo_train::replay::ReplayGame::load(&text).unwrap();
+        assert_eq!(
+            replay.info(4).unwrap().policy_visit_totals,
+            vec![Some(if enabled { 256 } else { 32 })]
+        );
+    }
+    assert!(counts[0] > 0 && counts[1] > 0);
+    for args in [
+        vec!["--simulations", "8"],
+        vec!["--policy-simulations", "16"],
+        vec!["--engine", "random"],
+        vec!["--policy-search-probability", "NaN"],
+    ] {
+        let mut command = cli();
+        if !args.contains(&"--policy-search-probability") {
+            command.args(["--policy-search-probability", "0.25"]);
+        }
+        assert!(!command.args(args).output().unwrap().status.success());
+    }
+}
+
+#[test]
 fn default_mix_and_truncation_warnings_are_explicit() {
     let directory = TestDir::new("weighted-default");
     let output = cli()

@@ -110,6 +110,46 @@ class OfflineDataTests(unittest.TestCase):
         with FeatureClient() as fresh, self.assertRaisesRegex(ValueError, "changed"):
             fresh.load(path, 0, file_sha256=info["file_sha256"])
 
+    def test_cheap_positions_retain_value_labels_and_policy_mask_reaches_batches(self):
+        text = SGF.replace('{"policy":', '{"train_policy":false,"policy":', 1)
+        self.paths[0].write_text(text)
+        info = inspect_game(self.paths[0])
+        self.assertEqual(info["eligible_plies"], [0, 1])
+        self.assertEqual(info["policy_training_plies"], [1])
+        games, _ = data.inspect_corpus([str(self.paths[0])], 4)
+        self.assertEqual(games[0].policy_plies, (1,))
+        for workers in (0, 2):
+            samples = list(data._parallel_samples([(games[0], [0, 1])], 4, workers, None))
+            self.assertEqual([s.policy_weight for s in samples], [0.0, 1.0])
+            self.assertEqual([s.outcome for s in samples], [1.0, -1.0])
+            self.assertTrue(all(s.ownership is not None and s.score is not None for s in samples))
+            batch = data.collate(samples)
+            self.assertEqual(batch.to("cpu").policy_weights.tolist(), [0.0, 1.0])
+            self.assertEqual(batch.visits.sum(1).tolist(), [8.0, 3.0])
+
+        # An all-cheap corpus still takes real value/score/ownership SGD steps.
+        self.paths[0].write_text(SGF.replace('{"policy":', '{"train_policy":false,"policy":'))
+        games, _ = data.inspect_corpus([str(self.paths[0])], 4)
+        model = trainer.PolicyValueNet(
+            trainer.NetworkConfig(channels=4, blocks=1, policy_hidden=4, value_hidden=4)
+        )
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        options = trainer.Options(
+            batch_size=2,
+            workers=0,
+            shuffle_buffer=0,
+            positions_per_game=0,
+            steps_per_epoch=0,
+            size_weights="uniform",
+        )
+        result = trainer.run_phase(
+            model, optimizer, games, options, 0, torch.device("cpu"), None, True
+        )
+        self.assertEqual(result["samples"], 2)
+        self.assertEqual(result["policy_samples"], 0)
+        self.assertEqual(result["policy_ce"], 0)
+        self.assertGreater(result["value_mse"], 0)
+
     def test_collate_pads_sparse_targets_and_rejects_mixed_resolutions(self):
         def sample(resolution, indices, visits, count=3):
             return data.TrainingSample(

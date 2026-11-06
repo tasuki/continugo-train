@@ -10,7 +10,8 @@ use continugo_train::{
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
     search::{SearchConfig, rollout::RolloutArgs},
     selfplay::{
-        Engine, GameRecord, SelfplayConfig, generate, generate_neural, generate_profiled,
+        Engine, GameRecord, PolicySearchConfig, SelfplayConfig, generate, generate_neural,
+        generate_profiled,
         parallel::{ParallelConfig, generate_parallel},
     },
 };
@@ -44,6 +45,13 @@ struct Args {
     max_moves: usize,
     #[arg(long, default_value_t = 32)]
     simulations: u32,
+    /// Total search budget on policy-training positions (with --policy-search-probability).
+    #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(1..))]
+    policy_simulations: u32,
+    /// Chance of an expensive policy-training search; 0 keeps fixed-budget training.
+    /// Randomization requires --simulations >= 32. Cheap moves keep value labels.
+    #[arg(long, default_value_t = 0.0)]
+    policy_search_probability: f64,
     #[arg(long, default_value_t = 1.5)]
     cpuct: f64,
     #[arg(long, default_value_t = 2.0)]
@@ -130,9 +138,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("--profile currently requires --engine random".into());
     }
     let parallel = args.parallel_config()?;
+    if !args.policy_search_probability.is_finite()
+        || !(0.0..=1.0).contains(&args.policy_search_probability)
+    {
+        return Err("--policy-search-probability must be finite and in 0..1".into());
+    }
     let config = SelfplayConfig {
         engine: args.engine,
         max_moves: args.max_moves,
+        policy_search: (args.policy_search_probability > 0.0).then_some(PolicySearchConfig {
+            simulations: args.policy_simulations,
+            probability: args.policy_search_probability,
+        }),
         search: SearchConfig {
             simulations: args.simulations,
             cpuct: args.cpuct,

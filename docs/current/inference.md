@@ -192,6 +192,25 @@ policy again would double-count it. The correction avoids both mistakes but rema
 a finite-sample approximation, not exhaustive search. This correction concerns
 coordinate sampling inside selected cells; it does not recover omitted cells.
 
+### Randomized policy-search caps
+
+The training loop enables randomized 32/256 budgets by default. Standalone
+self-play retains fixed-budget behavior unless explicitly enabled:
+
+```sh
+mise run neural-selfplay -- --model runs/model-001 --simulations 32 \
+  --policy-simulations 256 --policy-search-probability 0.25 --output runs/mixed-budget
+```
+
+The expensive budget is the **total**, not 256 additional simulations. A separate
+seeded RNG chooses each cap before search. Cheap moves still have at least 32
+simulations, preserve their actual visit counts in SGF, and train only the
+value/score/ownership heads. Only expensive moves supply policy supervision.
+Zero probability disables randomization and keeps ordinary all-policy training.
+The same options work for bootstrap MCTS, but not direct random play; evaluation
+rejects randomized caps. See [loop budgets](loop.md#randomized-policy-search-budget)
+and [SGF masks](features.md#sgf-replay-and-labels).
+
 ## Cross-game batching
 
 Neural self-play and new loops default to twelve active games, a twelve-request

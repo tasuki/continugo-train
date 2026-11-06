@@ -105,6 +105,47 @@ class AuxiliaryTests(unittest.TestCase):
         torch.testing.assert_close(ownership_weights(n).sum(), torch.tensor(1.0))
         self.assertLess(ownership_weights(n)[0, 0], ownership_weights(n)[1, 1])
 
+    def test_policy_mask_excludes_cheap_positions_without_masking_other_heads(self):
+        logits = torch.randn(2, 3, requires_grad=True)
+        values = torch.zeros(2, requires_grad=True)
+        scores = torch.zeros(2, requires_grad=True)
+        ownership = torch.zeros(2, 4, 4, requires_grad=True)
+        targets = torch.tensor([[0], [1]])
+        visits = torch.tensor([[32.0], [256.0]])
+        outcomes = torch.tensor([1.0, -1.0])
+        owned = torch.ones(2, 4, 4)
+
+        def loss(mask):
+            return joint_loss(
+                logits.log_softmax(1),
+                values,
+                scores,
+                ownership,
+                targets,
+                visits,
+                outcomes,
+                outcomes,
+                owned,
+                policy_weights=mask,
+            )
+
+        mixed = loss(torch.tensor([0.0, 1.0]))
+        torch.testing.assert_close(mixed.policy, -logits.log_softmax(1)[1, 1])
+        mixed.total.backward()
+        self.assertEqual(logits.grad[0].count_nonzero(), 0)
+        self.assertGreater(logits.grad[1].abs().sum(), 0)
+        for tensor in (values, scores, ownership):
+            self.assertTrue((tensor.grad.reshape(2, -1).abs().sum(1) > 0).all())
+        logits.grad = None
+        cheap = loss(torch.zeros(2))
+        self.assertEqual(cheap.policy.item(), 0)
+        cheap.total.backward()
+        self.assertEqual(logits.grad.count_nonzero(), 0)
+        self.assertTrue(torch.isfinite(cheap.total))
+        for mask in (torch.ones(3), torch.tensor([0.0, float("nan")]), torch.tensor([0.0, 0.5])):
+            with self.assertRaisesRegex(ValueError, "policy weights"):
+                loss(mask)
+
     def test_tiny_auxiliary_problem_overfits_and_search_omits_ownership(self):
         model = self.model().eval()
         coarse = torch.randn(2, 12, 8, 8)

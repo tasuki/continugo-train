@@ -44,6 +44,8 @@ class LoopConfig:
     games_per_iteration: int = 10
     seed: int = 0
     simulations: int = 32
+    policy_simulations: int = 256
+    policy_search_probability: float = 0.25
     max_moves: int = 512
     cpuct: float = 1.5
     widening: float = 2.0
@@ -127,6 +129,17 @@ class LoopConfig:
             raise ValueError("sizes must be nonempty and in 9..19")
         if not 1 <= self.games_per_iteration < 2**32 or not 1 <= self.simulations < 2**32:
             raise ValueError("game count and simulations must fit positive native u32 limits")
+        if (
+            not 1 <= self.policy_simulations < 2**32
+            or not math.isfinite(self.policy_search_probability)
+            or not 0 <= self.policy_search_probability <= 1
+            or self.policy_search_probability > 0
+            and (self.simulations < 32 or self.policy_simulations < self.simulations)
+        ):
+            raise ValueError(
+                "policy search needs probability in 0..1, positive u32 policy simulations, "
+                "and when enabled: cheap simulations >= 32 and policy simulations >= cheap simulations"
+            )
         positive = [
             "games_per_iteration",
             "simulations",
@@ -191,6 +204,35 @@ class LoopConfig:
                 "score_weight",
             ]
         }
+
+    def policy_search(self):
+        if not self.policy_search_probability:
+            return None
+        return {
+            "simulations": self.policy_simulations,
+            "probability": self.policy_search_probability,
+        }
+
+    def valid_policy_visits(self, info):
+        """Audit actual budgets against per-move policy eligibility, not just caps."""
+        all_plies = list(range(info["moves"]))
+        plies = info.get("policy_training_plies")
+        if self.policy_search_probability:
+            if plies is None or self.policy_search_probability == 1 and plies != all_plies:
+                return False
+        else:
+            # Frozen older feature binaries do not expose the mask.
+            if plies is not None and plies != all_plies:
+                return False
+            plies = all_plies
+        enabled = set(plies)
+        expected = [
+            self.policy_simulations
+            if self.policy_search_probability and ply in enabled
+            else self.simulations
+            for ply in all_plies
+        ]
+        return info.get("policy_visit_totals") == expected
 
     def training_options(self, parent, iteration):
         options = dict(parent["options"])
@@ -589,8 +631,9 @@ class LoopRunner:
                     or root.get("model") != iteration["parent_model"]["checkpoint_sha256"]
                     or root.get("opponent") is not None
                     or root.get("search") != self.config.search()
+                    or root.get("policy_search") != self.config.policy_search()
                     or not 0 < info["moves"] <= self.config.max_moves
-                    or info.get("policy_visit_totals") != [self.config.simulations] * info["moves"]
+                    or not self.config.valid_policy_visits(info)
                     or info["completed"] != info["labeled"]
                     or not info["completed"]
                     and info["moves"] != self.config.max_moves
@@ -606,6 +649,11 @@ class LoopRunner:
                     "moves": info["moves"],
                     "eligible": bool(info["eligible_plies"]),
                     "eligible_positions": len(info["eligible_plies"]),
+                    "policy_positions": len(
+                        info.get("policy_training_plies", info["eligible_plies"])
+                    )
+                    if info["labeled"]
+                    else 0,
                     "result": info["result"],
                 }
                 if info["result"] == "0":
@@ -667,6 +715,14 @@ class LoopRunner:
             ]
             settings = {
                 **self.config.search(),
+                **(
+                    {
+                        "policy_simulations": self.config.policy_simulations,
+                        "policy_search_probability": self.config.policy_search_probability,
+                    }
+                    if self.config.policy_search_probability
+                    else {}
+                ),
                 **{
                     name: getattr(self.config, name)
                     for name in [
@@ -1250,6 +1306,11 @@ def run_loop(args):
             for field in fields(LoopConfig):
                 # Preserve frozen old-loop behavior; the enabled default applies
                 # to new campaigns, not implicit upgrades of saved loops.
+                if field.name in {"policy_simulations", "policy_search_probability"}:
+                    state["config"].setdefault(
+                        field.name,
+                        0.0 if field.name == "policy_search_probability" else field.default,
+                    )
                 if field.name.startswith("adaptive_"):
                     state["config"].setdefault(
                         field.name, 0 if field.name == "adaptive_max_games" else field.default

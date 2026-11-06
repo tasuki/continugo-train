@@ -77,6 +77,21 @@ class FakeJobs:
             text = text.replace('["",3', '["",8')
             text = text.replace(";B[]", r';B[]C[{"policy":[["",8\]\]}]')
             root = {"seed": seed + index, "model": model, "search": search}
+            if "--policy-search-probability" in command:
+                probability = float(value("policy_search_probability"))
+                full = int(value("policy_simulations"))
+                root["policy_search"] = {"simulations": full, "probability": probability}
+                nodes = []
+                for ply, (color, coordinate) in enumerate(
+                    (("B", f"d{letter}d{letter}"), ("W", ""), ("B", ""))
+                ):
+                    enabled = probability == 1 or ply == 0
+                    count = full if enabled else search["simulations"]
+                    comment = json.dumps(
+                        {"policy": [[coordinate, count]], "train_policy": enabled}
+                    ).replace("]", "\\]")
+                    nodes.append(f";{color}[{coordinate}]C[{comment}]")
+                text = "(;FF[9071]GM[9071]SZ[13]RE[B+220.4]" + "".join(nodes) + ")"
             if self.fault == "wrong_model":
                 root["model"] = "0" * 64
             text = text.replace("SZ[13]", "SZ[13]C[" + json.dumps(root) + "]")
@@ -239,6 +254,8 @@ class LoopHarness(unittest.TestCase):
                 "204",
                 "--simulations",
                 "8",
+                "--policy-search-probability",
+                "0",
                 "--max-moves",
                 "32",
                 "--device",
@@ -279,6 +296,57 @@ class LoopHarness(unittest.TestCase):
 
 
 class LoopTests(LoopHarness):
+    def test_randomized_policy_caps_are_frozen_and_replayed_with_masks(self):
+        defaults = loop.LoopConfig()
+        self.assertEqual(
+            (defaults.simulations, defaults.policy_simulations, defaults.policy_search_probability),
+            (32, 256, 0.25),
+        )
+        defaults.validate()
+        output = self.root / "randomized"
+        state = self.run_loop(
+            output, extra=["--simulations", "32", "--policy-search-probability", "0.25"]
+        )
+        iteration = state["iterations"][0]
+        for record in iteration["games"]:
+            info = inspect_game(output / record["path"])
+            self.assertEqual(info["policy_visit_totals"], [256, 32, 32])
+            self.assertEqual(info["policy_training_plies"], [0])
+            self.assertEqual(info["eligible_plies"], [0, 1, 2])
+            self.assertEqual(record["policy_positions"], 1)
+            altered = dict(info, policy_visit_totals=[32, 32, 32])
+            self.assertFalse(defaults.valid_policy_visits(altered))
+        self.run_loop(output, resume=True)
+        with self.assertRaisesRegex(ValueError, "conflicting override"):
+            self.run_loop(output, resume=True, extra=["--policy-search-probability", "0"])
+        saved = loop.load_training(output / iteration["checkpoint"]["path"])
+        generated = [g for g in saved["manifest"] if "selfplay" in g["path"]]
+        self.assertTrue(generated)
+        self.assertTrue(all(g["policy_plies"] == (0,) for g in generated))
+
+    def test_old_loop_missing_policy_settings_stays_fixed_budget(self):
+        output = self.root / "legacy-caps"
+        self.run_loop(output)
+        state = torch.load(output / "loop.pt", weights_only=True)
+        for name in ("policy_simulations", "policy_search_probability"):
+            del state["config"][name]
+        atomic_checkpoint(output / "loop.pt", state)
+        restored = self.run_loop(output, resume=True)
+        self.assertEqual(restored["config"]["policy_search_probability"], 0)
+
+    def test_randomized_policy_budget_validation(self):
+        for settings in [
+            {"simulations": 8},
+            {"policy_simulations": 16},
+            {"policy_simulations": 2**32},
+            {"policy_search_probability": float("nan")},
+            {"policy_search_probability": -0.1},
+            {"policy_search_probability": 1.1},
+        ]:
+            with self.assertRaisesRegex(ValueError, "policy search"):
+                loop.LoopConfig(**settings).validate()
+        loop.LoopConfig(simulations=8, policy_search_probability=0).validate()
+
     def test_stop_at_round_boundary_keeps_total_target_and_can_resume(self):
         output = self.root / "boundary"
         state = self.run_loop(output, extra=["--iterations", "3", "--stop-after-iteration", "2"])
@@ -590,7 +658,7 @@ class LoopTests(LoopHarness):
             "--seed",
             "600",
             "--simulations",
-            "4",
+            "32",
             "--widening",
             "0.01",
             # Keep this a cheap recovery test, not a search-strength match.
