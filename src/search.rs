@@ -534,7 +534,7 @@ fn terminal_utility(game: &Game, weight: f64) -> f64 {
         territory::Outcome::Draw => 0.0,
         territory::Outcome::Win(color, _) => color_sign(color),
     };
-    let score = (areas.black - areas.white) / crate::targets::BOARD_AREA;
+    let score = crate::targets::normalized_score(areas);
     color_sign(game.on_move()) * (outcome + weight * score) / (1.0 + weight)
 }
 

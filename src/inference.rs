@@ -64,7 +64,10 @@ impl LeafEstimate {
             .iter()
             .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
         {
-            return Err("invalid neural outcome/score estimate".into());
+            return Err(format!(
+                "invalid neural outcome/score estimate: value={}, score={}",
+                self.value, self.score
+            ));
         }
         Ok((self.value + weight * self.score) / (1.0 + weight))
     }

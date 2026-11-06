@@ -15,7 +15,7 @@ use crate::{
     inference::{Evaluator, LeafEstimate},
     profile::{GameProfile, MoveProfile},
     search::{SearchConfig, Visit, color_sign, rollout::RolloutStats, search, search_neural},
-    targets::BOARD_AREA,
+    targets::{BOARD_AREA, normalized_score},
 };
 use continugo_analysis::GeometricAvailability;
 use continugo_rules::{Board, Color, Game, Play, Stone, sgf, territory};
@@ -151,7 +151,7 @@ impl MoveEvaluation {
                     territory::Outcome::Draw => 0.0,
                     territory::Outcome::Win(color, _) => sign * color_sign(color),
                 },
-                score: sign * (areas.black - areas.white) / BOARD_AREA,
+                score: sign * normalized_score(areas),
             }
         } else if let Some(evaluator) = evaluator {
             let estimate = evaluator.estimate(game)?;
@@ -747,6 +747,41 @@ mod tests {
     }
 
     #[test]
+    fn terminal_annotations_accept_polygon_area_roundoff_without_a_network() {
+        use continugo_rules::Spot;
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut overshot = false;
+        for _ in 0..128 {
+            let mut game = Game::new(Board::new(9).unwrap());
+            for _ in 0..3 {
+                let spot = Spot {
+                    x: rng.random_range(100..900),
+                    y: rng.random_range(100..900),
+                };
+                if let Ok(next) = game.play(spot) {
+                    game = next.pass().unwrap();
+                }
+            }
+            if game.record().is_empty() {
+                continue;
+            }
+            game = game.pass().unwrap();
+            assert!(game.is_finished());
+            let areas = territory::areas(game.position().stones());
+            overshot |= areas.black > BOARD_AREA;
+            let annotation = MoveEvaluation::after_move(&game, None).unwrap();
+            assert_eq!(annotation.win_pct, Some(100.0));
+            let stone_area = std::f64::consts::PI * f64::from(game.board().stone_radius()).powi(2);
+            let expected = (BOARD_AREA / stone_area * 10.0).round() / 10.0;
+            assert_eq!(annotation.score, Some(expected));
+        }
+        assert!(
+            overshot,
+            "regression must exercise genuine polygon accumulation overshoot"
+        );
+    }
+
+    #[test]
     fn invalid_annotation_estimates_are_errors_not_unknown_values() {
         let game = Game::default().pass().unwrap();
         for (value, score) in [
@@ -754,6 +789,8 @@ mod tests {
             (0.0, f64::INFINITY),
             (1.1, 0.0),
             (0.0, -1.1),
+            (f64::from_bits(1.0f64.to_bits() + 1), 0.0),
+            (0.0, -f64::from_bits(1.0f64.to_bits() + 1)),
         ] {
             let mut evaluator = FixedEstimate {
                 value,

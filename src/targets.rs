@@ -8,6 +8,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const BOARD_AREA: f64 = 1_000_000.0;
 pub const TARGET_VERSION: &str = "final-area-v1";
 
+/// Exact territory is bounded by the board, but summing clipped floating-point
+/// polygons can overshoot its area by a few ulps. Bound authoritative scores at
+/// this normalization boundary; neural output validation remains strict.
+pub fn normalized_score(areas: territory::Areas) -> f64 {
+    ((areas.black - areas.white) / BOARD_AREA).clamp(-1.0, 1.0)
+}
+
 type Raster = (usize, Arc<Vec<f32>>);
 
 pub struct FinalTargets {
@@ -21,7 +28,7 @@ pub struct FinalTargets {
 impl FinalTargets {
     pub fn new(stones: Vec<Stone>, areas: territory::Areas) -> Self {
         Self {
-            score: ((areas.black - areas.white) / BOARD_AREA) as f32,
+            score: normalized_score(areas) as f32,
             stones,
             cells: OnceLock::new(),
             raster: Mutex::new(None),
@@ -157,6 +164,21 @@ fn polygon_area(polygon: &[Point]) -> f64 {
 mod tests {
     use super::*;
     use continugo_rules::{Board, Game, Spot};
+
+    #[test]
+    fn final_score_normalization_bounds_polygon_roundoff_in_both_perspectives() {
+        let overshoot = f64::from_bits(BOARD_AREA.to_bits() + 1);
+        for (black, white, expected) in [
+            (overshoot, 0.0, 1.0),
+            (0.0, overshoot, -1.0),
+            (750_000.0, 250_000.0, 0.5),
+            (0.0, 0.0, 0.0),
+        ] {
+            let areas = territory::Areas { black, white };
+            assert_eq!(normalized_score(areas), expected);
+            assert_eq!(FinalTargets::new(Vec::new(), areas).score, expected as f32);
+        }
+    }
 
     #[test]
     fn captured_stones_do_not_own_final_territory() {

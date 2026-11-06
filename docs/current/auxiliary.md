@@ -15,7 +15,11 @@ label. No unfinished-board territory is used as an intermediate reward.
 Score is `(final_black_area - final_white_area) / 1_000_000`, flipped for a
 White-to-move training position. The physical board is always a 1000-unit square;
 normalizing by `SZ²` would be incorrect. Use the unrounded authoritative area,
-not the formatted SGF margin. Outcome retains the shared scorer's draw tolerance.
+not the formatted SGF margin. Authoritative score normalization clamps to the
+mathematical [-1,1] bound: floating-point Voronoi polygon accumulation can exceed
+the board area by a few ulps. Labels, terminal search utility and final move
+annotations share this normalization; neural outputs are still strictly validated.
+Outcome retains the shared scorer's draw tolerance.
 
 Ownership is **38×38 / 54×54 / 78×78** on 9/13/19 at default feature density.
 Each output is the friendly-minus-enemy fraction of final area in a continuous
