@@ -64,11 +64,12 @@ class NetworkConfig:
     blocks: int = 4
     policy_hidden: int = 16
     value_hidden: int = 32
+    score_hidden: int = 32
+    ownership_hidden: int = 16
     chunk_size: int = 65536
     top_cells: int = 32
     exploration_cells: int = 8
-    # Missing in historical checkpoints: never silently reinterpret their ReLU.
-    value_activation: str = "relu"
+    value_activation: str = "leaky_relu"
 
     def __post_init__(self) -> None:
         if not isinstance(self.value_activation, str) or self.value_activation not in {
@@ -127,11 +128,51 @@ class PolicyValueNet(nn.Module):
             nn.Tanh(),
         )
 
-    def encode(self, coarse: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        self.score_head = nn.Sequential(
+            nn.Linear(config.channels, config.score_hidden),
+            nn.LeakyReLU(0.1),
+            nn.Linear(config.score_hidden, 1),
+            nn.Tanh(),
+        )
+        self.ownership_head = nn.Sequential(
+            nn.Conv2d(config.channels, config.ownership_hidden, 1),
+            nn.LeakyReLU(0.1),
+            nn.Conv2d(config.ownership_hidden, 1, 1),
+            nn.Tanh(),
+        )
+
+    def _encode(self, coarse: Tensor):
         trunk = self.trunk(coarse)
         pooled = trunk.mean(dim=(-2, -1))
         spatial = self.policy_spatial(trunk) + self.policy_global(pooled)[:, :, None, None]
-        return spatial, self.pass_head(pooled), self.value_head(pooled).squeeze(-1)
+        return trunk, pooled, spatial, self.pass_head(pooled), self.value_head(pooled).squeeze(-1)
+
+    def encode(self, coarse: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        _, _, spatial, pass_logit, value = self._encode(coarse)
+        return spatial, pass_logit, value
+
+    def encode_search(self, coarse: Tensor):
+        """Production inference omits the training-only ownership head."""
+        _, pooled, spatial, pass_logit, value = self._encode(coarse)
+        return spatial, pass_logit, value, self.score_head(pooled).squeeze(-1)
+
+    def encode_training(self, coarse: Tensor):
+        trunk, pooled, spatial, pass_logit, value = self._encode(coarse)
+        return (
+            spatial,
+            pass_logit,
+            value,
+            self.score_head(pooled).squeeze(-1),
+            self.ownership_head(trunk).squeeze(1),
+        )
+
+    def forward_search(self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor):
+        spatial, pass_logit, value, score = self.encode_search(coarse)
+        return self.policy(spatial, pass_logit, exact, actions, legal), value, score
+
+    def forward_all(self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor):
+        spatial, pass_logit, value, score, ownership = self.encode_training(coarse)
+        return self.policy(spatial, pass_logit, exact, actions, legal), value, score, ownership
 
     def coarse_logits(self, spatial: Tensor, pass_logit: Tensor) -> Tensor:
         return torch.cat((self.cell_head(spatial).flatten(1), pass_logit), dim=1)

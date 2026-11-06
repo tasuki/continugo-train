@@ -2,6 +2,7 @@
 /.venv/
 /runs/
 /models/
+/models_*/
 __pycache__/
 *.egg-info/
 /.ruff_cache/

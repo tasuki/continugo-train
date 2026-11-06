@@ -30,8 +30,8 @@ class Encoder(nn.Module):
         self.model = model
 
     def forward(self, coarse):
-        spatial, pass_logit, value = self.model.encode(coarse)
-        return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1)
+        spatial, pass_logit, value, score = self.model.encode_search(coarse)
+        return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1), score
 
 
 class Scorer(nn.Module):
@@ -81,12 +81,13 @@ def verify(model, directory):
             exact = torch.rand(batch, count, model.config.move_features, generator=rng)
             actions = torch.randint(1000000, (batch, count), generator=rng)
             actions[:, :6] = torch.tensor([0, 999, 1000, 999999, 500500, 500501])
-            spatial, pass_logit, value = model.encode(coarse)
+            spatial, pass_logit, value, score = model.encode_search(coarse)
             expected = [
                 spatial,
                 pass_logit,
                 value,
                 model.cell_head(spatial).flatten(1),
+                score,
                 model.score_chunk(spatial, exact, actions),
             ]
             actual = encoder.run(None, {"coarse": coarse.numpy()})
@@ -136,12 +137,13 @@ def export_checkpoint(checkpoint, output):
                 (coarse,),
                 str(directory / "encoder.onnx"),
                 input_names=["coarse"],
-                output_names=["spatial", "pass_logit", "value", "cells"],
+                output_names=["spatial", "pass_logit", "value", "cells", "score"],
                 dynamic_axes={
                     "coarse": {0: "batch", 2: "height", 3: "width"},
                     "spatial": {0: "batch", 2: "height", 3: "width"},
                     "pass_logit": {0: "batch"},
                     "value": {0: "batch"},
+                    "score": {0: "batch"},
                     "cells": {0: "batch", 1: "cells"},
                 },
                 opset_version=17,

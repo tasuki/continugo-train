@@ -1,6 +1,6 @@
 """Read real Rust features. Python only decodes tensors; it implements no rules.
 
-SGF remains the source game record. CGFEAT01 is an ephemeral single-position
+SGF remains the source game record. CGFEAT02 is an ephemeral single-position
 training/inference tensor packet, carried via stdout or an optional cache file.
 See docs/current/features.md for feature names, normalization and binary layout.
 """
@@ -48,7 +48,19 @@ MOVE_FEATURES = (
     "bottom_border",
 )
 PASS = 1_000_000
-HEADER = struct.Struct("<8s11If2I")
+TARGET_VERSION = "final-area-v1"
+HEADER = struct.Struct("<8s11If2If")
+
+
+def ownership_weights(resolution: int, *, device="cpu") -> Tensor:
+    """Area fractions about Rust's rounded raster sample locations."""
+    i = torch.arange(resolution, device=device, dtype=torch.int64)
+    samples = ((i * 999 + (resolution - 1) // 2) // (resolution - 1)).float()
+    bounds = torch.cat(
+        (samples.new_zeros(1), (samples[:-1] + samples[1:]) / 2, samples.new_full((1,), 1000))
+    )
+    widths = bounds.diff() / 1000
+    return widths[:, None] * widths[None, :]
 
 
 @dataclass
@@ -67,6 +79,8 @@ class PositionFeatures:
     player: int  # 0 Black, 1 White; arrays are already side-to-move relative.
     samples_per_diameter: int
     full_domain: bool
+    score: float | None
+    ownership: Tensor | None
 
     def network_inputs(self, device="cpu") -> tuple[Tensor, Tensor, Tensor, Tensor]:
         return (
@@ -127,9 +141,10 @@ def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatur
         outcome,
         density,
         full,
+        score,
     ) = HEADER.unpack_from(data)
     if (
-        magic != b"CGFEAT01"
+        magic != b"CGFEAT02"
         or version != SCHEMA_VERSION
         or planes != len(COARSE_PLANES)
         or fields != len(MOVE_FEATURES)
@@ -148,7 +163,11 @@ def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatur
     ):
         raise ValueError("invalid feature dimensions or flags")
     expected = (
-        HEADER.size + 4 * planes * resolution**2 + 4 * count * fields + 5 * count + 8 * targets
+        HEADER.size
+        + 4 * (planes + 1) * resolution**2
+        + 4 * count * fields
+        + 5 * count
+        + 8 * targets
     )
     if len(data) != expected:
         raise ValueError("feature packet length does not match header")
@@ -167,6 +186,16 @@ def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatur
     actions = array("<u4", (count,)).astype(np.int64)
     target_actions = array("<u4", (targets,)).astype(np.int64)
     visits = array("<u4", (targets,)).astype(np.int64)
+    ownership = array("<f4", (resolution, resolution)).copy()
+    if (
+        not np.isfinite(score)
+        or abs(score) > 1
+        or not np.isfinite(ownership).all()
+        or (np.abs(ownership) > 1).any()
+    ):
+        raise ValueError("invalid auxiliary targets")
+    if not labeled and (score != 0 or ownership.any()):
+        raise ValueError("unlabeled packet contains auxiliary targets")
     if timings is not None:
         now = time.perf_counter()
         timings["decode_arrays_seconds"] = now - tick
@@ -214,6 +243,8 @@ def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatur
         player,
         density,
         bool(full),
+        score if labeled else None,
+        torch.from_numpy(ownership) if labeled else None,
     )
     if timings is not None:
         timings["decode_tensors_seconds"] = time.perf_counter() - tick
@@ -282,7 +313,7 @@ def inspect_game(sgf: str | Path, density: int = 4, binary: str | Path | None = 
 class FeatureClient:
     """One Rust process, one cached validated game, arbitrary pre-move requests.
 
-    Each response is status u8 + length u64 + a CGFEAT01 packet or UTF-8 error.
+    Each response is status u8 + length u64 + a CGFEAT02 packet or UTF-8 error.
     The feature schema is unchanged; JSON lines are IPC commands, not game records.
     """
 

@@ -1,4 +1,4 @@
-//! Existing CGFEAT01 tensor packet, shared by one-shot and persistent extraction.
+//! CGFEAT02 tensor packet, including validated final score/ownership targets.
 
 use crate::{
     features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION},
@@ -70,13 +70,27 @@ fn encode<const PROFILE: bool>(
     }
     let tick = PROFILE.then(Instant::now);
     let policy = sample.policy.as_deref().unwrap_or_default();
-    let length = 64
+    let ownership = sample
+        .final_targets
+        .as_ref()
+        .map(|t| t.ownership(extractor.resolution));
+    let sign = if player_index(sample.game.on_move()) == 0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let score = sample
+        .final_targets
+        .as_ref()
+        .map_or(0.0, |t| t.score * sign);
+    let length = 68
+        + extractor.resolution * extractor.resolution * 4
         + extractor.coarse.len() * 4
         + moves.exact.len() * 4
         + actions.len() * 5
         + policy.len() * 8;
     let mut packet = Vec::with_capacity(length);
-    packet.extend_from_slice(b"CGFEAT01");
+    packet.extend_from_slice(b"CGFEAT02");
     for number in [
         SCHEMA_VERSION,
         COARSE_PLANES.len() as u32,
@@ -95,6 +109,7 @@ fn encode<const PROFILE: bool>(
     ] {
         packet.extend_from_slice(&number.to_le_bytes());
     }
+    packet.extend_from_slice(&score.to_le_bytes());
     for &number in extractor.coarse.iter().chain(&moves.exact) {
         packet.extend_from_slice(&number.to_le_bytes());
     }
@@ -107,6 +122,10 @@ fn encode<const PROFILE: bool>(
     }
     for target in policy {
         packet.extend_from_slice(&target.visits.to_le_bytes());
+    }
+    for i in 0..extractor.resolution * extractor.resolution {
+        let value = ownership.as_ref().map_or(0.0, |raster| raster[i] * sign);
+        packet.extend_from_slice(&value.to_le_bytes());
     }
     debug_assert_eq!(packet.len(), length);
     if let Some(tick) = tick {

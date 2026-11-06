@@ -58,6 +58,7 @@ SEARCH_TYPES = {
     "widening_exponent": float,
     "proposal_attempts": int,
     "independent_exploration": float,
+    "score_weight": float,
 }
 PROTOCOL_COLUMNS = [
     "version",
@@ -110,7 +111,7 @@ def protocol(config):
     counts = Counter(weighted_sizes(config.sizes, config.size_weights))
     divisor = math.gcd(*counts.values())
     return {
-        "version": 1,
+        "version": 2,
         "algorithm": "static-glicko-v1",
         "reference": REFERENCE_ID,
         "board_mix": {str(size): count // divisor for size, count in sorted(counts.items())},
@@ -656,7 +657,7 @@ def ingest(
 ):
     """Validate SGFs, retain store-owned evidence, then commit only unseen games."""
     if (
-        settings.get("version") != 1
+        settings.get("version") != 2
         or settings.get("algorithm") != "static-glicko-v1"
         or settings.get("reference") != REFERENCE_ID
     ):

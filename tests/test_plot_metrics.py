@@ -19,8 +19,8 @@ from continugo_train.plot_metrics import (
 
 def epoch(number, loss=3, *, saved=True):
     text = (
-        f"epoch={number}/4 train: loss={loss} policy_ce=2 value_mse=1 samples=2\n"
-        f"epoch={number}/4 validation: loss={loss + 0.5} policy_ce=2.5 value_mse=1 samples=2\n"
+        f"epoch={number}/4 train: loss={loss} policy_ce=2 value_mse=1 score_mse=0.2 ownership_mse=0.3 samples=2\n"
+        f"epoch={number}/4 validation: loss={loss + 0.5} policy_ce=2.5 value_mse=1 score_mse=0.2 ownership_mse=0.3 samples=2\n"
     )
     if saved:
         text += f"saved /some/job/epoch-{number:04d}.pt; network=test\n"

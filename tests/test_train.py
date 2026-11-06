@@ -125,6 +125,9 @@ class OfflineDataTests(unittest.TestCase):
                 "fixture",
                 0,
                 torch.arange(count),
+                13,
+                1.0,
+                torch.ones(resolution, resolution),
             )
 
         first = sample(4, [0, 3], [7.0, 1.0])
@@ -185,6 +188,9 @@ class OfflineDataTests(unittest.TestCase):
                     "fixture",
                     i,
                     torch.empty(0, dtype=torch.int64),
+                    13,
+                    0.0,
+                    torch.zeros(resolution, resolution),
                 )
 
         with patch.object(data, "_serial_samples", serial):
@@ -521,9 +527,10 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertFalse(torch.equal(captured["torch_rng"], parent["rng_cpu"]))
 
     def test_explicit_value_activation_warm_start_keeps_weights_momentum_and_provenance(self):
-        checkpoint = self.run_training(self.root / "parent", epochs=2)
+        checkpoint = self.run_training(
+            self.root / "parent", epochs=2, extra=["--value-activation", "relu"]
+        )
         parent = torch.load(checkpoint, weights_only=True)
-        parent["config"].pop("value_activation")  # Historical checkpoint.
         legacy = self.root / "legacy.pt"
         atomic_checkpoint(legacy, parent)
         before = legacy.read_bytes()

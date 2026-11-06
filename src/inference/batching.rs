@@ -1,7 +1,8 @@
 //! One model-owning worker; synchronous game clients have one outstanding query.
 //! Queue capacity, active games and batch size are independently bounded.
 use super::{
-    Evaluation, Evaluator, InferenceOutput, InferenceStats, OnnxEvaluator, batch::MAX_BATCH,
+    Evaluation, Evaluator, InferenceOutput, InferenceStats, LeafEstimate, OnnxEvaluator,
+    batch::MAX_BATCH,
 };
 use continugo_rules::Game;
 use std::{
@@ -67,7 +68,7 @@ impl Evaluator for BatchingClient {
     fn network_name(&self) -> &str {
         &self.name
     }
-    fn value(&mut self, game: &Game) -> Result<f64, String> {
+    fn estimate(&mut self, game: &Game) -> Result<LeafEstimate, String> {
         match self.query(game, false, 0)? {
             InferenceOutput::Value(value) => Ok(value),
             _ => Err("wrong inference reply kind".into()),
@@ -151,7 +152,13 @@ impl BatchingWorker {
             if let Some(context) = self.evaluator.cached_context(&request.game) {
                 self.evaluator.stats.queue_seconds += request.submitted.elapsed().as_secs_f64();
                 self.evaluator.stats.value_calls += 1;
-                self.reply(request, Ok(InferenceOutput::Value(context.value)));
+                self.reply(
+                    request,
+                    Ok(InferenceOutput::Value(LeafEstimate {
+                        value: context.value,
+                        score: context.score,
+                    })),
+                );
             } else {
                 pending.push(request);
             }
@@ -192,7 +199,13 @@ impl BatchingWorker {
             } else {
                 // Do not make value leaves wait for dense feature/scorer work.
                 self.evaluator.stats.value_calls += 1;
-                self.reply(request, Ok(InferenceOutput::Value(context.value)));
+                self.reply(
+                    request,
+                    Ok(InferenceOutput::Value(LeafEstimate {
+                        value: context.value,
+                        score: context.score,
+                    })),
+                );
             }
         }
         let queries: Vec<_> = policies

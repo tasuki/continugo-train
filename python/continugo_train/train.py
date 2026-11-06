@@ -23,8 +23,16 @@ from pathlib import Path
 import torch
 
 from .data import batches, scan_corpus
-from .features import COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION, FeatureProfile, feature_binary
-from .losses import hierarchical_policy_value_loss
+from .features import (
+    COARSE_PLANES,
+    MOVE_FEATURES,
+    SCHEMA_VERSION,
+    TARGET_VERSION,
+    FeatureProfile,
+    feature_binary,
+    ownership_weights,
+)
+from .losses import joint_loss
 from .memory import GpuMemorySampler
 from .model import POLICY_VERSION, NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
@@ -49,9 +57,16 @@ class Options:
     weight_decay: float = 1e-4
     grad_clip: float = 5.0
     size_weights: str = DEFAULT_SIZE_WEIGHTS
+    score_loss_weight: float = 0.25
+    ownership_loss_weight: float = 0.25
 
     def validate(self):
         parse_weights(self.size_weights)
+        if any(
+            not math.isfinite(w) or w < 0
+            for w in (self.score_loss_weight, self.ownership_loss_weight)
+        ):
+            raise ValueError("auxiliary loss weights must be finite and nonnegative")
         if self.batch_size <= 0 or self.samples_per_diameter <= 0:
             raise ValueError("batch size and sample density must be positive")
         if any(
@@ -83,6 +98,7 @@ def feature_spec(density):
     return {
         "schema": SCHEMA_VERSION,
         "policy": POLICY_VERSION,
+        "targets": TARGET_VERSION,
         "coarse": list(COARSE_PLANES),
         "moves": list(MOVE_FEATURES),
         "samples_per_diameter": density,
@@ -179,7 +195,10 @@ def run_phase(
         torch.cuda.reset_peak_memory_stats(device)
     samples = steps = 0
     samples_by_size = Counter()
-    totals = [0.0, 0.0, 0.0]
+    totals = [0.0] * 5
+    score_abs = score_bias = consistency = 0.0
+    prediction_sums = torch.zeros(3, dtype=torch.float64)
+    prediction_squares = torch.zeros(3, dtype=torch.float64)
     wait = compute = 0.0
     stage_seconds = Counter()
     feature_profile = FeatureProfile() if profile_stages else None
@@ -226,23 +245,37 @@ def run_phase(
             if training:
                 optimizer.zero_grad(set_to_none=True)
             if profile_stages:
-                # Same operations as PolicyValueNet.forward; synchronization is
+                # Same operations as PolicyValueNet.forward_all; synchronization is
                 # diagnostic-only and may change overlap/throughput.
                 with stage("encoder"):
-                    spatial, pass_logit, values = model.encode(batch.coarse)
+                    spatial, pass_logit, values, scores, ownership = model.encode_training(
+                        batch.coarse
+                    )
                 with stage("scorer"):
                     logits = model.policy(
                         spatial, pass_logit, batch.exact, batch.actions, batch.legal
                     )
                 del spatial, pass_logit
             else:
-                logits, values = model(batch.coarse, batch.exact, batch.actions, batch.legal)
+                logits, values, scores, ownership = model.forward_all(
+                    batch.coarse, batch.exact, batch.actions, batch.legal
+                )
             with stage("loss_backward_optimizer"):
-                loss = hierarchical_policy_value_loss(
-                    logits, values, batch.indices, batch.visits, batch.outcomes
+                loss = joint_loss(
+                    logits,
+                    values,
+                    scores,
+                    ownership,
+                    batch.indices,
+                    batch.visits,
+                    batch.outcomes,
+                    batch.scores,
+                    batch.ownership,
+                    score_weight=options.score_loss_weight,
+                    ownership_weight=options.ownership_loss_weight,
                 )
                 if not torch.isfinite(loss.total):
-                    raise RuntimeError("nonfinite policy/value loss")
+                    raise RuntimeError("nonfinite joint training loss")
                 if training:
                     loss.total.backward()
                     norm = torch.nn.utils.clip_grad_norm_(
@@ -258,9 +291,19 @@ def run_phase(
             count = batch.outcomes.numel()
             for index, term in enumerate(loss):
                 totals[index] += term.detach().item() * count
+            with torch.no_grad():
+                error = scores - batch.scores
+                score_abs += error.abs().sum().item()
+                score_bias += error.sum().item()
+                weights = ownership_weights(ownership.shape[-1], device=device)
+                integrated = (ownership * weights).sum(dim=(-2, -1))
+                consistency += (scores - integrated).abs().sum().item()
+                predictions = torch.stack((values, scores, integrated)).double().cpu()
+                prediction_sums += predictions.sum(dim=1)
+                prediction_squares += predictions.square().sum(dim=1)
             samples += count
             steps += 1
-            del batch, cpu_batch, logits, values, loss
+            del batch, cpu_batch, logits, values, scores, ownership, loss
     if samples == 0:
         raise ValueError("phase produced no training positions")
     elapsed = time.perf_counter() - started
@@ -271,6 +314,17 @@ def run_phase(
         "loss": totals[0] / samples,
         "policy_ce": totals[1] / samples,
         "value_mse": totals[2] / samples,
+        "score_mse": totals[3] / samples,
+        "ownership_mse": totals[4] / samples,
+        "score_mae": score_abs / samples,
+        "score_bias": score_bias / samples,
+        "score_ownership_mae": consistency / samples,
+        "prediction_std": (
+            (prediction_squares / samples - (prediction_sums / samples).square())
+            .clamp_min(0)
+            .sqrt()
+            .tolist()
+        ),
         "seconds": elapsed,
         "positions_per_second": samples / elapsed,
         "load_wait_seconds": wait,
@@ -599,7 +653,7 @@ def train(args):
                     if progress["samples_seen"] is not None:
                         progress["samples_seen"] += result["samples"]
                 log(
-                    f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} samples={result['samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
+                    f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} score_mse={result['score_mse']:.6f} ownership_mse={result['ownership_mse']:.6f} score_mae={result['score_mae']:.6f} score_bias={result['score_bias']:.6f} prediction_std={result['prediction_std']} samples={result['samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
                 )
             improved = metrics["validation"]["loss"] < best
             best = min(best, metrics["validation"]["loss"])

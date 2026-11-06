@@ -13,6 +13,8 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from .features import ownership_weights
+
 
 class Losses(NamedTuple):
     total: Tensor
@@ -72,6 +74,56 @@ def policy_value_loss(
     policy = (log_normalizer - (selected * (visits / totals[:, None])).sum(dim=1)).mean()
     value = F.mse_loss(values, outcomes)
     return Losses(policy + value, policy, value)
+
+
+class AuxiliaryLosses(NamedTuple):
+    total: Tensor
+    policy: Tensor
+    value: Tensor
+    score: Tensor
+    ownership: Tensor
+
+
+def joint_loss(
+    log_probs,
+    values,
+    scores,
+    ownership,
+    target_indices,
+    visits,
+    outcomes,
+    score_targets,
+    ownership_targets,
+    *,
+    score_weight=0.25,
+    ownership_weight=0.25,
+):
+    base = hierarchical_policy_value_loss(log_probs, values, target_indices, visits, outcomes)
+    if (
+        scores.shape != outcomes.shape
+        or ownership.shape != ownership_targets.shape
+        or (
+            ownership.ndim != 3
+            or ownership.shape[0] != outcomes.shape[0]
+            or ownership.shape[1] != ownership.shape[2]
+        )
+    ):
+        raise ValueError("incompatible auxiliary target shapes")
+    for target in (score_targets, ownership_targets):
+        if not torch.isfinite(target).all() or (target.abs() > 1).any():
+            raise ValueError("auxiliary targets must be finite and in [-1,1]")
+    if score_targets.shape != scores.shape:
+        raise ValueError("incompatible score target shape")
+    score = F.mse_loss(scores, score_targets)
+    weights = ownership_weights(ownership.shape[-1], device=ownership.device)
+    owned = ((ownership - ownership_targets).square() * weights).sum(dim=(-2, -1)).mean()
+    return AuxiliaryLosses(
+        base.total + score_weight * score + ownership_weight * owned,
+        base.policy,
+        base.value,
+        score,
+        owned,
+    )
 
 
 def hierarchical_policy_value_loss(log_probs, values, target_indices, visits, outcomes):

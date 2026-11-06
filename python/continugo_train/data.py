@@ -169,7 +169,9 @@ class TrainingSample:
     game_id: str
     ply: int
     actions: Tensor
-    board_size: int = 13
+    board_size: int
+    score: float
+    ownership: Tensor
 
 
 @dataclass
@@ -182,6 +184,8 @@ class Batch:
     visits: Tensor
     outcomes: Tensor
     board_sizes: Tensor
+    scores: Tensor
+    ownership: Tensor
 
     def to(self, device) -> "Batch":
         return Batch(*(value.to(device) for value in vars(self).values()))
@@ -217,6 +221,8 @@ def collate(samples: list[TrainingSample]) -> Batch:
         visits,
         torch.tensor([s.outcome for s in samples], dtype=torch.float32),
         torch.tensor([s.board_size for s in samples], dtype=torch.int64),
+        torch.tensor([s.score for s in samples], dtype=torch.float32),
+        torch.stack([s.ownership for s in samples]),
     )
 
 
@@ -280,6 +286,8 @@ def _serial_samples(plans, density, binary, feature_profile=None):
                     if (
                         sample.full_domain
                         or sample.outcome is None
+                        or sample.score is None
+                        or sample.ownership is None
                         or sample.resolution != game.resolution
                         or sample.board_size != game.board_size
                         or sample.diameter != game.diameter
@@ -299,6 +307,8 @@ def _serial_samples(plans, density, binary, feature_profile=None):
                         ply,
                         sample.actions,
                         game.board_size,
+                        sample.score,
+                        sample.ownership,
                     )
                 except Exception as error:
                     raise ValueError(f"{game.path} ply {ply}: {error}") from error

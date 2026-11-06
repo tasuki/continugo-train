@@ -11,6 +11,7 @@ pub(super) struct Context {
     pub cells: Vec<f32>,
     pub pass: f32,
     pub value: f64,
+    pub score: f64,
 }
 
 pub(super) struct ContextCache {
@@ -73,6 +74,7 @@ mod tests {
             cells: Vec::new(),
             pass: 0.0,
             value: 0.25,
+            score: -0.1,
         })
     }
 

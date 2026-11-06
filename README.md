@@ -4,8 +4,10 @@ Rust self-play experiments using shared ContinuGo rules, plus a configurable PyT
 
 The [neural policy](docs/current/network.md) selects non-overlapping coarse cells
 before exact coordinate analysis, with whole-board exploration and pass. The
-`cells-v1` model format requires fresh training; old dense-policy checkpoints are
-not supported, but their validated SGF training data remains usable.
+network also learns [final score and ownership](docs/current/auxiliary.md).
+Fresh score/ownership training is required; old policy/value-only checkpoints,
+exports and loop controls are not migrated. Validated source SGFs remain usable.
+Search defaults to `(outcome + 0.3*normalized_score) / 1.3`; ownership is auxiliary.
 
 ## Current operating policy
 
@@ -33,8 +35,9 @@ the todo or this README.
 All generated artifacts stay here: timestamped experiments in **`runs/`**, durable
 accepted models in **`models/accepted/`**, training recovery packs in
 **`models/training/`**, and unaccepted actors in **`models/experimental/`**. Names start with UTC `YYYYMMDD-HHMMSS`; counters handle
-collisions. All campaigns share this single store and global ratings; do not
-nest separate stores by training run. Only scheduled/evaluated networks enter
+collisions. New-format campaigns should share one store and rating ledger, not
+create a store per run. If the existing ledger predates score/ownership, use a
+fresh `--model-store` for the new format; historical artifacts stay untouched. Only scheduled/evaluated networks enter
 the rating registry. ONNX alone cannot resume training. `models/` is Git-ignored: keep an
 off-machine backup and exclude it from destructive Git-clean commands.
 
@@ -73,6 +76,7 @@ Self-play saves self-contained SGF records; nonstandard training data goes in co
 - [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Network architecture](docs/current/network.md)
+- [Score/ownership labels, utility and diagnostics](docs/current/auxiliary.md)
 
 Update current docs alongside code changes. Keep proposals in `docs/todo.md` and
 dated run results in `docs/history/`, not mixed into current instructions.

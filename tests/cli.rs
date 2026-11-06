@@ -346,6 +346,8 @@ fn rollout_diagnostics_never_turn_an_unfinished_actual_game_into_a_label() {
             "1",
             "--rollout-pass-probability",
             "0",
+            "--score-weight",
+            "0",
             "--output",
         ])
         .arg(&directory.0)

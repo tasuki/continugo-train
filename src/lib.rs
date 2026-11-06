@@ -10,3 +10,4 @@ pub mod replay;
 pub mod sampling;
 pub mod search;
 pub mod selfplay;
+pub mod targets;

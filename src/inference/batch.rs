@@ -1,5 +1,5 @@
 //! Resolution-bucketed encoding and selective, complete-cell exact scoring.
-use super::{Evaluation, OnnxEvaluator, cache::Context};
+use super::{Evaluation, LeafEstimate, OnnxEvaluator, cache::Context};
 use crate::features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, resolution};
 use continugo_rules::{COORDINATE_ACTIONS, Game};
 use ort::value::Tensor;
@@ -10,7 +10,7 @@ pub const MAX_BATCH: usize = 32;
 
 #[derive(Debug)]
 pub enum InferenceOutput {
-    Value(f64),
+    Value(LeafEstimate),
     Policy(Evaluation),
 }
 
@@ -45,7 +45,10 @@ impl OnnxEvaluator {
                     InferenceOutput::Policy(evaluations.next().unwrap())
                 } else {
                     self.stats.value_calls += 1;
-                    InferenceOutput::Value(c.value)
+                    InferenceOutput::Value(LeafEstimate {
+                        value: c.value,
+                        score: c.score,
+                    })
                 }
             })
             .collect())
@@ -122,7 +125,8 @@ impl OnnxEvaluator {
             ]?)?;
             let (shape, spatial) = encoded["spatial"].try_extract_raw_tensor::<f32>()?;
             let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;
-            let (_, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
+            let (value_shape, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
+            let (score_shape, score) = encoded["score"].try_extract_raw_tensor::<f32>()?;
             let (cell_shape, cells) = encoded["cells"].try_extract_raw_tensor::<f32>()?;
             let stride = self.metadata.config.policy_hidden * size * size;
             if shape
@@ -135,10 +139,14 @@ impl OnnxEvaluator {
                 || cell_shape != [batch as i64, (size * size) as i64]
                 || cells.iter().any(|v| !v.is_finite())
                 || pass.len() != batch
+                || value_shape != [batch as i64]
+                || score_shape != [batch as i64]
                 || value.len() != batch
+                || score.len() != batch
                 || spatial.iter().chain(pass).any(|v| !v.is_finite())
                 || value
                     .iter()
+                    .chain(score)
                     .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
             {
                 return Err("invalid encoder outputs".into());
@@ -150,6 +158,7 @@ impl OnnxEvaluator {
                     cells: cells[row * size * size..(row + 1) * size * size].to_vec(),
                     pass: pass[row],
                     value: f64::from(value[row]),
+                    score: f64::from(score[row]),
                 });
                 self.stats.cache_evictions +=
                     self.cache.insert(games[i], Arc::clone(&context)) as u64;
@@ -216,6 +225,7 @@ impl OnnxEvaluator {
                 self.stats.exact_coordinates += actions.len() as u64;
                 result[i] = Some(Evaluation {
                     value: queries[i].1.value,
+                    score: queries[i].1.score,
                     // Dense IDs are only the search interface, not dense rules work.
                     logits: vec![f32::NEG_INFINITY; COORDINATE_ACTIONS as usize + 1],
                     legal: vec![0; COORDINATE_ACTIONS as usize],

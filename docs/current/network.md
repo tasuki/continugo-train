@@ -9,12 +9,17 @@ outcome in [-1,1]. Pass also uses global pooling.
 
 The value head is linear → activation → linear → tanh. Its checkpoint setting
 `value_activation` is `relu` or `leaky_relu` (fixed negative slope **0.1**).
-Historical checkpoints without this field retain ReLU; they are never silently
-reinterpreted. New jobs can explicitly choose `--value-activation leaky_relu`.
+Fresh models default to `leaky_relu`. Policy/value-only checkpoints from before
+the auxiliary-head contract are not supported; start fresh training.
 A parameter-free activation change is supported by an explicit training
 warm-start, preserving all weights and optionally SGD momentum; strict resume
 cannot change it. It does not change the policy head, feature schema or parameter
 shapes. Activation choice is recorded in checkpoint and ONNX metadata.
+
+The network also predicts **final score and ownership** using authoritative
+completed-game targets. Score is a pooled scalar; ownership has the coarse raster
+resolution and is training-only. See [auxiliary supervision](auxiliary.md) for
+labels, losses, search utility and diagnostics.
 
 The coarse raster has four intervals per stone diameter by default: 38/54/78
 samples per side for 9/13/19. **Each sample owns the integer coordinates nearest
@@ -65,9 +70,11 @@ Training uses genuine sparse MCTS visit counts and natural game outcomes:
   containing positive placement targets**, not just visited coordinates. Cells
   with zero target mass need no exact features, so their omission introduces no
   sampled-denominator bias or importance correction.
-- Value MSE has equal weight to total coarse-plus-local policy CE.
+- Value MSE has equal weight to total coarse-plus-local policy CE. Score MSE and
+  area-weighted ownership MSE each have weight 0.25 by default.
 
-`hierarchical_policy_value_loss` implements this factorized proposal objective.
+`joint_loss` adds the auxiliary terms to `hierarchical_policy_value_loss`, which
+implements this factorized proposal objective.
 It does **not** apply another candidate-only softmax. The objective is not the
 inference-time CE: inference conditions the placement stratum on selected nonempty
 cells while preserving the global coarse pass probability. Coarse proposals can put mass on empty
@@ -85,8 +92,8 @@ Checkpoint and ONNX metadata require policy version **`cells-v1`**. The old dens
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. Feature schema 4 is unchanged.
 The pass-preserving normalization correction changes native execution only, not
-weights, features, graph outputs, or the training objective. Existing `cells-v1`
-checkpoints/graphs remain compatible; changed native fingerprints require a new
+weights, features, graph outputs, or the training objective. Current exports additionally require `targets: final-area-v1`; old policy/value-only
+checkpoints/graphs are incompatible. Changed native fingerprints require a new
 loop rather than replacing a running loop's frozen binaries. The new loop uses
 the same shared model store and global rating table.
 

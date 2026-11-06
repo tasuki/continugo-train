@@ -38,6 +38,7 @@ impl InferenceDevice {
 #[derive(Debug)]
 pub struct Evaluation {
     pub value: f64,
+    pub score: f64,
     /// Inference log probabilities in action-ID order, pass at 1,000,000.
     /// Unselected/illegal coordinates are -inf. Selected nonempty cells share
     /// the full placement mass, preserving the global coarse P(pass).
@@ -46,6 +47,27 @@ pub struct Evaluation {
     /// Exact legality inside selected cells; zero also means unselected, not a
     /// claim of illegality across the whole board.
     pub legal: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct LeafEstimate {
+    pub value: f64,
+    pub score: f64,
+}
+
+impl LeafEstimate {
+    pub fn utility(self, weight: f64) -> Result<f64, String> {
+        if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
+            return Err("score weight must be finite and in [0,1]".into());
+        }
+        if [self.value, self.score]
+            .iter()
+            .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
+        {
+            return Err("invalid neural outcome/score estimate".into());
+        }
+        Ok((self.value + weight * self.score) / (1.0 + weight))
+    }
 }
 
 pub trait Evaluator {
@@ -59,8 +81,15 @@ pub trait Evaluator {
     fn network_name(&self) -> &str {
         self.model_id()
     }
+    fn estimate(&mut self, game: &Game) -> Result<LeafEstimate, String> {
+        let evaluation = self.evaluate(game)?;
+        Ok(LeafEstimate {
+            value: evaluation.value,
+            score: evaluation.score,
+        })
+    }
     fn value(&mut self, game: &Game) -> Result<f64, String> {
-        Ok(self.evaluate(game)?.value)
+        Ok(self.estimate(game)?.value)
     }
 }
 
@@ -68,6 +97,7 @@ pub trait Evaluator {
 struct FeatureSpec {
     schema: u32,
     policy: String,
+    targets: String,
     coarse: Vec<String>,
     moves: Vec<String>,
     samples_per_diameter: usize,
@@ -237,6 +267,7 @@ impl OnnxEvaluator {
             || spec.coarse != COARSE_PLANES
             || spec.moves != MOVE_FEATURES
             || spec.samples_per_diameter == 0
+            || spec.targets != crate::targets::TARGET_VERSION
             || metadata.config.chunk_size == 0
             || metadata.config.policy_hidden == 0
             || metadata.config.top_cells == 0
@@ -289,7 +320,7 @@ impl Evaluator for OnnxEvaluator {
             .as_deref()
             .unwrap_or(self.model_id())
     }
-    fn value(&mut self, game: &Game) -> Result<f64, String> {
+    fn estimate(&mut self, game: &Game) -> Result<LeafEstimate, String> {
         match self.evaluate_batch(&[(game, false)])?.pop().unwrap() {
             InferenceOutput::Value(value) => Ok(value),
             InferenceOutput::Policy(_) => unreachable!(),

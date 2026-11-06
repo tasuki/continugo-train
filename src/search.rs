@@ -1,6 +1,6 @@
 use crate::{
     action::{Action, Proposals},
-    inference::{Evaluation, Evaluator},
+    inference::{Evaluation, Evaluator, LeafEstimate},
 };
 use continugo_rules::{Color, Game, PreparedGame, territory};
 use rand::Rng;
@@ -19,6 +19,8 @@ pub struct SearchConfig {
     pub proposal_attempts: usize,
     /// Neural placement proposal mixture: uniform legal exploration vs policy.
     pub independent_exploration: f64,
+    /// Relative utility of expected normalized final score versus outcome.
+    pub score_weight: f64,
     /// Explicit unguided bootstrap guidance; never enabled for neural search.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub bootstrap_avoid_eyes: bool,
@@ -36,6 +38,7 @@ impl Default for SearchConfig {
             widening_exponent: 0.5,
             proposal_attempts: 128,
             independent_exploration: 0.25,
+            score_weight: 0.3,
             bootstrap_avoid_eyes: false,
             rollout: None,
         }
@@ -44,8 +47,14 @@ impl Default for SearchConfig {
 
 impl SearchConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if !self.score_weight.is_finite() || !(0.0..=1.0).contains(&self.score_weight) {
+            return Err("score weight must be finite and in [0,1]".into());
+        }
         if let Some(rollout) = &self.rollout {
             rollout.validate()?;
+            if self.score_weight != 0.0 {
+                return Err("rollout evaluation requires --score-weight 0".into());
+            }
             if self.bootstrap_avoid_eyes {
                 return Err(
                     "bootstrap eye guidance cannot be combined with rollout evaluation".into(),
@@ -152,7 +161,11 @@ impl Node {
         rng: &mut impl Rng,
     ) -> Result<f64, String> {
         let evaluation = evaluator.evaluate_seeded(&self.game, rng.random())?;
-        let value = evaluation.value;
+        let value = LeafEstimate {
+            value: evaluation.value,
+            score: evaluation.score,
+        }
+        .utility(config.score_weight)?;
         self.neural = Some(SampledPolicy::new(evaluation, config, rng)?);
         Ok(value)
     }
@@ -165,9 +178,9 @@ impl Node {
         stats: &mut RolloutStats,
     ) -> Result<Option<f64>, String> {
         if self.game.is_finished() {
-            return Ok(self.update_estimate(Some(
-                black_outcome(&self.game) * color_sign(self.game.on_move()),
-            )));
+            return Ok(
+                self.update_estimate(Some(terminal_utility(&self.game, config.score_weight)))
+            );
         }
         self.expand_pass(rng)?;
         if self.pass_proof == Some(1.0) {
@@ -181,11 +194,11 @@ impl Node {
             let value = if let Some(rollout) = &config.rollout {
                 rollout::evaluate(&self.game, rollout, config.proposal_attempts, rng, stats)
             } else {
-                let value = evaluator.value(&self.game)?;
-                if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
-                    return Err("invalid neural leaf value".into());
-                }
-                Some(value)
+                Some(
+                    evaluator
+                        .estimate(&self.game)?
+                        .utility(config.score_weight)?,
+                )
             };
             return Ok(self.update_estimate(value));
         }
@@ -300,7 +313,7 @@ impl Node {
         stats: &mut RolloutStats,
     ) -> Option<f64> {
         if self.game.is_finished() {
-            let value = black_outcome(&self.game) * color_sign(self.game.on_move());
+            let value = terminal_utility(&self.game, config.score_weight);
             return self.update_estimate(Some(value));
         }
         self.expand_pass(rng).expect("unfinished game");
@@ -386,6 +399,8 @@ impl SampledPolicy {
             || evaluation.legal.len() != count
             || !evaluation.value.is_finite()
             || !(-1.0..=1.0).contains(&evaluation.value)
+            || !evaluation.score.is_finite()
+            || !(-1.0..=1.0).contains(&evaluation.score)
             || !evaluation.logits[count].is_finite()
         {
             return Err("invalid neural evaluation".into());
@@ -517,6 +532,21 @@ pub fn black_outcome(game: &Game) -> f64 {
     }
 }
 
+/// Exact terminal outcome and margin use the same utility as neural leaves.
+fn terminal_utility(game: &Game, weight: f64) -> f64 {
+    assert!(
+        game.is_finished(),
+        "terminal utility requires natural completion"
+    );
+    let areas = territory::areas(game.position().stones());
+    let outcome = match territory::result(areas) {
+        territory::Outcome::Draw => 0.0,
+        territory::Outcome::Win(color, _) => color_sign(color),
+    };
+    let score = (areas.black - areas.white) / crate::targets::BOARD_AREA;
+    color_sign(game.on_move()) * (outcome + weight * score) / (1.0 + weight)
+}
+
 pub fn search(
     game: &Game,
     config: &SearchConfig,
@@ -629,6 +659,7 @@ mod tests {
             legal[700_700] = 1;
             Ok(Evaluation {
                 value: 0.75,
+                score: 0.0,
                 logits,
                 legal,
             })
@@ -663,7 +694,7 @@ mod tests {
             .unwrap();
         }
         assert_eq!(root.visits, 3);
-        assert_eq!(root.value_sum, -0.75); // +root, -child, -child (side-to-move).
+        assert_eq!(root.value_sum, -0.75 / (1.0 + config.score_weight)); // +root, -child, -child (side-to-move).
         assert_eq!(evaluator.calls, 3);
         assert_eq!(root.children.iter().map(|e| e.child.visits).sum::<u32>(), 2);
         assert!(
@@ -698,6 +729,7 @@ mod tests {
         let count = crate::action::COORDINATE_ACTIONS as usize;
         let evaluation = Evaluation {
             value: 0.0,
+            score: 0.0,
             logits: vec![0.0; count + 1],
             legal: vec![1; count],
         };
@@ -763,14 +795,18 @@ mod tests {
                 logits,
                 legal,
                 value: -0.99,
+                score: 0.0,
             })
         }
-        fn value(&mut self, _: &Game) -> Result<f64, String> {
+        fn estimate(&mut self, _: &Game) -> Result<LeafEstimate, String> {
             self.value_calls += 1;
             if self.forbid_value {
                 return Err("cold-start search must not use neural leaf values".into());
             }
-            Ok(-0.99)
+            Ok(LeafEstimate {
+                value: -0.99,
+                score: 0.0,
+            })
         }
         fn model_id(&self) -> &str {
             "misleading-test"
@@ -849,6 +885,7 @@ mod tests {
         let config = SearchConfig {
             simulations: 16,
             widening: 0.5,
+            score_weight: 0.0,
             rollout: Some(RolloutConfig {
                 playouts: 2,
                 max_moves: 2,
@@ -924,6 +961,106 @@ mod tests {
         let mut evaluator = FixedEvaluator { calls: 0 };
         assert!(search_neural(&game, &config, &mut evaluator, &mut rng).is_err());
         assert_eq!(evaluator.calls, 0);
+    }
+
+    #[test]
+    fn score_utility_is_bounded_and_prefers_narrow_losses_without_hiding_tradeoffs() {
+        let narrow = LeafEstimate {
+            value: -1.0,
+            score: -0.1,
+        }
+        .utility(0.3)
+        .unwrap();
+        let wide = LeafEstimate {
+            value: -1.0,
+            score: -0.9,
+        }
+        .utility(0.3)
+        .unwrap();
+        assert!(narrow > wide);
+        for value in [-1.0, 0.0, 1.0] {
+            for score in [-1.0, 0.0, 1.0] {
+                let estimate = LeafEstimate { value, score };
+                let u = estimate.utility(0.3).unwrap();
+                assert!((-1.0..=1.0).contains(&u));
+                assert!(
+                    (u + LeafEstimate {
+                        value: -value,
+                        score: -score
+                    }
+                    .utility(0.3)
+                    .unwrap())
+                    .abs()
+                        < 1e-12
+                );
+                assert_eq!(estimate.utility(0.0).unwrap(), value);
+            }
+        }
+        assert!(
+            LeafEstimate {
+                value: 0.6,
+                score: -0.1
+            }
+            .utility(0.3)
+            .unwrap()
+                < LeafEstimate {
+                    value: 0.5,
+                    score: 0.9
+                }
+                .utility(0.3)
+                .unwrap()
+        );
+        assert!(
+            LeafEstimate {
+                value: 0.0,
+                score: f64::NAN
+            }
+            .utility(0.3)
+            .is_err()
+        );
+        let config = SearchConfig {
+            rollout: Some(RolloutConfig {
+                playouts: 1,
+                max_moves: 2,
+                pass_probability: 1.0,
+            }),
+            ..Default::default()
+        };
+        assert!(config.validate().unwrap_err().contains("score-weight 0"));
+    }
+
+    #[test]
+    fn pass_proof_is_an_outcome_fact_not_score_adjusted_utility() {
+        let game = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .play(Spot { x: 900, y: 900 })
+            .unwrap()
+            .play(Spot { x: 350, y: 350 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let terminal = game.pass().unwrap();
+        assert_eq!(black_outcome(&terminal), 1.0);
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut node = Node::new(game, &mut rng);
+        node.expand_pass(&mut rng).unwrap();
+        assert_eq!(node.pass_proof, Some(1.0));
+        let u = terminal_utility(&terminal, 0.3);
+        assert!(u < 0.0 && u > -1.0);
+        assert_eq!(terminal_utility(&terminal, 0.0), -1.0);
+        let backed = node
+            .simulate_neural(
+                &mut misleading(-100.0),
+                &SearchConfig::default(),
+                &mut rng,
+                &mut RolloutStats::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(backed, -u);
+        let draw = Game::default().pass().unwrap().pass().unwrap();
+        assert_eq!(terminal_utility(&draw, 0.3), 0.0);
     }
 
     #[test]

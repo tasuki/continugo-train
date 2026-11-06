@@ -33,7 +33,7 @@ from .runtime import inference_environment
 from .sampling import DEFAULT_SIZE_WEIGHTS, weighted_sizes
 from .train import Options, atomic_checkpoint, checkpoint_splits, feature_spec
 
-VERSION = 5
+VERSION = 6
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -50,6 +50,7 @@ class LoopConfig:
     widening_exponent: float = 0.5
     proposal_attempts: int = 128
     independent_exploration: float = 0.25
+    score_weight: float = 0.3
     concurrent_games: int = 12
     inference_batch_size: int = 12
     inference_batch_wait_ms: int = 2
@@ -165,6 +166,8 @@ class LoopConfig:
             or self.widening <= 0
             or not 0 < self.widening_exponent < 1
             or not 0 < self.independent_exploration <= 1
+            or not math.isfinite(self.score_weight)
+            or not 0 <= self.score_weight <= 1
             or not 0 < self.validation_fraction < 1
             or self.lr is not None
             and (not math.isfinite(self.lr) or self.lr <= 0)
@@ -185,6 +188,7 @@ class LoopConfig:
                 "widening_exponent",
                 "proposal_attempts",
                 "independent_exploration",
+                "score_weight",
             ]
         }
 
@@ -1241,11 +1245,11 @@ def run_loop(args):
                 or state.get("root") != str(root)
             ):
                 raise ValueError(
-                    "incompatible/relocated loop checkpoint; older automatic-promotion loops are preserved but must be forked into a new v5 manual-approval loop"
+                    "incompatible/relocated loop checkpoint; start a new v6 loop with a score/ownership checkpoint"
                 )
             for field in fields(LoopConfig):
                 # Preserve frozen old-loop behavior; the enabled default applies
-                # to new campaigns, not implicit upgrades of saved v5 loops.
+                # to new campaigns, not implicit upgrades of saved loops.
                 if field.name.startswith("adaptive_"):
                     state["config"].setdefault(
                         field.name, 0 if field.name == "adaptive_max_games" else field.default

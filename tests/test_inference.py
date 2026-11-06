@@ -207,7 +207,7 @@ class NativeInferenceTests(unittest.TestCase):
                 actions += legal[[0, legal.numel() // 2, -1]].tolist()
             with torch.inference_mode():
                 logits, value = self.model(*sample.network_inputs())
-                spatial, pass_logit, _ = self.model.encode(sample.coarse[None])
+                spatial, pass_logit, _, score = self.model.encode_search(sample.coarse[None])
                 coarse_logp = self.model.coarse_logits(spatial, pass_logit).log_softmax(dim=1)
                 # Native inference preserves the global placement/pass strata,
                 # then conditions only the placement distribution on legal cells.
@@ -223,10 +223,14 @@ class NativeInferenceTests(unittest.TestCase):
                 result["logits"][actions.index(1000000)], coarse_logp[0, -1].item(), places=5
             )
             self.assertAlmostEqual(result["value"], value.item(), places=5)
+            self.assertAlmostEqual(result["score"], score.item(), places=5)
             value_only = self.infer(source, actions, value_only=True)
             self.assertEqual(value_only.returncode, 0, value_only.stderr)
             self.assertAlmostEqual(
                 json.loads(value_only.stdout)["value"], result["value"], places=7
+            )
+            self.assertAlmostEqual(
+                json.loads(value_only.stdout)["score"], result["score"], places=7
             )
             self.assertIn("calls: 0, value_calls: 1", value_only.stderr)
             for action, actual in zip(actions, result["logits"], strict=True):
@@ -269,7 +273,9 @@ class NativeInferenceTests(unittest.TestCase):
         self.assertLess(export_checkpoint(checkpoint, bundle), 1e-5)
         sample = load_position(source, 1, actions=[500500])
         with torch.inference_mode():
-            expected = model.encode(sample.coarse[None])[2].item()
+            outputs = model.encode_search(sample.coarse[None])
+            expected = outputs[2].item()
+            expected_score = outputs[3].item()
         self.assertLess(expected, -0.01)  # Would be zero with the old ReLU.
         devices = ["cpu", "cuda"] if GPU_READY else ["cpu"]
         for device in devices:
@@ -285,6 +291,28 @@ class NativeInferenceTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertAlmostEqual(json.loads(result.stdout)["value"], expected, places=5)
+            self.assertAlmostEqual(json.loads(result.stdout)["score"], expected_score, places=5)
+
+    def test_score_search_diagnostic_is_seeded_and_labels_visits_without_changing_input(self):
+        source = self.root / "score-search.sgf"
+        source.write_text(SGF)
+        before = source.read_bytes()
+        for weight in (0, 0.3):
+            extra = ["--simulations", "8", "--seed", "73", "--score-weight", str(weight)]
+            runs = [self.infer(source, [1000000], extra=extra) for _ in range(2)]
+            for result in runs:
+                self.assertEqual(result.returncode, 0, result.stderr)
+            a, b = [json.loads(result.stdout) for result in runs]
+            self.assertEqual(a["visits"], b["visits"])
+            self.assertEqual(a["best"], b["best"])
+            self.assertEqual(sum(v["visits"] for v in a["visits"]), 8)
+            self.assertAlmostEqual(a["utility"], (a["value"] + weight * a["score"]) / (1 + weight))
+            self.assertAlmostEqual(
+                a["eye_fill_visit_fraction"],
+                sum(v["visits"] for v in a["visits"] if v["eye_fill"]) / 8,
+            )
+            self.assertEqual(a["search"]["score_weight"], weight)
+        self.assertEqual(source.read_bytes(), before)
 
     def test_pass_mass_does_not_depend_on_cell_budget_and_all_illegal_falls_back(self):
         source = self.root / "pass-mass.sgf"

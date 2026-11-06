@@ -60,7 +60,9 @@ fn native_batch_parity_and_worker_lifecycle() {
             panic!("value expected")
         };
         close(actual.value, expected.value);
-        close(*value, expected.value);
+        close(value.value, expected.value);
+        close(value.score, expected.score);
+        close(actual.score, expected.score);
         assert_eq!(actual.legal, expected.legal);
         assert_eq!(actual.logits.len(), 1_000_001);
         for (&a, &b) in actual.logits.iter().zip(&expected.logits) {
@@ -146,7 +148,7 @@ fn native_batch_parity_and_worker_lifecycle() {
         let InferenceOutput::Value(actual) = actual else {
             panic!("value expected")
         };
-        close(*actual, expected);
+        close(actual.value, expected);
     }
 
     evaluator.configure_features(4, 64).unwrap();

@@ -69,6 +69,8 @@ struct Args {
     proposal_attempts: usize,
     #[arg(long, default_value_t = 0.25)]
     independent_exploration: f64,
+    #[arg(long, default_value_t = 0.3)]
+    score_weight: f64,
     #[command(flatten)]
     rollout: RolloutArgs,
     #[arg(long)]
@@ -108,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             widening_exponent: args.widening_exponent,
             proposal_attempts: args.proposal_attempts,
             independent_exploration: args.independent_exploration,
+            score_weight: args.score_weight,
             bootstrap_avoid_eyes: false,
             rollout: args.rollout.config(),
         },

@@ -2,10 +2,11 @@
 //! requires natural completion AND RE matching authoritative scoring. ReplayGame
 //! retains immutable snapshots so offline loaders replay/score once per game.
 
+use crate::targets::FinalTargets;
 use continugo_rules::{Action, Board, Color, Game, Play, sgf, territory};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct PolicyTarget {
@@ -17,12 +18,14 @@ pub struct ReplayPosition {
     pub game: Game,
     pub policy: Option<Vec<PolicyTarget>>,
     pub outcome: Option<f32>,
+    pub final_targets: Option<Arc<FinalTargets>>,
 }
 
 pub struct ReplayGame {
     positions: Vec<Game>,
     policies: Vec<Option<Vec<PolicyTarget>>>,
     black_outcome: Option<f32>,
+    final_targets: Option<Arc<FinalTargets>>,
     game_id: String,
     root_comment: Option<serde_json::Value>,
     result: Option<String>,
@@ -141,17 +144,23 @@ impl ReplayGame {
             }
             .map_err(|e| format!("move {}: {e}", index + 1))?;
         }
+        let mut final_targets = None;
         let black_outcome = if let Some(re) = property(&record.root, "RE")? {
             if !game.is_finished() {
                 return Err("scored RE on a game that did not finish naturally".into());
             }
-            let result = territory::result(territory::areas(game.position().stones()));
+            let areas = territory::areas(game.position().stones());
+            let result = territory::result(areas);
             let expected = sgf::format_result(game.board(), result);
             if re != expected {
                 return Err(format!(
                     "RE {re:?} disagrees with authoritative score {expected:?}"
                 ));
             }
+            final_targets = Some(Arc::new(FinalTargets::new(
+                game.position().stones().to_vec(),
+                areas,
+            )));
             Some(match result {
                 territory::Outcome::Draw => 0.0,
                 territory::Outcome::Win(Color::Black, _) => 1.0,
@@ -165,6 +174,7 @@ impl ReplayGame {
             positions,
             policies,
             black_outcome,
+            final_targets,
             game_id: format!("{:x}", identity.finalize()),
             root_comment: property(&record.root, "C")?
                 .and_then(|comment| serde_json::from_str(comment).ok()),
@@ -219,6 +229,7 @@ impl ReplayGame {
         Ok(ReplayPosition {
             game: game.clone(),
             policy: self.policies.get(ply).cloned().flatten(),
+            final_targets: self.final_targets.clone(),
             outcome: self.black_outcome.map(|value| {
                 if game.on_move() == Color::Black {
                     value

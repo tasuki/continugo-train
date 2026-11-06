@@ -183,7 +183,7 @@ keeps one fully validated game's pre-move snapshots and samples positions withou
 replaying/scoring each request. `features --inspect` exposes validated metadata
 and eligible plies without implementing a Python SGF parser. See
 [training.md](training.md) for the bounded loader, game-level holdout and checkpoints.
-The tensor packet layout below is unchanged. Server/default one-shot extraction
+The CGFEAT02 packet includes final auxiliary targets. Server/default one-shot extraction
 returns complete cells containing positive placement targets, with full-domain
 flag false; a pass-only/no-policy position has zero exact rows. Explicit
 `--actions` remains a diagnostic subset; `--full-domain` is a slow reference only.
@@ -194,11 +194,11 @@ sidecars or another game-record format.
 ### Optional server diagnostics
 
 Ordinary `features --serve` responses remain `status u8 + length u64 + payload`,
-where status 0 carries CGFEAT01 and status 1 carries a UTF-8 error. A request may
+where status 0 carries CGFEAT02 and status 1 carries a UTF-8 error. A request may
 set `"profile": true`: **successful** responses then append `length u64 + JSON`
 with server stage times and Linux process-lifetime peak RSS. Errors never append
-telemetry, so the next request remains aligned. The tensor payload/schema is
-unchanged; these are disposable transport diagnostics, not SGF annotations.
+telemetry, so the next request remains aligned. Profiling does not change the
+CGFEAT02 payload; these are disposable transport diagnostics, not SGF annotations.
 
 ```python
 from continugo_train.features import FeatureClient
@@ -209,26 +209,31 @@ with FeatureClient(profile=True) as client:
 ```
 
 The Python client adds its own request/read and decode/copy clocks. No profile
-flag is sent by ordinary clients, which remain compatible with existing servers.
+flag is sent by ordinary clients. Rebuild both clients and servers for CGFEAT02.
 See [profiling](profiling.md) for stage overlap, IPC residuals and memory limits.
 
-### CGFEAT01 packet layout
+### CGFEAT02 packet layout
 
-Little endian, no padding. Header: Python struct `<8s11If2I` (64 bytes):
+Little endian, no padding. Header: Python struct `<8s11If2If` (68 bytes):
 
-1. Magic `CGFEAT01` (8 bytes).
+1. Magic `CGFEAT02` (8 bytes).
 2. Eleven u32 fields: schema version, coarse-plane count, move-feature width,
    board size, stone diameter, resolution, ply, player (0 Black / 1 White),
-   coordinate count N, target count K, outcome-valid flag.
+   coordinate count N, target count K, final-label-valid flag.
 3. One f32: side-to-move outcome (zero when unlabeled).
 4. Two u32 fields: samples per diameter, full-domain flag.
+5. One f32: side-to-move normalized final score (zero when unlabeled).
 
 Payload: coarse f32 `[12,H,W]`; exact f32 `[N,10]`; legal u8 `[N]`; coordinate
-IDs u32 `[N]`; target action IDs u32 `[K]`; target visit counts u32 `[K]`.
+IDs u32 `[N]`; target action IDs u32 `[K]`; target visit counts u32 `[K]`;
+final ownership f32 `[H,W]` (zero-filled when unlabeled). Score and ownership
+labels share the outcome validity flag. See [auxiliary supervision](auxiliary.md).
 Target IDs are canonical Rust IDs, including pass at 1,000,000; they are **not**
 subset output columns. Python checks schema, dimensions, length, finiteness,
 legality encoding and action domains before creating writable tensors.
-Schema 4 has 12 planes / 10 move fields. Schemas 1–3 are incompatible: rebuild
+Schema 4 has 12 planes / 10 move fields; its input definitions have not changed.
+Old packets and checkpoints without `targets: final-area-v1` are incompatible.
+Rebuild
 the extractor and discard incompatible derived packets/checkpoints; source SGFs
 remain usable. Feature changes require a schema-version bump and compatible
 checkpoint/ONNX feature metadata.

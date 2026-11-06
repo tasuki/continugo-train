@@ -15,7 +15,7 @@ from dataclasses import asdict
 
 import torch
 
-from .losses import hierarchical_policy_value_loss
+from .losses import joint_loss
 from .model import (
     COORDINATE_ACTIONS,
     NetworkConfig,
@@ -140,8 +140,8 @@ def main() -> None:
             spatial, pass_logit, _ = model.encode(coarse)
 
             def encode():
-                context, pass_score, value = model.encode(coarse)
-                return context, pass_score, value, model.cell_head(context)
+                context, pass_score, value, score = model.encode_search(coarse)
+                return context, pass_score, value, score, model.cell_head(context)
 
             measure(encode, diameter, resolution, batch, "coarse_infer", count)
             measure(
@@ -153,7 +153,7 @@ def main() -> None:
                 count,
             )
             measure(
-                lambda: model(coarse, exact, actions, legal),
+                lambda: model.forward_search(coarse, exact, actions, legal),
                 diameter,
                 resolution,
                 batch,
@@ -180,8 +180,18 @@ def main() -> None:
 
         def full_step() -> None:
             optimizer.zero_grad(set_to_none=True)
-            logits, values = model(coarse, exact, actions, legal)
-            losses = hierarchical_policy_value_loss(logits, values, indices, visits, outcomes)
+            logits, values, scores, owned = model.forward_all(coarse, exact, actions, legal)
+            losses = joint_loss(
+                logits,
+                values,
+                scores,
+                owned,
+                indices,
+                visits,
+                outcomes,
+                outcomes,
+                torch.zeros_like(owned),
+            )
             if not torch.isfinite(losses.total):
                 raise RuntimeError("nonfinite training loss")
             losses.total.backward()

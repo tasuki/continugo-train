@@ -124,8 +124,11 @@ class NetworkTests(unittest.TestCase):
         visits = torch.ones(2, 2, device="cuda")
         loss = policy_value_loss(*actual, indices, visits, torch.zeros(2, device="cuda"))
         loss.total.backward()
-        for parameter in gpu.parameters():
-            self.assertTrue(torch.isfinite(parameter.grad).all())
+        for name, parameter in gpu.named_parameters():
+            if name.startswith(("score_head.", "ownership_head.")):
+                self.assertIsNone(parameter.grad)  # This test isolates policy/value.
+            else:
+                self.assertTrue(torch.isfinite(parameter.grad).all())
 
     def test_save_load_includes_configuration_and_batchnorm_state(self):
         config = small_config()
@@ -176,7 +179,7 @@ class NetworkTests(unittest.TestCase):
         self.assertLess(losses.total.item(), initial * 0.3)
 
     def test_leaky_value_activation_restores_gradients_without_changing_policy_or_parameters(self):
-        config = small_config()
+        config = replace(small_config(), value_activation="relu")
         relu = PolicyValueNet(config).eval()
         with torch.no_grad():
             relu.value_head[0].weight.fill_(0.01)
@@ -201,7 +204,7 @@ class NetworkTests(unittest.TestCase):
                 self.assertEqual(grad.abs().sum().item() > 0, alive)
         legacy = asdict(config)
         legacy.pop("value_activation")
-        self.assertEqual(NetworkConfig(**legacy).value_activation, "relu")
+        self.assertEqual(NetworkConfig(**legacy).value_activation, "leaky_relu")
         restored = PolicyValueNet(NetworkConfig(**asdict(leaky.config))).eval()
         restored.load_state_dict(leaky.state_dict())
         torch.testing.assert_close(restored(*args)[1], leaky(*args)[1], atol=0, rtol=0)

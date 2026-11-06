@@ -385,7 +385,7 @@ class PromotionTests(helpers.LoopHarness):
         state["version"] = 4
         loop.atomic_checkpoint(path, state)
         before = path.read_bytes()
-        with self.assertRaisesRegex(ValueError, "v5 manual-approval"):
+        with self.assertRaisesRegex(ValueError, "new v6 loop"):
             self.run_loop(output, resume=True)
         self.assertEqual(path.read_bytes(), before)
 

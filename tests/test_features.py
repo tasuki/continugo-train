@@ -18,7 +18,7 @@ from continugo_train.features import (
     decode_sample,
     load_position,
 )
-from continugo_train.losses import hierarchical_policy_value_loss
+from continugo_train.losses import joint_loss
 from continugo_train.model import NetworkConfig, PolicyValueNet, cell_actions, cell_ids
 
 # Escaped SGF comments, native coordinates, and a checked one-stone area result.
@@ -102,10 +102,18 @@ class RealFeatureTests(unittest.TestCase):
         self.assertTrue(sample.legal.all())
         model = PolicyValueNet(NetworkConfig(channels=4, blocks=1, policy_hidden=4, value_hidden=8))
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-        logits, values = model(*sample.network_inputs())
+        logits, values, scores, ownership = model.forward_all(*sample.network_inputs())
         indices, counts = sample.policy_targets()
-        loss = hierarchical_policy_value_loss(
-            logits, values, indices[None], counts[None], torch.tensor([sample.outcome])
+        loss = joint_loss(
+            logits,
+            values,
+            scores,
+            ownership,
+            indices[None],
+            counts[None],
+            torch.tensor([sample.outcome]),
+            torch.tensor([sample.score]),
+            sample.ownership[None],
         )
         loss.total.backward()
         for parameter in model.parameters():
@@ -203,7 +211,7 @@ class RealFeatureTests(unittest.TestCase):
             capture_output=True,
         )
         packet = result.stdout
-        self.assertEqual(HEADER.size, 64)
+        self.assertEqual(HEADER.size, 68)
         mutations = [packet[:16], packet[:-1], packet + b"x", b"BADMAGIC" + packet[8:]]
         nonfinite = bytearray(packet)
         struct.pack_into("<f", nonfinite, HEADER.size, float("nan"))

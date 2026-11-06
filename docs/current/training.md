@@ -1,6 +1,9 @@
 # Offline policy/value training
 
-This is a real SGF → Rust features → PyTorch training job, without ONNX. It learns
+This is a real SGF → Rust features → PyTorch training job, without ONNX.
+It now trains final score and ownership alongside policy/outcome; see
+[auxiliary supervision](auxiliary.md). Start **from scratch**: old policy/value-only
+checkpoints are incompatible and have no migration path. It learns
 from saved MCTS games; this command does **not** generate self-play or establish
 playing strength. Use the separate [native neural self-play command](inference.md)
 after exporting a checkpoint. Training loss and checkpoint selection are not
@@ -139,8 +142,8 @@ short-hash suffix; inner epoch/checkpoint filenames stay stable.
 SGFs stay the primary game records. The Rust `features --inspect` command emits
 metadata only. `features --serve` accepts local JSON request lines containing a
 path, ply, density and expected file hash; replies are status-u8 / length-u64
-framed CGFEAT01 tensors or UTF-8 errors. These are ephemeral IPC commands/tensors,
-**not JSONL game records or SGF sidecars**. The tensor schema did not change.
+framed CGFEAT02 tensors or UTF-8 errors. These are ephemeral IPC commands/tensors,
+**not JSONL game records or SGF sidecars**. The target packet contract changed; input feature meanings did not.
 
 Corpora are immutable during a job. Workers check the inspected raw-file SHA-256
 when loading a game, then serve that snapshot. Do not point a run at files being
@@ -160,7 +163,8 @@ can still be used. `--top-cells` (default 32) and `--exploration-cells` (default
 are positive architecture settings pinned by the checkpoint/export.
 
 An epoch produces `epoch-0001.pt`, etc., plus atomic `latest.pt` and `best.pt`.
-Best means the lowest held-out **policy CE + value MSE**, not playing strength.
+Best means the lowest held-out **joint loss** (policy CE + outcome MSE + weighted
+score/ownership MSE), not playing strength.
 The [loop's experimental matches](evaluation.md) measure playing strength;
 [accepted publication requires explicit user approval](model-store.md#approval-operation), never
 just a lower loss or a favorable match verdict.
@@ -334,7 +338,8 @@ excluded. The denominator includes all games in a batch; truncations are unknown
 never counted as draws, and plotted separately when present.
 
 Losses come from `training.log`, using train/validation total loss, policy
-cross-entropy and value MSE for epochs with a logged checkpoint save. Live partial
+cross-entropy, outcome MSE, score MSE and ownership MSE for epochs with a logged
+checkpoint save. Live partial
 epochs are omitted. Resumed logs and numbered training attempts are combined by
 local epoch, with the latest saved occurrence taking precedence, rather than
 counting repeated epochs twice. It does not load checkpoints or alter training.
@@ -347,7 +352,8 @@ change loss without a change in playing strength.
 
 ## Measurements
 
-`training.log` and stdout report policy cross-entropy, value MSE, sample/batch
+`training.log` and stdout report policy cross-entropy, outcome/score/ownership
+MSE, score MAE/bias and prediction spread, sample/batch
 counts, end-to-end positions/s, loader wait, compute-plus-transfer time, CUDA peak
 live allocation/reservation and parent peak RSS. Metrics are weighted by **positions**, not
 batches, so leftovers do not bias validation. CUDA timings synchronize. Phase

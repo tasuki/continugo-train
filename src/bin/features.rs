@@ -1,4 +1,4 @@
-//! SGF metadata inspection and CGFEAT01 tensors. Server mode keeps one validated
+//! SGF metadata inspection and CGFEAT02 tensors. Server mode keeps one validated
 //! game in memory and frames each tensor/error response without JSON game records.
 
 use clap::Parser;

@@ -6,7 +6,11 @@ It follows [KataGo's synchronous training pattern](https://github.com/lightvecto
 but **never automatically promotes a network**. Accepted publication follows the
 [approval procedure](model-store.md#approval-operation).
 
-## Three independent roles (v5)
+## Three independent roles (v6)
+
+New loops require score/ownership checkpoints and record `--score-weight` (default
+0.3). Older loop controls are rejected, not migrated; keep historical campaigns
+and their frozen runtime untouched. See [auxiliary supervision](auxiliary.md).
 
 | Role | Behaviour | Durable pointer |
 |---|---|---|
@@ -75,11 +79,10 @@ frozen when evaluation is enabled. They are checked on resume and around child
 stages. Do not rebuild/replace active binaries; use frozen executable paths for
 long experiments. Changed executables require a new loop/fork.
 
-**v1–v4 automatic-promotion control files are not migrated or resumed.** If their
-full checkpoints and exact replay are available, fork a v5 experiment from them;
-specify `--actor-checkpoint` if the previous actor differs from the latest
-training checkpoint. `--incumbent-checkpoint` remains an alias for that flag, but
-no longer means “accept this checkpoint.” Historical accepted bundles stay intact.
+**v1–v5 control files and old policy/value-only models are not migrated or resumed.**
+Start a new v6 loop from a newly trained score/ownership checkpoint. Preserve
+historical campaigns with their frozen runtime. Historical accepted bundles stay
+intact; the new runtime does not reinterpret or rewrite them.
 
 A narrow resume exception enables previously disabled head-to-head evaluation:
 
@@ -121,9 +124,8 @@ saved loop, enable it explicitly at a completed boundary:
 
 The resume operation requires a completed boundary and unchanged protocol. It
 backs up `before-adaptive-ratings.pt` and audits the setting change in `loop.pt`.
-It does not retroactively evaluate completed rounds or start training. Older v5
-loops preserve their frozen saved settings, including disabled evaluation; they
-are not silently upgraded into expensive extra work. New loops need no opt-in.
+It does not retroactively evaluate completed rounds or start training. Historical loops are not upgraded by this runtime. Within v6, saved settings,
+including disabled evaluation, are not silently upgraded into expensive extra work. New loops need no opt-in.
 Use `--adaptive-max-games 0` to explicitly disable only this precision phase; a
 smoke run with no evaluation at all must also set gate/reference games to zero.
 

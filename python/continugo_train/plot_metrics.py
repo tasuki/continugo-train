@@ -19,6 +19,8 @@ METRICS = (
     ("loss", "Total loss"),
     ("policy_ce", "Policy cross-entropy"),
     ("value_mse", "Value MSE"),
+    ("score_mse", "Score MSE"),
+    ("ownership_mse", "Ownership MSE"),
 )
 
 
@@ -174,7 +176,7 @@ def plot(jobs, output, title):
     plt = pyplot(output)
     # Plot job segments separately: replay changes make losses incomparable
     # across boundaries, and connecting them would imply one fixed dataset.
-    figure, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=True)
+    figure, axes = plt.subplots(len(METRICS), 1, figsize=(13, 3 * len(METRICS)), sharex=True)
     offset = 0
     starts = []
     for index, job in enumerate(jobs):

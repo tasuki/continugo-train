@@ -45,7 +45,8 @@ cargo run --locked --release -- --engine neural --device cpu --model runs/model-
 Export atomically publishes two opset-17 graphs as one new directory:
 
 - `encoder.onnx`: coarse inputs → projected spatial context, cell logits, pass
-  logit, and value.
+  logit, outcome value, and normalized expected final score. Ownership remains
+  training-only; see [auxiliary supervision](auxiliary.md).
 - `policy.onnx`: context + exact candidate features + per-position int64 IDs `[B,N]` →
   raw placement logits. Batch, spatial, and candidate axes are dynamic.
 
@@ -105,6 +106,11 @@ CPU feature extraction and GPU execution alternate without pipelining.
 
 ## Search semantics
 
+Search defaults to `--score-weight 0.3`, combining outcome and normalized final
+score as `(outcome + weight*score)/(1+weight)`. Terminal backups use exact outcome
+and score; pass proofs remain outcome-only. Use weight zero as a diagnostic
+control. Old policy/value-only ONNX graphs are rejected.
+
 Neural and unguided `--engine mcts` share PUCT, progressive widening, side-to-move
 backup signs, terminal scoring, and visit-count move sampling. Terminal outcomes
 override estimates. Default nonterminal leaves use neural values or neutral
@@ -137,6 +143,7 @@ Both searches inspect legal terminal pass continuations before leaf estimates:
 Self-play/arena accept `--rollouts N` (default zero), replacing new-leaf estimates
 with N legal playouts; a neural model then supplies policy only.
 `--rollout-max-moves 512` caps each playout without forced scoring.
+Rollouts require `--score-weight 0`; nonzero score weight is rejected.
 `--rollout-pass-probability 0.03125` controls passes; other moves use bounded
 full-domain legal proposals. Exhausting attempts passes but does not prove there
 are no legal placements. Immediate winning passes are taken.

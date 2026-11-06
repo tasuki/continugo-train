@@ -54,6 +54,9 @@ struct Args {
     proposal_attempts: usize,
     #[arg(long, default_value_t = 0.25)]
     independent_exploration: f64,
+    /// Relative utility of normalized final score (0 disables; requires 0 for rollouts).
+    #[arg(long, default_value_t = 0.3)]
+    score_weight: f64,
     /// Avoid noncapturing own-eye fills in bootstrap MCTS only (not neural play).
     #[arg(long)]
     bootstrap_avoid_eyes: bool,
@@ -137,6 +140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             widening_exponent: args.widening_exponent,
             proposal_attempts: args.proposal_attempts,
             independent_exploration: args.independent_exploration,
+            score_weight: args.score_weight,
             bootstrap_avoid_eyes: args.bootstrap_avoid_eyes,
             rollout: args.rollout.config(),
         },

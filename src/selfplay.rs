@@ -451,6 +451,7 @@ mod tests {
                 logits[1_000_000] = 0.0;
                 Ok(crate::inference::Evaluation {
                     value: 0.0,
+                    score: 0.0,
                     logits,
                     legal: vec![0; 1_000_000],
                 })

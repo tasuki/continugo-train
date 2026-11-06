@@ -4,7 +4,7 @@ import unittest
 import torch
 
 from continugo_train.data import TrainingSample, collate
-from continugo_train.losses import hierarchical_policy_value_loss
+from continugo_train.losses import hierarchical_policy_value_loss, joint_loss
 from continugo_train.model import (
     NetworkConfig,
     PolicyValueNet,
@@ -93,10 +93,15 @@ class CellPolicyTests(unittest.TestCase):
             )
             loss.total.backward()
             losses.append(loss.total.detach())
-            gradients.append([p.grad.clone() for p in self.model.parameters()])
+            gradients.append(
+                [p.grad.clone() if p.grad is not None else None for p in self.model.parameters()]
+            )
         torch.testing.assert_close(*losses)
         for first, second in zip(*gradients, strict=True):
-            torch.testing.assert_close(first, second, atol=1e-6, rtol=1e-5)
+            if first is None:
+                self.assertIsNone(second)  # Auxiliary heads are not in this isolated policy loss.
+            else:
+                torch.testing.assert_close(first, second, atol=1e-6, rtol=1e-5)
 
     def test_ragged_padding_and_pass_only_training_match_unbatched(self):
         actions = cell_actions([39], 38)
@@ -111,6 +116,9 @@ class CellPolicyTests(unittest.TestCase):
             "first",
             0,
             actions,
+            13,
+            1.0,
+            torch.ones(38, 38),
         )
         second = TrainingSample(
             coarse,
@@ -122,13 +130,26 @@ class CellPolicyTests(unittest.TestCase):
             "second",
             0,
             torch.empty(0, dtype=torch.int64),
+            13,
+            -1.0,
+            -torch.ones(38, 38),
         )
 
         def loss(samples):
             batch = collate(samples)
-            logits, values = self.model(batch.coarse, batch.exact, batch.actions, batch.legal)
-            return hierarchical_policy_value_loss(
-                logits, values, batch.indices, batch.visits, batch.outcomes
+            logits, values, scores, ownership = self.model.forward_all(
+                batch.coarse, batch.exact, batch.actions, batch.legal
+            )
+            return joint_loss(
+                logits,
+                values,
+                scores,
+                ownership,
+                batch.indices,
+                batch.visits,
+                batch.outcomes,
+                batch.scores,
+                batch.ownership,
             )
 
         combined = loss([first, second])

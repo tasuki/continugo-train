@@ -5,7 +5,12 @@ subdirectory for each training campaign; all campaigns share the same registry,
 ratings and content-addressed recovery bundles. Run-specific files belong under
 `runs/`. Only scheduled/evaluated networks enter the rating registry; intermediate
 recovery backups are separate from registry entries. Model roles and actor
-selection are defined in [loop](loop.md#three-independent-roles-v5).
+selection are defined in [loop](loop.md#three-independent-roles-v6).
+
+On 2026-11-05, the user archived the old-format store and
+started a fresh score/ownership campaign with a new `models/`. Old campaign
+controls must not resume against the replacement store; see the
+[launch receipt](../history/2026-11-05-fresh-score-ownership.md).
 
 ## Layout and protection
 

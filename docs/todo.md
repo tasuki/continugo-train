@@ -5,31 +5,16 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
-## 1. Inspect the running small-board learning trial
+## Next learning experiment: fresh score/ownership training
 
-The [fresh size-9 campaign](history/2026-11-04-size9-training.md) has started:
-60 self-play rounds with four training epochs per round, rated every ten rounds.
-Do not block learning on speculative optimization.
+The [heads, authoritative labels and score-aware search](current/auxiliary.md)
+are implemented. Existing policy/value-only checkpoints are not migrated.
 
-- [ ] Evaluate without eye guidance: eye preservation, connections, captures/saves,
-  sensible passing, natural completion, and matches against the reference bot.
-  Keep guidance disabled for normal neural self-play/evaluation. Expand tactical
-  test positions based on observed failures.
-
-## Next learning experiment: score and ownership heads
-
-- [ ] Investigate KataGo-style auxiliary heads predicting **final score margin**
-  and **final ownership**, alongside the existing win/loss head. Use authoritative
-  completed-game labels, not current territory as an intermediate reward.
-- [ ] Test predominantly win/loss search utility with a small, bounded score
-  contribution, normalized across board sizes, to distinguish losing narrowly
-  from destructive losing continuations. Keep terminal utility and MCTS backups
-  consistent; use ownership primarily as auxiliary supervision. Check for unwanted
-  trades of winning chances for score.
-- [ ] Warm-start a separate experiment from a saved checkpoint; retain the current
-  leaky-value campaign unchanged as the baseline. Measure passing, eye preservation,
-  score/value calibration, unassisted playing strength, and wall-clock cost—not
-  just auxiliary losses. More search and visit-sampling behavior remain separate
+- [ ] Review the [fresh campaign](history/2026-11-05-fresh-score-ownership.md),
+  now running separately with the old store. Measure passing, eye preservation,
+  score/value calibration, unassisted strength, and wall-clock cost—not just
+  auxiliary losses. Check `--score-weight 0.3` against zero for unwanted trades
+  of winning chances for score. More search and visit sampling remain separate
   possible causes of eye filling; extra heads are not assumed to solve them.
 
 ## Later, only if a bottleneck appears
