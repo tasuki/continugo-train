@@ -69,7 +69,26 @@ impl LeafEstimate {
                 self.value, self.score
             ));
         }
-        Ok((self.value + weight * self.score) / (1.0 + weight))
+        Ok((1.0 - weight) * self.value + weight * self.score)
+    }
+}
+
+#[cfg(test)]
+mod utility_tests {
+    use super::*;
+
+    #[test]
+    fn score_weight_is_a_linear_fraction_with_equal_weight_at_half() {
+        let estimate = LeafEstimate {
+            value: 0.8,
+            score: -0.2,
+        };
+        assert!((estimate.utility(0.5).unwrap() - 0.3).abs() < 1e-12);
+        assert_eq!(estimate.utility(1.0).unwrap(), estimate.score);
+        assert_eq!(estimate.utility(0.0).unwrap(), estimate.value);
+        for invalid in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            assert!(estimate.utility(invalid).is_err());
+        }
     }
 }
 

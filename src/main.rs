@@ -62,8 +62,8 @@ struct Args {
     proposal_attempts: usize,
     #[arg(long, default_value_t = 0.25)]
     independent_exploration: f64,
-    /// Relative utility of normalized final score (0 disables; requires 0 for rollouts).
-    #[arg(long, default_value_t = 0.3)]
+    /// Score fraction: 1 maximizes expected final score; 0 uses outcome only.
+    #[arg(long, default_value_t = 0.5)]
     score_weight: f64,
     /// Avoid noncapturing own-eye fills in bootstrap MCTS only (not neural play).
     #[arg(long)]

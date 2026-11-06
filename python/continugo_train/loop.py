@@ -52,7 +52,7 @@ class LoopConfig:
     widening_exponent: float = 0.5
     proposal_attempts: int = 128
     independent_exploration: float = 0.25
-    score_weight: float = 0.3
+    score_weight: float = 0.5
     concurrent_games: int = 12
     inference_batch_size: int = 12
     inference_batch_wait_ms: int = 2

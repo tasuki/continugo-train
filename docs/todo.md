@@ -13,7 +13,7 @@ are implemented. Existing policy/value-only checkpoints are not migrated.
 - [ ] Review the [fresh campaign](history/2026-11-05-fresh-score-ownership.md),
   now running separately with the old store. Measure passing, eye preservation,
   score/value calibration, unassisted strength, and wall-clock cost—not just
-  auxiliary losses. Check `--score-weight 0.3` against zero for unwanted trades
+  auxiliary losses. Check `--score-weight 0.5` against zero for unwanted trades
   of winning chances for score. More search and visit sampling remain separate
   possible causes of eye filling; extra heads are not assumed to solve them.
 

@@ -1,7 +1,7 @@
 //! Optional cold-start leaf evaluation from naturally completed legal playouts.
 //! No unfinished-board scoring, eye filter, neural value or fabricated cap draws.
 
-use super::{black_outcome, color_sign};
+use super::{color_sign, terminal_estimate};
 use crate::action::Proposals;
 use continugo_rules::Game;
 use rand::Rng;
@@ -17,7 +17,7 @@ pub struct RolloutArgs {
     /// Safety cap per hypothetical playout, not an outcome-scoring rule.
     #[arg(long, default_value_t = 512)]
     pub rollout_max_moves: usize,
-    /// Random legal pass probability; immediate winning passes are taken exactly.
+    /// Random legal pass probability, independent of whether a pass would win.
     #[arg(long, default_value_t = 1.0 / 32.0)]
     pub rollout_pass_probability: f64,
 }
@@ -82,6 +82,7 @@ pub(super) fn evaluate(
     source: &Game,
     config: &RolloutConfig,
     proposal_attempts: usize,
+    score_weight: f64,
     rng: &mut impl Rng,
     stats: &mut RolloutStats,
 ) -> Option<f64> {
@@ -95,11 +96,8 @@ pub(super) fn evaluate(
                 break;
             }
             let pass = game.pass().expect("unfinished rollout");
-            // Take an actual immediate win, not a heuristic score of an
-            // unfinished position. Other legal passes remain available.
-            let wins_by_pass =
-                pass.is_finished() && black_outcome(&pass) * color_sign(game.on_move()) == 1.0;
-            game = if wins_by_pass || rng.random_bool(config.pass_probability) {
+            // A small win is not a reason to stop maximizing score.
+            game = if rng.random_bool(config.pass_probability) {
                 pass
             } else {
                 let prepared = game.prepare();
@@ -110,12 +108,17 @@ pub(super) fn evaluate(
             stats.plies += 1;
         }
         if game.is_finished() {
-            let value = black_outcome(&game) * perspective;
+            let estimate = terminal_estimate(&game);
+            let sign = color_sign(game.on_move()) * perspective;
+            let value = sign * estimate.value;
             stats.completed += 1;
             stats.wins += u64::from(value > 0.0);
             stats.losses += u64::from(value < 0.0);
             stats.draws += u64::from(value == 0.0);
-            total += value;
+            total += sign
+                * estimate
+                    .utility(score_weight)
+                    .expect("validated score weight");
             completed += 1;
         } else {
             stats.truncated += 1;
@@ -145,6 +148,7 @@ mod tests {
             &Game::default(),
             &config(1),
             128,
+            1.0,
             &mut StdRng::seed_from_u64(0),
             &mut stats,
         );
@@ -162,21 +166,82 @@ mod tests {
             .unwrap();
         let mut rng = StdRng::seed_from_u64(0);
         assert_eq!(
-            evaluate(&game, &config(2), 128, &mut rng, &mut stats),
+            evaluate(&game, &config(2), 128, 1.0, &mut rng, &mut stats),
             Some(-1.0)
         );
         assert_eq!(stats.losses, 4);
         assert_eq!(stats.draws, 0);
         assert_eq!(
-            evaluate(&game.pass().unwrap(), &config(1), 128, &mut rng, &mut stats),
+            evaluate(
+                &game.pass().unwrap(),
+                &config(1),
+                128,
+                1.0,
+                &mut rng,
+                &mut stats
+            ),
             Some(1.0)
         );
         assert_eq!(stats.wins, 4);
         assert_eq!(
-            evaluate(&Game::default(), &config(2), 128, &mut rng, &mut stats),
+            evaluate(&Game::default(), &config(2), 128, 1.0, &mut rng, &mut stats),
             Some(0.0)
         );
         assert_eq!(stats.draws, 4);
+    }
+
+    #[test]
+    fn winning_pass_does_not_override_the_rollout_policy() {
+        let game = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let cfg = RolloutConfig {
+            pass_probability: 0.0,
+            ..config(1)
+        };
+        let mut stats = RolloutStats::default();
+        let value = evaluate(
+            &game,
+            &cfg,
+            128,
+            1.0,
+            &mut StdRng::seed_from_u64(0),
+            &mut stats,
+        );
+        assert_eq!(value, None);
+        assert_eq!(stats.completed, 0);
+        assert_eq!(stats.truncated, 4);
+        assert_eq!(stats.plies, 4);
+    }
+
+    #[test]
+    fn completed_rollouts_use_margin_not_just_win_loss() {
+        let game = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .play(Spot { x: 900, y: 900 })
+            .unwrap()
+            .play(Spot { x: 350, y: 350 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let expected = -terminal_estimate(&game.pass().unwrap()).score;
+        assert!(expected > 0.0 && expected < 1.0);
+        for (weight, expected) in [(1.0, expected), (0.0, 1.0)] {
+            let mut stats = RolloutStats::default();
+            let value = evaluate(
+                &game,
+                &config(1),
+                128,
+                weight,
+                &mut StdRng::seed_from_u64(0),
+                &mut stats,
+            );
+            assert_eq!(value, Some(expected));
+            assert_eq!(stats.wins, 4);
+        }
     }
 
     #[test]

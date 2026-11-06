@@ -50,7 +50,7 @@ struct Args {
     /// Run a seeded root search and label its visits after search (diagnostic only).
     #[arg(long, conflicts_with = "value_only")]
     simulations: Option<u32>,
-    #[arg(long, default_value_t = 0.3)]
+    #[arg(long, default_value_t = 0.5)]
     score_weight: f64,
     #[arg(long, default_value_t = 0)]
     seed: u64,

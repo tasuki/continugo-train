@@ -106,10 +106,11 @@ CPU feature extraction and GPU execution alternate without pipelining.
 
 ## Search semantics
 
-Search defaults to `--score-weight 0.3`, combining outcome and normalized final
-score as `(outcome + weight*score)/(1+weight)`. Terminal backups use exact outcome
-and score; pass proofs remain outcome-only. Use weight zero as a diagnostic
-control. Old policy/value-only ONNX graphs are rejected.
+Search defaults to `--score-weight 0.5`, using
+`(1-weight)*outcome + weight*normalized_score`: equal bounded contributions.
+Weight 1 is score-only and 0 outcome-only. This replaces the old relative-weight
+formula; native fingerprints change. Terminal, neural and completed-rollout
+values share the objective. Old policy/value-only ONNX graphs are rejected.
 
 Neural and unguided `--engine mcts` share PUCT, progressive widening, side-to-move
 backup signs, terminal scoring, and visit-count move sampling. Terminal outcomes
@@ -129,12 +130,13 @@ guidance; combining it with rollout evaluation is also rejected.
 
 ### Exact terminal-pass checks
 
-Both searches recognize a terminal winning pass before leaf estimates:
+Both searches treat pass as an ordinary PUCT action:
 
-- A winning second pass is chosen regardless of prior/value bias.
-- Losing passes remain eligible for normal PUCT selection. A placement's existence
-  does not make it better than passing; score utility can prefer a smaller loss
-  over destructive continuation. No loss-based pass filter is applied.
+- A terminal second pass has exact utility available even before selection, but
+  no visits are invented. Winning does **not** force it or suppress alternatives;
+  a higher-utility continuation may be preferred.
+- Losing passes likewise compete normally. A placement's existence does not
+  make it better than passing; utility can favor avoiding a larger loss.
 - A first pass is evaluated through search, not by assuming an opponent pass.
   Being ahead does not prove a first pass wins: the opponent need not pass back.
 - Opening draws remain legal; incomplete placement sampling never proves all
@@ -146,10 +148,10 @@ Self-play/arena accept `--rollouts N` (default zero), replacing new-leaf estimat
 with N legal playouts; a neural model then supplies policy only to search.
 Post-move SGF display annotations still query its outcome/score heads independently.
 `--rollout-max-moves 512` caps each playout without forced scoring.
-Rollouts require `--score-weight 0`; nonzero score weight is rejected.
+Completed rollouts use the same outcome/score blend as search.
 `--rollout-pass-probability 0.03125` controls passes; other moves use bounded
 full-domain legal proposals. Exhausting attempts passes but does not prove there
-are no legal placements. Immediate winning passes are taken.
+are no legal placements. Winning passes are not forced.
 
 There is no eye filter. Only naturally terminal playouts supply values; capped
 ones stay unknown. With none complete, selection falls back to neutral lack of

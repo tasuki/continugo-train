@@ -11,7 +11,7 @@ Verdicts are `passed`, `failed`, `inconclusive` or `disabled`, not accepted mode
 Actor selection and scheduling are defined in [loop](loop.md); a failed match
 never rewinds training. Evaluation SGFs stay outside training replay.
 
-New v2 evaluation protocols record `score_weight` (default 0.3) alongside the
+New v2 evaluation protocols record `score_weight` (default 0.5, a linear score fraction) alongside the
 other search settings. Existing v1 rating ledgers are not migrated; use a fresh
 model store for the new score/ownership campaign. Historical models require their
 historical runtime. See [auxiliary supervision](auxiliary.md).

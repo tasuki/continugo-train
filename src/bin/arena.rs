@@ -69,7 +69,8 @@ struct Args {
     proposal_attempts: usize,
     #[arg(long, default_value_t = 0.25)]
     independent_exploration: f64,
-    #[arg(long, default_value_t = 0.3)]
+    /// Score fraction: 1 maximizes expected final score; 0 uses outcome only.
+    #[arg(long, default_value_t = 0.5)]
     score_weight: f64,
     #[command(flatten)]
     rollout: RolloutArgs,

@@ -297,7 +297,7 @@ class NativeInferenceTests(unittest.TestCase):
         source = self.root / "score-search.sgf"
         source.write_text(SGF)
         before = source.read_bytes()
-        for weight in (0, 0.3):
+        for weight in (0, 0.3, 1):
             extra = ["--simulations", "8", "--seed", "73", "--score-weight", str(weight)]
             runs = [self.infer(source, [1000000], extra=extra) for _ in range(2)]
             for result in runs:
@@ -306,7 +306,7 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertEqual(a["visits"], b["visits"])
             self.assertEqual(a["best"], b["best"])
             self.assertEqual(sum(v["visits"] for v in a["visits"]), 8)
-            self.assertAlmostEqual(a["utility"], (a["value"] + weight * a["score"]) / (1 + weight))
+            self.assertAlmostEqual(a["utility"], (1 - weight) * a["value"] + weight * a["score"])
             self.assertAlmostEqual(
                 a["eye_fill_visit_fraction"],
                 sum(v["visits"] for v in a["visits"] if v["eye_fill"]) / 8,

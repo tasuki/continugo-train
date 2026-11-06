@@ -66,22 +66,26 @@ can inspect ownership without adding a dense output to every MCTS leaf.
 ## Search utility
 
 ```
-utility = (outcome + score_weight*normalized_score) / (1 + score_weight)
-score_weight = 0.3  # default; 0 is the outcome-only diagnostic control
+utility = (1 - score_weight)*outcome + score_weight*normalized_score
+score_weight = 0.5  # default: equal outcome/score; 1 = score only, 0 = outcome only
 ```
 
 Outcome is `P(win)-P(loss)`, with draws contributing zero, not raw win probability.
-The coefficients are approximately 76.9% outcome / 23.1% score. Leaf estimates,
-root initialization and exact terminal backups use the same utility and normal
-side-to-move sign flips. Pass proofs remain exact terminal **outcome** facts,
-independent of the magnitude of score-adjusted utility. Only a terminal winning
-pass triggers a shortcut; losing passes remain eligible for normal search so
-score utility can prefer passing over a larger loss. Nonzero score weight with the optional
-rollout evaluator is rejected; explicitly use `--score-weight 0` for rollouts.
-Weights must be finite and in [0,1]. Search settings, including score weight, are
-frozen in new v6 loops and recorded in SGFs and v2 evaluation protocols.
-Use a fresh `--model-store` for the new campaign if the existing store contains
-old-format ratings; no rating-ledger migration is provided.
+At the default, both bounded head estimates contribute equally. Displayed win
+percentage is an affine transform of outcome, not a number directly averaged with
+raw SGF points. Neural leaves, root initialization, completed rollouts and exact
+terminal backups share this utility and side-to-move sign flips.
+
+There is **no winning-pass shortcut**, in either search or rollouts. A terminal
+pass has exact utility available to PUCT without fabricated visits; it competes
+with placements. A first pass does not assume a cooperative reply. Higher utility
+can justify continuing despite an available guaranteed win; passing can still be
+best when continuation is worse. Truncated playouts remain unknown.
+
+Weights must be finite and in [0,1]. This is a **linear fraction**, not the old
+relative-weight formula (where 1 still meant a 50/50 blend). Changed native
+fingerprints isolate protocols; do not resume old frozen campaigns with this
+implementation. Search weights are separate from training loss weights.
 
 A bounded score term can still trade winning chances for margin. KataGo's
 standard factors (1.0 outcome, 0.1 static score, 0.3 dynamic score) use different,
@@ -95,7 +99,7 @@ No dynamic centering or score-distribution head is implemented.
 .venv/bin/python -m continugo_train.diagnose --checkpoint NEW.pt --data REPLAY --output diagnostics.json
 # Search controls: same SGF/ply/seed and simulations, change only score weight:
 mise run infer -- --model NEW_MODEL --sgf GAME.sgf --ply 60 --simulations 32 --seed 7 --score-weight 0
-mise run infer -- --model NEW_MODEL --sgf GAME.sgf --ply 60 --simulations 32 --seed 7 --score-weight 0.3
+mise run infer -- --model NEW_MODEL --sgf GAME.sgf --ply 60 --simulations 32 --seed 7 --score-weight 0.5
 ```
 
 The first command reports outcome/score calibration, score MAE/RMSE/bias,

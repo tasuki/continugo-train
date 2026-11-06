@@ -19,7 +19,8 @@ pub struct SearchConfig {
     pub proposal_attempts: usize,
     /// Neural placement proposal mixture: uniform legal exploration vs policy.
     pub independent_exploration: f64,
-    /// Relative utility of expected normalized final score versus outcome.
+    /// Linear score fraction: 0.5 equally weights outcome and normalized score;
+    /// 1 uses only score, 0 only outcome.
     pub score_weight: f64,
     /// Explicit unguided bootstrap guidance; never enabled for neural search.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -38,7 +39,7 @@ impl Default for SearchConfig {
             widening_exponent: 0.5,
             proposal_attempts: 128,
             independent_exploration: 0.25,
-            score_weight: 0.3,
+            score_weight: 0.5,
             bootstrap_avoid_eyes: false,
             rollout: None,
         }
@@ -52,9 +53,6 @@ impl SearchConfig {
         }
         if let Some(rollout) = &self.rollout {
             rollout.validate()?;
-            if self.score_weight != 0.0 {
-                return Err("rollout evaluation requires --score-weight 0".into());
-            }
             if self.bootstrap_avoid_eyes {
                 return Err(
                     "bootstrap eye guidance cannot be combined with rollout evaluation".into(),
@@ -127,9 +125,9 @@ struct Node {
     // Always from this node's side-to-move perspective, not its parent's.
     value_sum: f64,
     value_visits: u32,
-    // Exact outcome only when this node's pass ends the game. A loss never
-    // excludes pass: continuing may lose by more or destroy the player's eyes.
-    pass_proof: Option<f64>,
+    // Exact utility of a terminal child, available without inventing visit counts.
+    // A winning pass never suppresses higher-scoring continuations.
+    terminal_value: Option<f64>,
     proposals: Proposals,
     prepared: OnceLock<PreparedGame>,
     children: Vec<Edge>,
@@ -145,7 +143,7 @@ impl Node {
             visits: 0,
             value_sum: 0.0,
             value_visits: 0,
-            pass_proof: None,
+            terminal_value: None,
             proposals: Proposals::new(rng),
             prepared: OnceLock::new(),
             children: Vec::new(),
@@ -182,17 +180,17 @@ impl Node {
                 self.update_estimate(Some(terminal_utility(&self.game, config.score_weight)))
             );
         }
-        self.expand_pass(rng)?;
-        if self.pass_proof == Some(1.0) {
-            let value = self.children[0]
-                .child
-                .simulate_neural(evaluator, config, rng, stats)?
-                .map(|v| -v);
-            return Ok(self.update_estimate(value));
-        }
+        self.expand_pass(config, rng)?;
         if self.visits == 0 {
             let value = if let Some(rollout) = &config.rollout {
-                rollout::evaluate(&self.game, rollout, config.proposal_attempts, rng, stats)
+                rollout::evaluate(
+                    &self.game,
+                    rollout,
+                    config.proposal_attempts,
+                    config.score_weight,
+                    rng,
+                    stats,
+                )
             } else {
                 Some(
                     evaluator
@@ -266,18 +264,20 @@ impl Node {
         Ok(self.update_estimate(value))
     }
 
-    /// Admit pass unconditionally, proving its outcome only if it ends the game.
-    /// A nonterminal pass is evaluated by search, not a hypothetical cooperative
-    /// reply. Even a terminal losing pass competes on the normal score utility.
-    fn expand_pass(&mut self, rng: &mut impl Rng) -> Result<(), String> {
+    /// Pass is an ordinary action. Only a terminal pass has a known utility;
+    /// nonterminal passes never assume a cooperative reply. Exact information
+    /// changes Q, not visit counts or which alternatives may be explored.
+    fn expand_pass(&mut self, config: &SearchConfig, rng: &mut impl Rng) -> Result<(), String> {
         if self.children.is_empty() {
             let next = self.game.pass()?;
-            self.pass_proof = next
+            let terminal = next
                 .is_finished()
-                .then(|| black_outcome(&next) * color_sign(self.game.on_move()));
+                .then(|| terminal_utility(&next, config.score_weight));
+            let mut child = Node::new(next, rng);
+            child.terminal_value = terminal;
             self.children.push(Edge {
                 action: Action::PASS,
-                child: Node::new(next, rng),
+                child,
             });
         }
         Ok(())
@@ -293,6 +293,9 @@ impl Node {
     }
 
     fn mean(&self) -> f64 {
+        if let Some(value) = self.terminal_value {
+            return value;
+        }
         if self.value_visits == 0 {
             0.0 // Explicit lack of evidence, not an observed draw.
         } else {
@@ -310,17 +313,17 @@ impl Node {
             let value = terminal_utility(&self.game, config.score_weight);
             return self.update_estimate(Some(value));
         }
-        self.expand_pass(rng).expect("unfinished game");
-        if self.pass_proof == Some(1.0) {
-            let value = self.children[0]
-                .child
-                .simulate(config, rng, stats)
-                .map(|v| -v);
-            return self.update_estimate(value);
-        }
+        self.expand_pass(config, rng).expect("unfinished game");
         if self.visits == 0 {
             let value = config.rollout.as_ref().map_or(Some(0.0), |rollout| {
-                rollout::evaluate(&self.game, rollout, config.proposal_attempts, rng, stats)
+                rollout::evaluate(
+                    &self.game,
+                    rollout,
+                    config.proposal_attempts,
+                    config.score_weight,
+                    rng,
+                    stats,
+                )
             });
             return self.update_estimate(value);
         }
@@ -523,8 +526,8 @@ pub fn black_outcome(game: &Game) -> f64 {
     }
 }
 
-/// Exact terminal outcome and margin use the same utility as neural leaves.
-fn terminal_utility(game: &Game, weight: f64) -> f64 {
+/// Authoritative terminal heads, in the terminal side-to-move perspective.
+fn terminal_estimate(game: &Game) -> LeafEstimate {
     assert!(
         game.is_finished(),
         "terminal utility requires natural completion"
@@ -534,8 +537,18 @@ fn terminal_utility(game: &Game, weight: f64) -> f64 {
         territory::Outcome::Draw => 0.0,
         territory::Outcome::Win(color, _) => color_sign(color),
     };
-    let score = crate::targets::normalized_score(areas);
-    color_sign(game.on_move()) * (outcome + weight * score) / (1.0 + weight)
+    let sign = color_sign(game.on_move());
+    LeafEstimate {
+        value: sign * outcome,
+        score: sign * crate::targets::normalized_score(areas),
+    }
+}
+
+/// Terminal, neural and rollout estimates share the same objective.
+fn terminal_utility(game: &Game, weight: f64) -> f64 {
+    terminal_estimate(game)
+        .utility(weight)
+        .expect("valid terminal estimate and score weight")
 }
 
 pub fn search(
@@ -685,7 +698,13 @@ mod tests {
             .unwrap();
         }
         assert_eq!(root.visits, 3);
-        assert_eq!(root.value_sum, -0.75 / (1.0 + config.score_weight)); // +root, -child, -child (side-to-move).
+        let expected = -LeafEstimate {
+            value: 0.75,
+            score: 0.0,
+        }
+        .utility(config.score_weight)
+        .unwrap();
+        assert_eq!(root.value_sum, expected); // +root, -child, -child (side-to-move).
         assert_eq!(evaluator.calls, 3);
         assert_eq!(root.children.iter().map(|e| e.child.visits).sum::<u32>(), 2);
         assert!(
@@ -814,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_winning_pass_overrides_bad_values_tiny_prior_and_widening() {
+    fn winning_pass_does_not_suppress_placement_exploration() {
         let game = Game::default()
             .play(Spot { x: 500, y: 500 })
             .unwrap()
@@ -831,10 +850,75 @@ mod tests {
             &mut StdRng::seed_from_u64(8),
         )
         .unwrap();
-        assert_eq!(result.policy.len(), 1);
-        assert_eq!(result.policy[0].action, Action::PASS);
-        assert_eq!(result.policy[0].visits, 4);
-        assert_eq!(evaluator.value_calls, 0);
+        assert!(result.policy.len() > 1);
+        assert!(
+            result
+                .policy
+                .iter()
+                .any(|v| v.action != Action::PASS && v.visits > 0)
+        );
+        assert_eq!(result.policy.iter().map(|v| v.visits).sum::<u32>(), 4);
+        assert!(evaluator.value_calls > 0);
+    }
+
+    #[test]
+    fn higher_expected_score_beats_a_guaranteed_smaller_win_in_both_searches() {
+        let game = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .play(Spot { x: 900, y: 900 })
+            .unwrap()
+            .play(Spot { x: 350, y: 350 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let config = SearchConfig {
+            cpuct: 0.001,
+            widening: 0.01,
+            score_weight: 1.0,
+            ..Default::default()
+        };
+        for neural in [false, true] {
+            let mut rng = StdRng::seed_from_u64(8);
+            let mut root = Node::new(game.clone(), &mut rng);
+            root.expand_pass(&config, &mut rng).unwrap();
+            let pass_score = -root.children[0].child.mean();
+            assert!(pass_score > 0.0 && pass_score < 0.9);
+            let action = Action::from_index(100_100).unwrap();
+            let mut child = Node::new(action.apply(&game).unwrap(), &mut rng);
+            child.importance = 1.0;
+            // This continuation has already received one real score estimate.
+            child.update_estimate(Some(-0.9));
+            child.neural = Some(SampledPolicy {
+                pass: 1.0,
+                placement: 0.0,
+                candidates: Vec::new(),
+            });
+            root.children.push(Edge { action, child });
+            root.update_estimate(Some(0.0));
+            root.neural = Some(SampledPolicy {
+                pass: 0.999,
+                placement: 0.001,
+                candidates: Vec::new(),
+            });
+            let mut stats = RolloutStats::default();
+            if neural {
+                root.simulate_neural(
+                    &mut FixedEvaluator { calls: 0 },
+                    &config,
+                    &mut rng,
+                    &mut stats,
+                )
+                .unwrap();
+            } else {
+                root.simulate(&config, &mut rng, &mut stats);
+            }
+            assert_eq!(
+                root.children[0].child.visits, 0,
+                "a guaranteed win must not override higher score"
+            );
+            assert_eq!(root.children[1].child.visits, 2);
+        }
     }
 
     #[test]
@@ -872,11 +956,13 @@ mod tests {
     #[test]
     fn losing_pass_beats_a_worse_continuation_in_both_searches() {
         let first_pass = Game::default()
+            .pass()
+            .unwrap()
             .play(Spot { x: 500, y: 500 })
             .unwrap()
             .play(Spot { x: 900, y: 900 })
             .unwrap()
-            .play(Spot { x: 350, y: 350 })
+            .pass()
             .unwrap();
         let second_pass = Game::default()
             .play(Spot { x: 500, y: 500 })
@@ -906,7 +992,7 @@ mod tests {
             for neural in [false, true] {
                 let mut rng = StdRng::seed_from_u64(8);
                 let mut root = Node::new(game.clone(), &mut rng);
-                root.expand_pass(&mut rng).unwrap();
+                root.expand_pass(&config, &mut rng).unwrap();
                 let action = Action::from_index(100_100).unwrap();
                 let mut child = Node::new(action.apply(&game).unwrap(), &mut rng);
                 child.importance = 1.0;
@@ -993,9 +1079,10 @@ mod tests {
         assert!(!pass.is_finished());
         assert_eq!(black_outcome(&pass.pass().unwrap()), 1.0);
         let mut node = Node::new(game, &mut StdRng::seed_from_u64(8));
-        node.expand_pass(&mut StdRng::seed_from_u64(8)).unwrap();
+        node.expand_pass(&SearchConfig::default(), &mut StdRng::seed_from_u64(8))
+            .unwrap();
         assert_eq!(
-            node.pass_proof, None,
+            node.children[0].child.terminal_value, None,
             "the opponent is not obliged to cooperate by passing"
         );
     }
@@ -1011,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_guidance_preserves_exact_winning_pass_and_never_enters_neural_search() {
+    fn bootstrap_guidance_does_not_force_winning_pass_or_enter_neural_search() {
         let game = Game::default()
             .play(Spot { x: 500, y: 500 })
             .unwrap()
@@ -1023,9 +1110,12 @@ mod tests {
         };
         let mut rng = StdRng::seed_from_u64(8);
         let result = search(&game, &config, &mut rng).unwrap();
-        assert_eq!(result.policy.len(), 1);
-        assert_eq!(result.policy[0].action, Action::PASS);
-        assert_eq!(result.policy[0].visits, config.simulations);
+        assert!(result.policy.len() > 1);
+        assert!(result.policy.iter().any(|v| v.action != Action::PASS));
+        assert_eq!(
+            result.policy.iter().map(|v| v.visits).sum::<u32>(),
+            config.simulations
+        );
         let mut evaluator = FixedEvaluator { calls: 0 };
         assert!(search_neural(&game, &config, &mut evaluator, &mut rng).is_err());
         assert_eq!(evaluator.calls, 0);
@@ -1062,6 +1152,7 @@ mod tests {
                         < 1e-12
                 );
                 assert_eq!(estimate.utility(0.0).unwrap(), value);
+                assert_eq!(estimate.utility(1.0).unwrap(), score);
             }
         }
         assert!(
@@ -1094,11 +1185,11 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert!(config.validate().unwrap_err().contains("score-weight 0"));
+        assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn pass_proof_is_an_outcome_fact_not_score_adjusted_utility() {
+    fn terminal_pass_has_exact_score_without_invented_visits_or_win_bonus() {
         let game = Game::default()
             .play(Spot { x: 500, y: 500 })
             .unwrap()
@@ -1112,21 +1203,21 @@ mod tests {
         assert_eq!(black_outcome(&terminal), 1.0);
         let mut rng = StdRng::seed_from_u64(7);
         let mut node = Node::new(game, &mut rng);
-        node.expand_pass(&mut rng).unwrap();
-        assert_eq!(node.pass_proof, Some(1.0));
-        let u = terminal_utility(&terminal, 0.3);
+        let config = SearchConfig {
+            score_weight: 1.0,
+            ..Default::default()
+        };
+        node.expand_pass(&config, &mut rng).unwrap();
+        let u = terminal_utility(&terminal, 1.0);
+        assert_eq!(node.children[0].child.terminal_value, Some(u));
+        assert_eq!(node.children[0].child.visits, 0);
+        assert_eq!(node.children[0].child.value_visits, 0);
+        assert_eq!(node.children[0].child.mean(), u);
         assert!(u < 0.0 && u > -1.0);
         assert_eq!(terminal_utility(&terminal, 0.0), -1.0);
-        let backed = node
-            .simulate_neural(
-                &mut misleading(-100.0),
-                &SearchConfig::default(),
-                &mut rng,
-                &mut RolloutStats::default(),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(backed, -u);
+        let score =
+            crate::targets::normalized_score(territory::areas(terminal.position().stones()));
+        assert_eq!(u, color_sign(terminal.on_move()) * score);
         let draw = Game::default().pass().unwrap().pass().unwrap();
         assert_eq!(terminal_utility(&draw, 0.3), 0.0);
     }

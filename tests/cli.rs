@@ -433,8 +433,6 @@ fn rollout_diagnostics_never_turn_an_unfinished_actual_game_into_a_label() {
             "1",
             "--rollout-pass-probability",
             "0",
-            "--score-weight",
-            "0",
             "--output",
         ])
         .arg(&directory.0)
@@ -445,6 +443,7 @@ fn rollout_diagnostics_never_turn_an_unfinished_actual_game_into_a_label() {
     let record = sgf::decode_record(&text).unwrap();
     let metadata = comment(&record.root);
     assert_eq!(metadata["search"]["rollout"]["playouts"], 2);
+    assert_eq!(metadata["search"]["score_weight"], 0.5);
     assert_eq!(metadata["rollout_stats"]["completed"], 0);
     assert_eq!(metadata["rollout_stats"]["draws"], 0);
     assert!(metadata["rollout_stats"]["truncated"].as_u64().unwrap() > 0);

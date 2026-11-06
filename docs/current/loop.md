@@ -9,7 +9,7 @@ but **never automatically promotes a network**. Accepted publication follows the
 ## Three independent roles (v6)
 
 New loops require score/ownership checkpoints and record `--score-weight` (default
-0.3). Older loop controls are rejected, not migrated; keep historical campaigns
+0.5, the linear score fraction). Older loop controls are rejected, not migrated; keep historical campaigns
 and their frozen runtime untouched. See [auxiliary supervision](auxiliary.md).
 
 | Role | Behaviour | Durable pointer |

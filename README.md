@@ -7,7 +7,8 @@ before exact coordinate analysis, with whole-board exploration and pass. The
 network also learns [final score and ownership](docs/current/auxiliary.md).
 Fresh score/ownership training is required; old policy/value-only checkpoints,
 exports and loop controls are not migrated. Validated source SGFs remain usable.
-Search defaults to `(outcome + 0.3*normalized_score) / 1.3`; ownership is auxiliary.
+Search defaults to `0.5*outcome + 0.5*normalized_score`; ownership is auxiliary.
+Winning passes are not forced: they compete with continuations on the same utility.
 
 ## Current operating policy
 
