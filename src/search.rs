@@ -80,9 +80,8 @@ impl SearchConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Visit {
-    #[serde(serialize_with = "crate::action::serialize")]
     pub action: Action,
     pub visits: u32,
 }

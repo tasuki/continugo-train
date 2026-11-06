@@ -3,12 +3,12 @@
 //! retains immutable snapshots so offline loaders replay/score once per game.
 
 use crate::targets::FinalTargets;
-use continugo_rules::{Action, Board, Color, Game, Play, sgf, territory};
+use continugo_rules::{Action, Board, COORD_RANGE, Color, Game, Play, sgf, territory};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, sync::Arc};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct PolicyTarget {
     pub action: u32,
     pub visits: u32,
@@ -67,7 +67,7 @@ fn property<'a>(properties: &'a [sgf::Property], name: &str) -> Result<Option<&'
 fn policy(properties: &[sgf::Property], game: &Game) -> Result<Option<Vec<PolicyTarget>>, String> {
     #[derive(Deserialize)]
     struct Comment {
-        policy: Option<Vec<PolicyTarget>>,
+        policy: Option<Vec<(String, u32)>>,
     }
     let targets = match property(properties, "C")? {
         Some(comment) if comment.trim_start().starts_with('{') => {
@@ -77,6 +77,28 @@ fn policy(properties: &[sgf::Property], game: &Game) -> Result<Option<Vec<Policy
         }
         _ => None,
     };
+    let targets = targets
+        .map(|pairs| {
+            pairs
+                .into_iter()
+                .map(|(coordinates, visits)| {
+                    let action = match sgf::decode_play(&format!("B[{coordinates}]"))? {
+                        Play::Pass(_) => Action::PASS.index(),
+                        Play::Place(stone) => {
+                            let spot = stone.spot;
+                            if !(0..COORD_RANGE).contains(&spot.x)
+                                || !(0..COORD_RANGE).contains(&spot.y)
+                            {
+                                return Err("policy coordinates outside action domain".into());
+                            }
+                            (spot.x + COORD_RANGE * spot.y) as u32
+                        }
+                    };
+                    Ok(PolicyTarget { action, visits })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
     if let Some(targets) = &targets {
         if targets.iter().map(|t| u64::from(t.visits)).sum::<u64>() == 0 {
             return Err("policy target has no positive visit mass".into());

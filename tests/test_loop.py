@@ -72,12 +72,10 @@ class FakeJobs:
         model = (Path(value("model")) / "encoder.onnx").read_text()
         for index in range(int(value("games"))):
             offset = (seed + index) % 8
-            coordinate, letter = 200 + offset, "STUVWXYZ"[offset]
-            text = SGF.replace("B[dSdS]", f"B[d{letter}d{letter}]").replace(
-                "200200", str(1001 * coordinate)
-            )
-            text = text.replace('"visits":3', '"visits":8')
-            text = text.replace(";B[]", ';B[]C[{"policy":[{"action":1000000,"visits":8}\\]}]')
+            letter = "STUVWXYZ"[offset]
+            text = SGF.replace("dSdS", f"d{letter}d{letter}")
+            text = text.replace('["",3', '["",8')
+            text = text.replace(";B[]", r';B[]C[{"policy":[["",8\]\]}]')
             root = {"seed": seed + index, "model": model, "search": search}
             if self.fault == "wrong_model":
                 root["model"] = "0" * 64

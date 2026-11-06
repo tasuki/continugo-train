@@ -1,7 +1,7 @@
 //! SGF uses SZ, PB/PW and scored RE for standard game information.
 //! Root JSON contains seed, search/model settings (when used) and optional profiling.
-//! Move comments carry pre-move policy targets and/or profiling; otherwise they
-//! are omitted. Truncated games have no RE. Generation/export timings finish
+//! Move comments carry post-move evaluation, decision alternatives and optional
+//! profiling. Truncated games have no RE. Generation/export timings finish
 //! after annotation serialization, so those remain stderr-only.
 
 pub mod parallel;
@@ -12,15 +12,16 @@ pub const REFERENCE_ID: &str = "random-no-eye-fill-v1";
 
 use crate::{
     action::random_move,
-    inference::Evaluator,
+    inference::{Evaluator, LeafEstimate},
     profile::{GameProfile, MoveProfile},
-    search::{SearchConfig, Visit, rollout::RolloutStats, search, search_neural},
+    search::{SearchConfig, Visit, color_sign, rollout::RolloutStats, search, search_neural},
+    targets::BOARD_AREA,
 };
 use continugo_analysis::GeometricAvailability;
-use continugo_rules::{Board, Color, Game, sgf, territory};
+use continugo_rules::{Board, Color, Game, Play, Stone, sgf, territory};
 use rand::{SeedableRng, rngs::StdRng};
 use serde::Serialize;
-use std::time::Instant;
+use std::{cmp::Reverse, time::Instant};
 
 #[derive(Clone, Copy, Debug, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +62,8 @@ pub struct GameMetadata {
     pub config: SelfplayConfig,
     /// One entry per SGF move: sparse pre-move root visits, or None for random play.
     pub policies: Vec<Option<Vec<Visit>>>,
+    /// Post-move estimates in the mover's perspective, aligned with SGF moves.
+    pub move_evaluations: Vec<MoveEvaluation>,
     /// None for a truncated game; otherwise the authoritative scored outcome.
     pub result: Option<territory::Outcome>,
     pub profile: Option<GameProfile>,
@@ -106,12 +109,90 @@ impl GameMetadata {
     }
 }
 
+/// Display annotations only, never policy/outcome/score training labels.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct MoveEvaluation {
+    /// Expected points percentage: draws count as half, not strict P(win).
+    pub win_pct: Option<f64>,
+    /// Expected final signed margin in SGF stone-area units, not raw board area.
+    pub score: Option<f64>,
+}
+
+impl MoveEvaluation {
+    fn after_move(game: &Game, evaluator: Option<&mut dyn Evaluator>) -> Result<Self, String> {
+        let estimate = if game.is_finished() {
+            let areas = territory::areas(game.position().stones());
+            let sign = color_sign(game.on_move().other());
+            LeafEstimate {
+                value: match territory::result(areas) {
+                    territory::Outcome::Draw => 0.0,
+                    territory::Outcome::Win(color, _) => sign * color_sign(color),
+                },
+                score: sign * (areas.black - areas.white) / BOARD_AREA,
+            }
+        } else if let Some(evaluator) = evaluator {
+            let estimate = evaluator.estimate(game)?;
+            // The network sees the opponent now on turn, not the player who moved.
+            LeafEstimate {
+                value: -estimate.value,
+                score: -estimate.score,
+            }
+        } else {
+            return Ok(Self::default());
+        };
+        estimate.utility(0.0)?; // Reject invalid estimates, rather than emitting fake nulls.
+        let stone_area = std::f64::consts::PI * f64::from(game.board().stone_radius()).powi(2);
+        let rounded = |value: f64| {
+            let value = (value * 10.0).round() / 10.0;
+            if value == 0.0 { 0.0 } else { value } // Avoid a displayed negative zero.
+        };
+        Ok(Self {
+            win_pct: Some(rounded(50.0 * (estimate.value + 1.0))),
+            score: Some(rounded(estimate.score * BOARD_AREA / stone_area)),
+        })
+    }
+}
+
 #[derive(Serialize)]
 struct MoveComment<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    evaluation: MoveEvaluation,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_policy"
+    )]
     policy: Option<&'a [Visit]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<&'a MoveProfile>,
+}
+
+/// SGF comments store [coordinate string, visits] pairs, most visited first.
+/// Sort only the serialized view; search order and move-selection RNG stay intact.
+fn serialize_policy<S: serde::Serializer>(
+    policy: &Option<&[Visit]>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let Some(policy) = policy else {
+        return serializer.serialize_none();
+    };
+    let mut ordered: Vec<_> = policy.iter().collect();
+    ordered.sort_unstable_by_key(|visit| (Reverse(visit.visits), visit.action.index()));
+    let pairs = ordered
+        .into_iter()
+        .map(|visit| {
+            // Reuse the shared SGF codec; color is implicit in the move node.
+            let play = match visit.action.spot() {
+                Some(spot) => Play::Place(Stone {
+                    color: Color::Black,
+                    spot,
+                }),
+                None => Play::Pass(Color::Black),
+            };
+            let encoded = sgf::encode_play(play).map_err(serde::ser::Error::custom)?;
+            Ok((encoded[2..encoded.len() - 1].to_owned(), visit.visits))
+        })
+        .collect::<Result<Vec<_>, S::Error>>()?;
+    pairs.serialize(serializer)
 }
 
 #[derive(Debug)]
@@ -274,6 +355,7 @@ fn generate_inner<const PROFILE: bool>(
         profile.availability_init_seconds = started.elapsed().as_secs_f64();
     }
     let mut policies = Vec::new();
+    let mut move_evaluations = Vec::new();
     let mut rollout_stats = RolloutStats::default();
     while !game.is_finished() && policies.len() < config.max_moves {
         let move_started = PROFILE.then(Instant::now);
@@ -333,6 +415,20 @@ fn generate_inner<const PROFILE: bool>(
                 }
             }
         };
+        let evaluation = if random_turn || !matches!(config.engine, Engine::Neural) {
+            MoveEvaluation::after_move(&next, None)?
+        } else if opponent.is_some() && game.on_move() == Color::White {
+            MoveEvaluation::after_move(
+                &next,
+                Some(opponent.as_deref_mut().expect("opposing evaluator")),
+            )?
+        } else {
+            MoveEvaluation::after_move(
+                &next,
+                Some(evaluator.as_deref_mut().expect("validated evaluator")),
+            )?
+        };
+        move_evaluations.push(evaluation);
         if let Some(index) = &mut availability {
             let update_started = PROFILE.then(Instant::now);
             index.sync(next.position());
@@ -375,6 +471,7 @@ fn generate_inner<const PROFILE: bool>(
         board_size: board.size(),
         config: config.clone(),
         policies,
+        move_evaluations,
         result,
         profile: PROFILE.then_some(profile),
         model,
@@ -407,18 +504,14 @@ fn generate_inner<const PROFILE: bool>(
     ));
     for (index, policy) in metadata.policies.iter().enumerate() {
         let comment = MoveComment {
+            evaluation: metadata.move_evaluations[index],
             policy: policy.as_deref(),
             profile: metadata.profile.as_ref().map(|p| &p.moves[index]),
         };
-        let properties = if comment.policy.is_none() && comment.profile.is_none() {
-            Vec::new()
-        } else {
-            vec![(
-                "C".into(),
-                vec![serde_json::to_string(&comment).map_err(|e| e.to_string())?],
-            )]
-        };
-        record.move_properties.push(properties);
+        record.move_properties.push(vec![(
+            "C".into(),
+            vec![serde_json::to_string(&comment).map_err(|e| e.to_string())?],
+        )]);
     }
     let sgf = sgf::encode_record(&record)?;
     if let Some(profile) = &mut metadata.profile {
@@ -434,6 +527,229 @@ fn generate_inner<const PROFILE: bool>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_comments_use_sgf_pairs_sorted_by_visits_without_changing_search_order() {
+        use crate::action::Action;
+        let policy: Vec<_> = [
+            (200_200, 3),
+            (1_000_000, 5),
+            (38_038, 3),
+            (999_999, 0),
+            (0, 0),
+        ]
+        .into_iter()
+        .map(|(index, visits)| Visit {
+            action: Action::from_index(index).unwrap(),
+            visits,
+        })
+        .collect();
+        let comment = serde_json::to_string(&MoveComment {
+            evaluation: MoveEvaluation {
+                win_pct: Some(63.4),
+                score: Some(5.2),
+            },
+            policy: Some(&policy),
+            profile: None,
+        })
+        .unwrap();
+        assert_eq!(
+            comment,
+            r#"{"win_pct":63.4,"score":5.2,"policy":[["",5],["aMaM",3],["dSdS",3],["aaaa",0],["tltl",0]]}"#
+        );
+        assert_eq!(policy[0].action.index(), 200_200);
+        assert_eq!(policy[1].action, Action::PASS);
+        let mut record = sgf::Record {
+            plays: vec![Play::Pass(Color::Black)],
+            ..Default::default()
+        };
+        record.move_properties = vec![vec![("C".into(), vec![comment.clone()])]];
+        let text = sgf::encode_record(&record).unwrap();
+        assert!(text.contains(r#"["",5\]"#));
+        assert_eq!(
+            sgf::decode_record(&text).unwrap().move_properties[0][0].1[0],
+            comment
+        );
+    }
+
+    struct FixedEstimate {
+        value: f64,
+        score: f64,
+        seen: Vec<Game>,
+    }
+
+    impl Evaluator for FixedEstimate {
+        fn model_id(&self) -> &str {
+            "fixed-estimate"
+        }
+        fn evaluate(&mut self, game: &Game) -> Result<crate::inference::Evaluation, String> {
+            // Exactly one placement proposal makes one-simulation match moves
+            // deterministic, independently of the mocked value/score heads.
+            let index = 200_200 + 150 * game.record().len() as u32;
+            let mut logits = vec![f32::NEG_INFINITY; 1_000_001];
+            let mut legal = vec![0; 1_000_000];
+            logits[index as usize] = 0.0;
+            legal[index as usize] = 1;
+            logits[1_000_000] = -100.0;
+            Ok(crate::inference::Evaluation {
+                value: self.value,
+                score: self.score,
+                logits,
+                legal,
+            })
+        }
+        fn estimate(&mut self, game: &Game) -> Result<LeafEstimate, String> {
+            assert!(
+                !game.is_finished(),
+                "terminal annotations must bypass inference"
+            );
+            self.seen.push(game.clone());
+            Ok(LeafEstimate {
+                value: self.value,
+                score: self.score,
+            })
+        }
+    }
+
+    #[test]
+    fn post_move_annotations_flip_both_heads_and_convert_physical_score_units() {
+        use continugo_rules::Spot;
+        for (size, expected_score) in [(9, 10.5), (13, 22.0), (19, 47.1)] {
+            let after_black = Game::new(Board::new(size).unwrap())
+                .play(Spot { x: 500, y: 500 })
+                .unwrap();
+            let after_white = after_black.pass().unwrap();
+            for game in [after_black, after_white] {
+                let mut evaluator = FixedEstimate {
+                    value: -0.268,
+                    score: -0.1,
+                    seen: Vec::new(),
+                };
+                let annotation = MoveEvaluation::after_move(&game, Some(&mut evaluator)).unwrap();
+                assert_eq!(evaluator.seen, vec![game]);
+                assert_eq!(annotation.win_pct, Some(63.4));
+                assert_eq!(annotation.score, Some(expected_score));
+            }
+        }
+    }
+
+    #[test]
+    fn move_annotations_are_unknown_without_a_model_and_exact_at_terminal_positions() {
+        use continugo_rules::Spot;
+        let draw = Game::default().pass().unwrap().pass().unwrap();
+        let black_win = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap()
+            .pass()
+            .unwrap();
+        let white_win = Game::default()
+            .pass()
+            .unwrap()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap()
+            .pass()
+            .unwrap();
+        let white_loss = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .play(Spot { x: 900, y: 900 })
+            .unwrap()
+            .pass()
+            .unwrap()
+            .pass()
+            .unwrap();
+        let unknown = MoveEvaluation::after_move(&Game::default().pass().unwrap(), None).unwrap();
+        assert_eq!(
+            serde_json::to_string(&unknown).unwrap(),
+            r#"{"win_pct":null,"score":null}"#
+        );
+        let mut evaluator = FixedEstimate {
+            value: f64::NAN,
+            score: f64::NAN,
+            seen: Vec::new(),
+        };
+        for (game, win_pct) in [
+            (draw, 50.0),
+            (black_win, 100.0),
+            (white_win, 100.0),
+            (white_loss, 0.0),
+        ] {
+            let annotation = MoveEvaluation::after_move(&game, Some(&mut evaluator)).unwrap();
+            assert_eq!(annotation.win_pct, Some(win_pct));
+            let result = territory::result(territory::areas(game.position().stones()));
+            let expected_score = match result {
+                territory::Outcome::Draw => 0.0,
+                territory::Outcome::Win(winner, _) => {
+                    let result = sgf::format_result(game.board(), result);
+                    let margin: f64 = result.split_once('+').unwrap().1.parse().unwrap();
+                    if winner == game.on_move().other() {
+                        margin
+                    } else {
+                        -margin
+                    }
+                }
+            };
+            assert_eq!(annotation.score, Some(expected_score));
+        }
+        assert!(evaluator.seen.is_empty());
+    }
+
+    #[test]
+    fn invalid_annotation_estimates_are_errors_not_unknown_values() {
+        let game = Game::default().pass().unwrap();
+        for (value, score) in [
+            (f64::NAN, 0.0),
+            (0.0, f64::INFINITY),
+            (1.1, 0.0),
+            (0.0, -1.1),
+        ] {
+            let mut evaluator = FixedEstimate {
+                value,
+                score,
+                seen: Vec::new(),
+            };
+            assert!(MoveEvaluation::after_move(&game, Some(&mut evaluator)).is_err());
+        }
+    }
+
+    #[test]
+    fn match_annotations_use_the_movers_network_not_the_next_players_network() {
+        let mut black = FixedEstimate {
+            value: 0.268,
+            score: 0.1,
+            seen: Vec::new(),
+        };
+        let mut white = FixedEstimate {
+            value: -0.268,
+            score: -0.1,
+            seen: Vec::new(),
+        };
+        let config = SelfplayConfig {
+            engine: Engine::Neural,
+            max_moves: 4,
+            search: SearchConfig {
+                simulations: 1,
+                ..Default::default()
+            },
+        };
+        let record = generate_match(Board::default(), &config, 7, &mut black, &mut white).unwrap();
+        let decoded = sgf::decode_record(&record.sgf).unwrap();
+        assert_eq!(decoded.plays.len(), 4);
+        assert!(record.metadata.result.is_none());
+        for (ply, properties) in decoded.move_properties.iter().enumerate() {
+            let comment = &properties.iter().find(|(key, _)| key == "C").unwrap().1[0];
+            let value: serde_json::Value = serde_json::from_str(comment).unwrap();
+            assert!(comment.starts_with("{\"win_pct\":"));
+            assert!(comment.find("\"score\"").unwrap() < comment.find("\"policy\"").unwrap());
+            assert_eq!(value["win_pct"], if ply % 2 == 0 { 36.6 } else { 63.4 });
+            assert_eq!(value["score"], if ply % 2 == 0 { -22.0 } else { 22.0 });
+        }
+        replay(&record);
+    }
 
     #[test]
     fn matches_use_both_color_specific_evaluators_and_authoritative_draws() {
@@ -567,7 +883,6 @@ mod tests {
         assert!(replay(&complete).is_finished());
     }
     use continugo_analysis::fills_small_eye;
-    use continugo_rules::Play;
 
     #[test]
     fn guided_bootstrap_has_real_visits_natural_results_and_no_noncap_eye_targets() {
@@ -641,19 +956,17 @@ mod tests {
         let board = Board::new(size).unwrap();
         let mut game = Game::new(board);
         assert_eq!(plays.len(), metadata.policies.len());
+        assert_eq!(plays.len(), metadata.move_evaluations.len());
         for (index, (play, policy)) in plays.iter().zip(&metadata.policies).enumerate() {
             let comment = MoveComment {
+                evaluation: metadata.move_evaluations[index],
                 policy: policy.as_deref(),
                 profile: metadata.profile.as_ref().map(|p| &p.moves[index]),
             };
-            if policy.is_none() && metadata.profile.is_none() {
-                assert!(decoded.move_properties[index].is_empty());
-            } else {
-                assert_eq!(
-                    decoded.move_properties[index],
-                    vec![("C".into(), vec![serde_json::to_string(&comment).unwrap()])]
-                );
-            }
+            assert_eq!(
+                decoded.move_properties[index],
+                vec![("C".into(), vec![serde_json::to_string(&comment).unwrap()])]
+            );
             let next = match play {
                 Play::Place(stone) => game.play(stone.spot),
                 Play::Pass(_) => game.pass(),

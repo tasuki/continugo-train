@@ -62,14 +62,12 @@ class ArenaJobs(helpers.FakeJobs):
             )
             text = (
                 SGF.replace("SZ[13]", header)
-                .replace('"action":200200,"visits":7', f'"action":200200,"visits":{count - 1}')
-                .replace('"action":1000000,"visits":3', f'"action":1000000,"visits":{count}')
+                .replace('["dSdS",7', f'["dSdS",{count - 1}')
+                .replace('["",3', f'["",{count}')
             )
-            text = text.replace(
-                ";B[]", f';B[]C[{{"policy":[{{"action":1000000,"visits":{count}}}\\]}}]'
-            )
+            text = text.replace(";B[]", f';B[]C[{{"policy":[["",{count}\\]\\]}}]')
             if self.arena_mode == "draw":
-                comment = f'C[{{"policy":[{{"action":1000000,"visits":{count}}}\\]}}]'
+                comment = f'C[{{"policy":[["",{count}\\]\\]}}]'
                 text = f"(;FF[9071]GM[9071]{header}RE[0];B[]{comment};W[]{comment})"
             elif self.arena_mode == "truncate":
                 text = text.replace("RE[B+220.4]", "")
@@ -111,36 +109,25 @@ class ArenaJobs(helpers.FakeJobs):
             ]
             header = f"SZ[{size}]PB[{players[0]}]PW[{players[1]}]C[{json.dumps(root)}]"
 
-            def node(color, coordinate, action, candidate_black=candidate_black):
+            def node(color, coordinate, candidate_black=candidate_black):
                 neural = (color == "B") == candidate_black
                 comment = (
-                    (
-                        "C["
-                        + json.dumps({"policy": [{"action": action, "visits": count}]}).replace(
-                            "]", "\\]"
-                        )
-                        + "]"
-                    )
+                    ("C[" + json.dumps({"policy": [[coordinate, count]]}).replace("]", "\\]") + "]")
                     if neural
                     else ""
                 )
                 return f";{color}[{coordinate}]{comment}"
 
             if self.reference_mode == "draw":
-                text = (
-                    f"(;FF[9071]GM[9071]{header}RE[0]"
-                    + node("B", "", 1000000)
-                    + node("W", "", 1000000)
-                    + ")"
-                )
+                text = f"(;FF[9071]GM[9071]{header}RE[0]" + node("B", "") + node("W", "") + ")"
             elif self.reference_mode == "truncate":
-                text = f"(;FF[9071]GM[9071]{header}" + node("B", "dSdS", 200200) + ")"
+                text = f"(;FF[9071]GM[9071]{header}" + node("B", "dSdS") + ")"
             else:
                 text = (
                     f"(;FF[9071]GM[9071]{header}RE[B+220.4]"
-                    + node("B", "dSdS", 200200)
-                    + node("W", "", 1000000)
-                    + node("B", "", 1000000)
+                    + node("B", "dSdS")
+                    + node("W", "")
+                    + node("B", "")
                     + ")"
                 )
             path = Path(value("output")) / gate.filename(ordinal, size, seed, candidate_black)

@@ -389,12 +389,12 @@ class NativeInferenceTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("calls: 2, value_calls: 8", result.stderr)
+        self.assertIn("calls: 2, value_calls: 10", result.stderr)
         self.assertIn("requests: 0", result.stderr)  # One actual game bypasses the queue.
         # The chosen first move was already a value-only leaf: its next root
         # reuses that context rather than rebuilding coarse facts/encoding.
         self.assertIn("encoder_positions: 9", result.stderr)
-        self.assertIn("cache_hits: 1", result.stderr)
+        self.assertIn("cache_hits: 3", result.stderr)
         source = next(output.glob("*.sgf"))
         # Rust replays and validates every move/policy before exposing tensors.
         sample = load_position(source, 0)
@@ -402,6 +402,40 @@ class NativeInferenceTests(unittest.TestCase):
         self.assertIsNone(sample.outcome)
         identity = hashlib.sha256(self.checkpoint.read_bytes()).hexdigest()
         self.assertIn('"model":"' + identity + '"', source.read_text())
+        comments = re.findall(r";[BW]\[[^\]]*\]C\[((?:\\.|[^\]\\])*)\]", source.read_text())
+        self.assertEqual(len(comments), 2)
+        # Add a legal next node so replay can expose the last post-move position.
+        continued = self.root / f"annotation-check-{device}.sgf"
+        continued.write_text(source.read_text().rstrip().removesuffix(")") + ";B[])")
+        stone_area = np.pi * (sample.diameter / 2) ** 2
+        for ply, comment in enumerate(comments, 1):
+            annotation = json.loads(comment.replace("\\]", "]").replace("\\\\", "\\"))
+            self.assertEqual(list(annotation)[:3], ["win_pct", "score", "policy"])
+            estimate = subprocess.run(
+                [
+                    str(ROOT / "target/release/infer"),
+                    "--model",
+                    str(self.bundle),
+                    "--sgf",
+                    str(continued),
+                    "--ply",
+                    str(ply),
+                    "--device",
+                    device,
+                    "--ort-library",
+                    str(library or self.library),
+                    "--value-only",
+                ],
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            estimate = json.loads(estimate.stdout)
+            self.assertAlmostEqual(annotation["win_pct"], 50 * (1 - estimate["value"]), delta=0.051)
+            self.assertAlmostEqual(
+                annotation["score"], -estimate["score"] * 1_000_000 / stone_area, delta=0.051
+            )
         saved = torch.load(self.checkpoint, weights_only=True)
         from continugo_train.progress import network_name
 

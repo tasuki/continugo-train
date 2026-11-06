@@ -18,13 +18,10 @@ from continugo_train.features import FeatureClient, inspect_game
 from continugo_train.train import atomic_checkpoint, parse_args, train
 
 
-def fixtures(directory, letters="STUV", start=200):
+def fixtures(directory, letters="STUV"):
     paths = []
     for offset, letter in enumerate(letters):
-        coordinate = start + offset
-        text = SGF.replace("B[dSdS]", f"B[d{letter}d{letter}]").replace(
-            "200200", str(1001 * coordinate)
-        )
+        text = SGF.replace("dSdS", f"d{letter}d{letter}")
         path = directory / f"game-{offset}.sgf"
         path.write_text(text)
         paths.append(path)
@@ -55,7 +52,7 @@ class OfflineDataTests(unittest.TestCase):
         original = data.scan_corpus([str(p) for p in self.paths], 4, 0, 0.25)
         window = self.root / "window"
         window.mkdir()
-        new_paths = fixtures(window, "WXYZ", 204)
+        new_paths = fixtures(window, "WXYZ")
         changed = data.scan_corpus(
             [str(p) for p in new_paths],
             4,
@@ -379,7 +376,7 @@ class OfflineTrainerTests(unittest.TestCase):
         before = source.read_bytes()
         window = self.root / "new-games"
         window.mkdir()
-        fixtures(window, "WXYZ", 204)
+        fixtures(window, "WXYZ")
         extra = [
             "--data",
             str(self.corpus),
@@ -587,7 +584,7 @@ class OfflineTrainerTests(unittest.TestCase):
         parent = torch.load(checkpoint, weights_only=True)
         window = self.root / "window"
         window.mkdir()
-        fixtures(window, "WXYZ", 204)
+        fixtures(window, "WXYZ")
         first = self.run_training(
             self.root / "first-window",
             warm_start=checkpoint,

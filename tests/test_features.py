@@ -23,8 +23,8 @@ from continugo_train.model import NetworkConfig, PolicyValueNet, cell_actions, c
 
 # Escaped SGF comments, native coordinates, and a checked one-stone area result.
 SGF = r"""(;FF[9071]GM[9071]SZ[13]RE[B+220.4]
-;B[dSdS]C[{"policy":[{"action":200200,"visits":7},{"action":1000000,"visits":1}\]}]
-;W[]C[{"policy":[{"action":1000000,"visits":3}\]}]
+;B[dSdS]C[{"policy":[["dSdS",7\],["",1\]\]}]
+;W[]C[{"policy":[["",3\]\]}]
 ;B[]
 )"""
 
@@ -77,7 +77,7 @@ class RealFeatureTests(unittest.TestCase):
             black.policy_targets()  # No fabricated targets for an unannotated node.
 
     def test_capture_flags_are_float32_and_painted_on_group_stones(self):
-        self.sgf.write_text(SGF.replace("B[dSdS]", "B[aMaM]").replace("200200", "38038"))
+        self.sgf.write_text(SGF.replace("dSdS", "aMaM"))
         sample = self.load(1, actions=[38038, 92092])
         self.assertEqual(sample.coarse.dtype, torch.float32)
         self.assertEqual(sample.exact.dtype, torch.float32)

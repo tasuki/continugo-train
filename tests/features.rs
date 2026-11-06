@@ -293,10 +293,7 @@ fn scored_record() -> sgf::Record {
         .root
         .push(("RE".into(), vec![sgf::format_result(game.board(), result)]));
     record.move_properties = vec![vec![]; record.plays.len()];
-    record.move_properties[0].push((
-        "C".into(),
-        vec![r#"{"policy":[{"action":200200,"visits":7},{"action":1000000,"visits":1}]}"#.into()],
-    ));
+    record.move_properties[0].push(("C".into(), vec![r#"{"policy":[["dSdS",7],["",1]]}"#.into()]));
     record
 }
 
@@ -342,13 +339,81 @@ fn replay_loads_generated_mcts_visits_without_inventing_labels() {
     assert!(loaded.outcome.is_some());
     let policy = loaded.policy.unwrap();
     let original = record.metadata.policies[0].as_ref().unwrap();
-    for (target, visit) in policy.iter().zip(original) {
+    for target in &policy {
+        let visit = original
+            .iter()
+            .find(|visit| visit.action.index() == target.action)
+            .unwrap();
         assert_eq!(
             (target.action, target.visits),
             (visit.action.index(), visit.visits)
         );
     }
     assert_eq!(policy.iter().map(|t| t.visits).sum::<u32>(), 8);
+}
+
+#[test]
+fn replay_decodes_policy_coordinates_and_pass_to_internal_action_ids() {
+    let mut record = scored_record();
+    record.move_properties[0][0].1 =
+        vec![r#"{"policy":[["dSfO",7],["",1],["aMaM",0],["pass",0]]}"#.into()];
+    let sample = load_position(&sgf::encode_record(&record).unwrap(), 0).unwrap();
+    let targets: Vec<_> = sample
+        .policy
+        .unwrap()
+        .into_iter()
+        .map(|target| (target.action, target.visits))
+        .collect();
+    // "pass" is itself a valid four-letter coordinate, not a pass alias.
+    assert_eq!(
+        targets,
+        [(300_200, 7), (1_000_000, 1), (38_038, 0), (954_780, 0)]
+    );
+}
+
+#[test]
+fn replay_accepts_only_compact_coordinate_visit_pairs() {
+    for policy in [
+        r#"[{"action":200200,"visits":1}]"#,
+        r#"[[200200,1]]"#,
+        r#"[["200200",1]]"#,
+        r#"[["dS",1]]"#,
+        r#"[["!!!!",1]]"#,
+        r#"[["tmab",1]]"#, // x=1000 must not alias an in-domain action ID.
+        r#"[["ZZZZ",1]]"#,
+        r#"[["dSdS",-1]]"#,
+        r#"[["dSdS",1.5]]"#,
+        r#"[["dSdS",4294967296]]"#,
+        r#"[["dSdS"]]"#,
+        r#"[["dSdS",1,2]]"#,
+        r#"[["dSdS",1],["dSdS",0]]"#,
+        r#"[["",1],["",1]]"#,
+        r#"[["dSdS",0]]"#,
+        r#"[]"#,
+    ] {
+        let mut record = scored_record();
+        record.move_properties[0][0].1 = vec![format!("{{\"policy\":{policy}}}")];
+        assert!(
+            load_position(&sgf::encode_record(&record).unwrap(), 0).is_err(),
+            "accepted invalid policy: {policy}"
+        );
+    }
+}
+
+#[test]
+fn display_evaluations_never_supply_or_override_training_labels() {
+    let mut record = scored_record();
+    record.move_properties[0][0].1 =
+        vec![r#"{"win_pct":0.0,"score":-999.0,"policy":[["dSdS",7],["",1]]}"#.into()];
+    let sample = load_position(&sgf::encode_record(&record).unwrap(), 0).unwrap();
+    assert_eq!(sample.outcome, Some(1.0));
+    assert_eq!(sample.final_targets.unwrap().score, 1.0);
+    record.root.retain(|(name, _)| name != "RE");
+    record.plays.truncate(1);
+    record.move_properties.truncate(1);
+    let sample = load_position(&sgf::encode_record(&record).unwrap(), 0).unwrap();
+    assert!(sample.outcome.is_none());
+    assert!(sample.final_targets.is_none());
 }
 
 #[test]
@@ -362,9 +427,9 @@ fn replay_rejects_bad_scores_illegal_targets_and_bad_future_moves() {
         .1 = vec!["W+1.0".into()];
     assert!(load_position(&sgf::encode_record(&record).unwrap(), 0).is_err());
     let mut record = scored_record();
-    record.move_properties[0][0].1 = vec![r#"{"policy":[{"action":0,"visits":1}]}"#.into()];
+    record.move_properties[0][0].1 = vec![r#"{"policy":[["aaaa",1]]}"#.into()];
     assert!(load_position(&sgf::encode_record(&record).unwrap(), 0).is_err());
-    record.move_properties[0][0].1 = vec![r#"{"policy":[{"action":200200,"visits":0}]}"#.into()];
+    record.move_properties[0][0].1 = vec![r#"{"policy":[["dSdS",0]]}"#.into()];
     assert!(load_position(&sgf::encode_record(&record).unwrap(), 0).is_err());
     let unsupported = sgf::encode_record(&scored_record())
         .unwrap()

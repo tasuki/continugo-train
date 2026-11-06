@@ -126,7 +126,9 @@ fn stdout_previews_use_the_main_repo_sgf_codec() {
             );
         }
         assert!(!record.root.iter().any(|(key, _)| key == "AP"));
-        assert!(record.move_properties.iter().all(Vec::is_empty));
+        assert!(record.move_properties.iter().all(|properties| {
+            comment(properties) == serde_json::json!({"win_pct":null,"score":null})
+        }));
         assert!(
             record
                 .plays
@@ -181,12 +183,23 @@ fn saved_sgf_replays_and_metadata_preserves_sparse_visits_and_truncation() {
     assert!(!record.root.iter().any(|(name, _)| name == "RE"));
     let node = comment(&record.move_properties[0]);
     let policy = node["policy"].as_array().unwrap();
+    assert_eq!(node.get("win_pct"), Some(&serde_json::Value::Null));
+    assert_eq!(node.get("score"), Some(&serde_json::Value::Null));
     assert!(node.get("profile").is_none());
     assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
+    assert!(policy.iter().all(|entry| {
+        let pair = entry.as_array().unwrap();
+        pair.len() == 2 && pair[0].is_string() && pair[1].is_u64()
+    }));
+    assert!(
+        policy
+            .windows(2)
+            .all(|pair| pair[0][1].as_u64() >= pair[1][1].as_u64())
+    );
     assert_eq!(
         policy
             .iter()
-            .map(|entry| entry["visits"].as_u64().unwrap())
+            .map(|entry| entry[1].as_u64().unwrap())
             .sum::<u64>(),
         8
     );
@@ -231,7 +244,9 @@ fn saved_random_games_do_not_pass_prematurely() {
         );
         let metadata = comment(&record.root);
         assert_eq!(metadata, serde_json::json!({"seed": 42 + index}));
-        assert!(record.move_properties.iter().all(Vec::is_empty));
+        assert!(record.move_properties.iter().all(|properties| {
+            comment(properties) == serde_json::json!({"win_pct":null,"score":null})
+        }));
         assert!(!record.root.iter().any(|(name, _)| name == "RE"));
     }
     assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 3);
@@ -283,6 +298,23 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
     assert_eq!(metadata["seed"], 1);
     assert_eq!(metadata["search"]["simulations"], 16);
     assert_eq!(metadata.as_object().unwrap().len(), 2);
+    let terminal = comment(record.move_properties.last().unwrap());
+    let mover = game.on_move().other();
+    let (win_pct, score) = match territory::result(territory::areas(game.position().stones())) {
+        territory::Outcome::Draw => (50.0, 0.0),
+        territory::Outcome::Win(winner, margin) => {
+            let stone_area =
+                std::f64::consts::PI * f64::from(board_from_sgf(&record).stone_radius()).powi(2);
+            let margin = (margin / stone_area * 10.0).round() / 10.0;
+            if winner == mover {
+                (100.0, margin)
+            } else {
+                (0.0, -margin)
+            }
+        }
+    };
+    assert_eq!(terminal["win_pct"], win_pct);
+    assert_eq!(terminal["score"], score);
 }
 
 #[test]
@@ -400,7 +432,10 @@ fn unguided_reference_diagnostics_need_no_neural_runtime_and_keep_random_turns_u
         assert!(players.contains(&"random-no-eye-fill-v1"));
         assert!(record.root.iter().any(|(name, _)| name == "C"));
         for (index, properties) in record.move_properties.iter().enumerate() {
-            assert_eq!(!properties.is_empty(), players[index % 2] == "mcts");
+            let node = comment(properties);
+            assert!(node.get("win_pct").is_some());
+            assert!(node.get("score").is_some());
+            assert_eq!(node.get("policy").is_some(), players[index % 2] == "mcts");
         }
         assert!(
             continugo_train::replay::ReplayGame::load(&text)

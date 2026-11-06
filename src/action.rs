@@ -3,16 +3,10 @@ use continugo_analysis::{GeometricAvailability, SmallEyeAnalysis};
 pub use continugo_rules::{Action, COORDINATE_ACTIONS};
 use continugo_rules::{Game, Play, PreparedGame};
 use rand::Rng;
-use serde::Serializer;
 use std::time::Instant;
 
 #[cfg(test)]
 mod analysis_bench;
-
-// JSON is a training-record concern; keep the shared rules dependency-free.
-pub(crate) fn serialize<S: Serializer>(action: &Action, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_u32(action.index())
-}
 
 /// An affine permutation without an allocation. Empty/singleton domains are valid.
 /// Every index is visited once; this is NOT a uniformly random permutation.

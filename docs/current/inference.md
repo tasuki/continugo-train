@@ -143,7 +143,8 @@ Both searches recognize a terminal winning pass before leaf estimates:
 ### Optional standalone rollout evaluator
 
 Self-play/arena accept `--rollouts N` (default zero), replacing new-leaf estimates
-with N legal playouts; a neural model then supplies policy only.
+with N legal playouts; a neural model then supplies policy only to search.
+Post-move SGF display annotations still query its outcome/score heads independently.
 `--rollout-max-moves 512` caps each playout without forced scoring.
 Rollouts require `--score-weight 0`; nonzero score weight is rejected.
 `--rollout-pass-probability 0.03125` controls passes; other moves use bounded

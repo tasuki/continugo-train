@@ -58,9 +58,7 @@ class AuxiliaryTests(unittest.TestCase):
             unknown = client.load(self.path, 0)
             self.assertIsNone(unknown.score)
             self.assertIsNone(unknown.ownership)
-        self.path.write_text(
-            r'(;FF[9071]GM[9071]SZ[13]RE[0];B[]C[{"policy":[{"action":1000000,"visits":1}\]}];W[])'
-        )
+        self.path.write_text(r'(;FF[9071]GM[9071]SZ[13]RE[0];B[]C[{"policy":[["",1\]\]}];W[])')
         with FeatureClient() as client:
             draw = client.load(self.path, 0)
             self.assertEqual(draw.score, 0)
@@ -149,7 +147,7 @@ class AuxiliaryTests(unittest.TestCase):
 
     def test_diagnostics_only_use_pinned_validation_games(self):
         other = self.root / "other.sgf"
-        other.write_text(SGF.replace("dSdS", "dTdT").replace("200200", "201201"))
+        other.write_text(SGF.replace("dSdS", "dTdT"))
         corpus = scan_corpus([str(self.root)], 4, 7, 0.5)
         model = self.model().eval()
         checkpoint = self.root / "model.pt"

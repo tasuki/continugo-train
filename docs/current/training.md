@@ -11,6 +11,11 @@ playing-strength measurements.
 
 ## First run
 
+Policy comments use only compact `[SGF-coordinate, visits]` pairs, sorted most
+visited first; `""` denotes pass. Legacy numeric-action objects are rejected, not
+converted. Generate fresh SGFs for the restarted training; keep old campaigns
+archived under their original frozen runtimes. See [replay format](features.md#sgf-replay-and-labels).
+
 After `mise run setup`, generate a small corpus with policy visits and scored RE:
 
 ```sh

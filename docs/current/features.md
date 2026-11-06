@@ -136,9 +136,41 @@ position. The loader validates the *entire* game, including moves after the chos
 position, before trusting the outcome. Unsupported setup, komi or rule overrides
 are rejected rather than silently ignored.
 
+Generated move comments put post-move evaluation first, then the alternatives:
+
+```json
+{"win_pct":63.4,"score":5.2,"policy":[["aMaM",3],["dSdS",1],["",0]]}
+```
+
+`win_pct` and `score` describe the position **after the recorded move**, from the
+**mover's perspective**, using that mover's frozen neural model. Both are numeric,
+rounded to one decimal. `win_pct = 50*(1 + outcome)` is expected points percentage
+(draws count half), not a separate estimate of strict win probability. Score is
+expected final signed margin in the same stone-area units as SGF `RE`, converting
+normalized area by `1_000_000 / (pi * stone_radius²)`. Positive favors the mover.
+These are raw neural head estimates, not the score-weighted search utility.
+Neural annotations use a value-only query (reusing cached context when available),
+not another search or extra simulations in the policy visit counts.
+
+All generated moves have a comment. Non-neural/random turns have `null` estimates
+unless the move ends the game, in which case all engines use exact final outcome
+and score (win/draw/loss percentages 100/50/0). Random turns still omit `policy`;
+optional `profile` follows the alternatives. Predictions are display annotations
+only: they neither guide move selection nor supply/override training labels.
+A final prediction on a truncated game does not supply a result.
+
 - Policy targets come only from the chosen move node's JSON `policy` visit counts.
-  IDs must be unique and legal, with positive total visit mass. Zero-count entries
-  are allowed. Unannotated/random games do **not** acquire invented policy labels.
+  Each pair is `[move, visits]`,
+  using the shared SGF's four-character coordinates; `""` is pass, and color is
+  implicit in the move node. Writers order entries by descending visits, then
+  ascending internal action ID for ties, without changing search/move selection.
+  Replay accepts **only** this pair format: old numeric-action objects are rejected,
+  with no migration or compatibility reader. Generate fresh training SGFs.
+  Moves must be unique and legal, with nonnegative integer counts and positive
+  total visit mass. Zero-count entries are allowed. Moves become numeric action
+  IDs internally; the feature transport and loss are unchanged. These are MCTS
+  root visits, not raw network priors. Unannotated/random games do **not** acquire
+  invented policy labels.
 - A value label requires natural two-pass completion and a scored `RE` matching
   authoritative final scoring. It is +1/-1 for a win/loss from the chosen pre-move
   player's perspective, or 0 for a draw. Margin is not a value target. Games without
