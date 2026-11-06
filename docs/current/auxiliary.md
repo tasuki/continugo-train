@@ -69,8 +69,10 @@ score_weight = 0.3  # default; 0 is the outcome-only diagnostic control
 Outcome is `P(win)-P(loss)`, with draws contributing zero, not raw win probability.
 The coefficients are approximately 76.9% outcome / 23.1% score. Leaf estimates,
 root initialization and exact terminal backups use the same utility and normal
-side-to-move sign flips. Pass proofs remain exact **outcome** facts, independent
-of the magnitude of score-adjusted utility. Nonzero score weight with the optional
+side-to-move sign flips. Pass proofs remain exact terminal **outcome** facts,
+independent of the magnitude of score-adjusted utility. Only a terminal winning
+pass triggers a shortcut; losing passes remain eligible for normal search so
+score utility can prefer passing over a larger loss. Nonzero score weight with the optional
 rollout evaluator is rejected; explicitly use `--score-weight 0` for rollouts.
 Weights must be finite and in [0,1]. Search settings, including score weight, are
 frozen in new v6 loops and recorded in SGFs and v2 evaluation protocols.

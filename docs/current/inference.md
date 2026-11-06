@@ -129,12 +129,14 @@ guidance; combining it with rollout evaluation is also rejected.
 
 ### Exact terminal-pass checks
 
-Both searches inspect legal terminal pass continuations before leaf estimates:
+Both searches recognize a terminal winning pass before leaf estimates:
 
 - A winning second pass is chosen regardless of prior/value bias.
-- A pass losing immediately, or allowing the opponent an immediate winning pass,
-  is avoided when an alternative exists, without claiming that alternative wins.
-- Being ahead does not prove a first pass wins: the opponent need not pass back.
+- Losing passes remain eligible for normal PUCT selection. A placement's existence
+  does not make it better than passing; score utility can prefer a smaller loss
+  over destructive continuation. No loss-based pass filter is applied.
+- A first pass is evaluated through search, not by assuming an opponent pass.
+  Being ahead does not prove a first pass wins: the opponent need not pass back.
 - Opening draws remain legal; incomplete placement sampling never proves all
   moves lost. Only terminal hypothetical games are scored, not unfinished territory.
 

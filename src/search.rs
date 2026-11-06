@@ -128,7 +128,8 @@ struct Node {
     // Always from this node's side-to-move perspective, not its parent's.
     value_sum: f64,
     value_visits: u32,
-    // Exact evidence about this node's pass action, not a positional heuristic.
+    // Exact outcome only when this node's pass ends the game. A loss never
+    // excludes pass: continuing may lose by more or destroy the player's eyes.
     pass_proof: Option<f64>,
     proposals: Proposals,
     prepared: OnceLock<PreparedGame>,
@@ -244,9 +245,6 @@ impl Node {
             .children
             .iter()
             .enumerate()
-            .filter(|(index, _)| {
-                *index != 0 || self.pass_proof != Some(-1.0) || self.children.len() == 1
-            })
             .map(|(index, edge)| {
                 let prior = if index == 0 {
                     pass
@@ -269,18 +267,15 @@ impl Node {
         Ok(self.update_estimate(value))
     }
 
-    /// Probe only legal, terminal pass continuations. Never score an unfinished
-    /// board or infer a loss from an incomplete set of sampled placement moves.
+    /// Admit pass unconditionally, proving its outcome only if it ends the game.
+    /// A nonterminal pass is evaluated by search, not a hypothetical cooperative
+    /// reply. Even a terminal losing pass competes on the normal score utility.
     fn expand_pass(&mut self, rng: &mut impl Rng) -> Result<(), String> {
         if self.children.is_empty() {
             let next = self.game.pass()?;
-            let perspective = color_sign(self.game.on_move());
-            self.pass_proof = if next.is_finished() {
-                Some(black_outcome(&next) * perspective)
-            } else {
-                let reply = next.pass()?;
-                (black_outcome(&reply) * perspective == -1.0).then_some(-1.0)
-            };
+            self.pass_proof = next
+                .is_finished()
+                .then(|| black_outcome(&next) * color_sign(self.game.on_move()));
             self.children.push(Edge {
                 action: Action::PASS,
                 child: Node::new(next, rng),
@@ -359,9 +354,6 @@ impl Node {
             .children
             .iter()
             .enumerate()
-            .filter(|(index, _)| {
-                *index != 0 || self.pass_proof != Some(-1.0) || self.children.len() == 1
-            })
             .map(|(index, edge)| {
                 let score = -edge.child.mean() + exploration / (1.0 + f64::from(edge.child.visits));
                 (index, score, rng.random::<u64>())
@@ -847,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn pass_allowing_an_immediate_winning_reply_is_not_selected_by_huge_prior() {
+    fn pass_allowing_an_immediate_winning_reply_remains_searchable() {
         let game = Game::default().play(Spot { x: 500, y: 500 }).unwrap();
         let mut evaluator = misleading(80.0);
         let result = search_neural(
@@ -861,14 +853,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.policy.iter().map(|v| v.visits).sum::<u32>(), 32);
-        assert_eq!(
+        assert!(
             result
                 .policy
                 .iter()
                 .find(|v| v.action == Action::PASS)
                 .unwrap()
-                .visits,
-            0
+                .visits
+                > 0
         );
         assert!(
             result
@@ -876,6 +868,83 @@ mod tests {
                 .iter()
                 .any(|v| v.action != Action::PASS && v.visits > 0)
         );
+    }
+
+    #[test]
+    fn losing_pass_beats_a_worse_continuation_in_both_searches() {
+        let first_pass = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .play(Spot { x: 900, y: 900 })
+            .unwrap()
+            .play(Spot { x: 350, y: 350 })
+            .unwrap();
+        let second_pass = Game::default()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .play(Spot { x: 900, y: 900 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let config = SearchConfig {
+            cpuct: 0.01,
+            widening: 0.01,
+            ..SearchConfig::default()
+        };
+        for game in [first_pass, second_pass] {
+            let after_pass = game.pass().unwrap();
+            let terminal = if after_pass.is_finished() {
+                after_pass
+            } else {
+                after_pass.pass().unwrap()
+            };
+            let pass_value = color_sign(game.on_move())
+                * color_sign(terminal.on_move())
+                * terminal_utility(&terminal, config.score_weight);
+            // Both choices lose. Score distinguishes preserving the position
+            // from a continuation estimated to lose the entire board.
+            assert!(pass_value > -1.0 && pass_value < 0.0);
+            for neural in [false, true] {
+                let mut rng = StdRng::seed_from_u64(8);
+                let mut root = Node::new(game.clone(), &mut rng);
+                root.expand_pass(&mut rng).unwrap();
+                let action = Action::from_index(100_100).unwrap();
+                let mut child = Node::new(action.apply(&game).unwrap(), &mut rng);
+                child.importance = 1.0;
+                child.update_estimate(Some(
+                    LeafEstimate {
+                        value: 1.0,
+                        score: 1.0,
+                    }
+                    .utility(config.score_weight)
+                    .unwrap(),
+                ));
+                root.children.push(Edge { action, child });
+                root.update_estimate(Some(-1.0));
+                root.neural = Some(SampledPolicy {
+                    pass: 0.5,
+                    placement: 0.5,
+                    candidates: Vec::new(),
+                });
+                let mut evaluator = misleading(0.0);
+                evaluator.forbid_value = true;
+                let mut stats = RolloutStats::default();
+                for _ in 0..2 {
+                    let backed = if neural {
+                        root.simulate_neural(&mut evaluator, &config, &mut rng, &mut stats)
+                            .unwrap()
+                    } else {
+                        root.simulate(&config, &mut rng, &mut stats)
+                    };
+                    assert_eq!(backed, Some(pass_value));
+                }
+                assert_eq!(root.children[0].action, Action::PASS);
+                assert_eq!(root.children[0].child.visits, 2);
+                assert_eq!(root.children[1].child.visits, 1);
+                assert_eq!(evaluator.policy_calls, 0);
+                assert_eq!(evaluator.value_calls, 0);
+            }
+        }
     }
 
     #[test]
