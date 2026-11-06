@@ -230,7 +230,9 @@ Approved publications are also retained; recovery backups themselves are not del
 (`registered_at`, UTC), parent IDs, progress counters,
 `accepted` (1/0), acceptance dates/bundle paths, status, rating, deviation, `rating ± RD`,
 and completed W/D/L/truncation counts. **Filter `accepted=1` for all accepted networks**;
-rejected candidates remain in the same table. The reference has `accepted=0`.
+rejected candidates remain in the same table. The first data row is always
+`random-no-eye-fill-v1`, fixed at rating **100**, deviation **0**, status `fixed`
+and `accepted=0`, even before any network is evaluated or registered.
 Numbers may be negative for bots weaker than the 100 reference. Newly evaluated
 or selected experimental actors remain `accepted=0` until explicit approval;
 supported legacy accepted entries are preserved. Match `decision` values describe
@@ -269,10 +271,9 @@ A writer lock serializes updates. CSVs are fsynced and atomically replaced, not
 appended in place. Metadata is saved before committing match rows. On restart or
 refresh, current numeric ratings/counts are rebuilt from **committed match rows**,
 repairing an ahead/behind network-table cache without replaying the math or
-inflating uncertainty. Network rows show newest registrations first, with full
-network ID ascending to break timestamp ties. The fixed reference stays last,
-identified by its full name and `fixed`
-status. Registration timestamps never change on re-registration, acceptance, or
+inflating uncertainty. The fixed reference is always first, identified by its
+full name and `fixed` status. Neural network rows follow newest registrations
+first, with full network ID ascending to break timestamp ties. Registration timestamps never change on re-registration, acceptance, or
 refresh.
 
 Old split rating tables migrate automatically on refresh: original CSVs are backed
@@ -285,7 +286,7 @@ old and new software concurrently against a store during migration.
 
 Existing network CSVs without `registered_at` migrate automatically on the next
 successful refresh/update (`mise run ratings` also refreshes). Their unknown dates
-remain blank and sort after dated networks, by full ID, before the reference;
+remain blank and sort after dated neural networks, by full ID;
 no registration history is invented from acceptance or checkpoint dates. The
 migration preserves metadata, match history, and SGF evidence, and numeric ratings
 are rebuilt from committed snapshots as usual.

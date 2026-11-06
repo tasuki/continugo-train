@@ -206,7 +206,7 @@ class Tables:
             parent = self.states.get(self.networks[network]["parent"])
             self.states[network] = {
                 "rating": parent["rating"]
-                if parent and parent["anchored"] and parent["games"]
+                if network != REFERENCE_ID and parent and parent["anchored"] and parent["games"]
                 else 100.0,
                 "deviation": 0.0 if network == REFERENCE_ID else 350.0,
                 "anchored": int(network == REFERENCE_ID),
@@ -214,16 +214,30 @@ class Tables:
             }
         return self.states[network]
 
+    def ensure_reference(self):
+        # The fixed anchor exists even before any games or neural registrations.
+        self.networks.setdefault(
+            REFERENCE_ID,
+            {
+                **dict.fromkeys(META, ""),
+                "network_id": REFERENCE_ID,
+                "network": REFERENCE_ID,
+                "accepted": "0",
+            },
+        )
+        self.state(REFERENCE_ID)
+
     def match_rows(self):
         return sorted(
             self.matches, key=lambda row: (-int(row["batch_number"]), int(row["game_number"]))
         )
 
     def network_rows(self):
-        # Stable ID order breaks timestamp ties; keep the fixed reference last.
+        self.ensure_reference()
+        # Always lead with the anchor; stable ID order breaks neural timestamp ties.
         networks = sorted(self.networks.items())
         networks.sort(
-            key=lambda item: (item[0] != REFERENCE_ID, _registration_time(item[1])),
+            key=lambda item: (item[0] == REFERENCE_ID, _registration_time(item[1])),
             reverse=True,
         )
         for network, meta in networks:
@@ -342,6 +356,7 @@ def _load(directory):
         if network in tables.networks and tables.networks[network] != meta:
             raise ValueError("conflicting network metadata")
         tables.networks[network] = meta
+    tables.ensure_reference()
     if (directory / "networks.csv").exists() and not (directory / "matches.csv").exists():
         raise ValueError(
             "matches.csv missing; restore the match ledger rather than resetting ratings"
@@ -431,6 +446,7 @@ def _load(directory):
             )
     if pooled:
         _merge_legacy_ratings(directory, tables, chronological)
+    tables.ensure_reference()
     return tables
 
 
@@ -669,15 +685,6 @@ def ingest(
     with transaction(store) as (tables, directory):
         for checkpoint in checkpoints:
             _register(tables, checkpoint)
-        tables.networks.setdefault(
-            REFERENCE_ID,
-            {
-                **dict.fromkeys(META, ""),
-                "network_id": REFERENCE_ID,
-                "network": REFERENCE_ID,
-                "accepted": "0",
-            },
-        )
         names = {n: {f"neural-{m['network']}", f"neural-{n}"} for n, m in tables.networks.items()}
         names[REFERENCE_ID] = {REFERENCE_ID}
         records = {

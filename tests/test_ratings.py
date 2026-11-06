@@ -48,7 +48,22 @@ class NetworkOrderTests(unittest.TestCase):
         self.assertNotIn("/", first)
         self.assertLess(len(first.encode()), 255)
 
-    def test_newest_first_id_ties_and_reference_last(self):
+    def test_reference_exists_without_games_or_neural_networks(self):
+        tables = ratings.Tables()
+        rows = list(tables.network_rows())
+        self.assertEqual(len(rows), 1)
+        reference = rows[0]
+        self.assertEqual(reference["network_id"], ratings.REFERENCE_ID)
+        self.assertEqual(reference["network"], ratings.REFERENCE_ID)
+        self.assertEqual(
+            (reference["rating"], reference["deviation"], reference["status"]),
+            (100.0, 0.0, "fixed"),
+        )
+        self.assertEqual(reference["accepted"], "0")
+        self.assertTrue(all(reference[key] == 0 for key in ratings.COUNTS))
+        self.assertEqual(list(tables.network_rows()), rows)
+
+    def test_newest_first_id_ties_and_reference_first(self):
         tables = ratings.Tables()
         dates = {
             "a" * 64: "2026-11-01T00:00:00+00:00",
@@ -64,9 +79,9 @@ class NetworkOrderTests(unittest.TestCase):
                 "registered_at": date,
             }
         rows = list(tables.network_rows())
-        expected = ["b" * 64, "c" * 64, "a" * 64, "d" * 64, ratings.REFERENCE_ID]
+        expected = [ratings.REFERENCE_ID, "b" * 64, "c" * 64, "a" * 64, "d" * 64]
         self.assertEqual([row["network_id"] for row in rows], expected)
-        self.assertEqual(rows[-1]["status"], "fixed")
+        self.assertEqual(rows[0]["status"], "fixed")
         self.assertTrue(all("pool" not in row for row in rows))
 
 
@@ -95,6 +110,28 @@ class RatingsTests(helpers.LoopHarness):
     def matches(self):
         return read_csv(self.directory / "matches.csv")
 
+    def test_fresh_registry_includes_reference_before_registration_or_evaluation(self):
+        self.store.mkdir()
+        loop.atomic_checkpoint(
+            self.store / "STORE.pt", {"format": "continugo-recovery-store", "version": 1}
+        )
+        ratings.refresh(self.store)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(self.rows()[0]["network_id"], ratings.REFERENCE_ID)
+        self.assertEqual(self.rows()[0]["rating"], "100.0")
+        self.assertEqual(self.matches(), [])
+        ratings.register_checkpoint(self.store, self.source)
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["network_id"], ratings.REFERENCE_ID)
+        self.assertEqual(rows[1]["status"], "unrated")
+        # Repair an old pre-evaluation registry that had never inserted the anchor.
+        ledger = (self.directory / "matches.csv").read_bytes()
+        ratings._atomic_csv(self.directory / "networks.csv", ratings.NETWORK_COLUMNS, rows[1:])
+        ratings.refresh(self.store)
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual((self.directory / "matches.csv").read_bytes(), ledger)
+
     def test_two_csvs_all_networks_fixed_reference_and_durable_evidence(self):
         output = self.root / "loop"
         state = self.rated_loop(output)
@@ -112,7 +149,8 @@ class RatingsTests(helpers.LoopHarness):
         )
         self.assertEqual((candidate["samples_seen"], candidate["data_positions"]), ("2", "20"))
         self.assertEqual(sum(r["accepted"] == "1" for r in rows), 0)
-        reference = next(r for r in rows if r["network_id"] == ratings.REFERENCE_ID)
+        reference = rows[0]
+        self.assertEqual(reference["network_id"], ratings.REFERENCE_ID)
         self.assertEqual(
             (reference["rating"], reference["deviation"], reference["status"]),
             ("100.0", "0.0", "fixed"),
@@ -156,13 +194,13 @@ class RatingsTests(helpers.LoopHarness):
         with patch.object(ratings, "utc_now", return_value=registered):
             self.rated_loop(self.root / "loop")
         rows = self.rows()
-        self.assertEqual([row["registered_at"] for row in rows[:-1]], [registered.isoformat()] * 2)
+        self.assertEqual([row["registered_at"] for row in rows[1:]], [registered.isoformat()] * 2)
         self.assertEqual(
-            [row["network_id"] for row in rows[:-1]],
-            sorted(row["network_id"] for row in rows[:-1]),
+            [row["network_id"] for row in rows[1:]],
+            sorted(row["network_id"] for row in rows[1:]),
         )
-        self.assertEqual(rows[-1]["network_id"], ratings.REFERENCE_ID)
-        self.assertEqual(rows[-1]["status"], "fixed")
+        self.assertEqual(rows[0]["network_id"], ratings.REFERENCE_ID)
+        self.assertEqual(rows[0]["status"], "fixed")
         before = (self.directory / "networks.csv").read_bytes()
         with patch.object(ratings, "utc_now", return_value=datetime(2050, 1, 1, tzinfo=UTC)):
             ratings.register_checkpoint(self.store, self.source)
@@ -185,7 +223,7 @@ class RatingsTests(helpers.LoopHarness):
         ratings.refresh(self.store)
         migrated = self.rows()
         expected = sorted(
-            legacy, key=lambda row: (row["network_id"] == ratings.REFERENCE_ID, row["network_id"])
+            legacy, key=lambda row: (row["network_id"] != ratings.REFERENCE_ID, row["network_id"])
         )
         self.assertEqual(migrated, [{**row, "registered_at": ""} for row in expected])
         self.assertEqual((self.directory / "matches.csv").read_bytes(), ledger)
@@ -199,10 +237,16 @@ class RatingsTests(helpers.LoopHarness):
         registered = datetime(2050, 1, 1, tzinfo=UTC)
         with patch.object(ratings, "utc_now", return_value=registered):
             state = self.run_loop(output, resume=True, extra=["--iterations", "2"])
-        newest = self.rows()[0]
+        newest = self.rows()[1]
         self.assertEqual(newest["network_id"], state["iterations"][-1]["checkpoint"]["sha256"])
         self.assertEqual(newest["registered_at"], registered.isoformat())
-        self.assertTrue(all(row["registered_at"] == "" for row in self.rows()[1:]))
+        self.assertTrue(
+            all(
+                row["registered_at"] == ""
+                for row in self.rows()
+                if row["network_id"] != newest["network_id"]
+            )
+        )
 
     def test_matches_use_commit_order_not_display_order_or_wall_clock(self):
         output = self.root / "loop"
@@ -265,7 +309,7 @@ class RatingsTests(helpers.LoopHarness):
             self.rows(),
             sorted(
                 old_networks,
-                key=lambda r: (r["network_id"] == ratings.REFERENCE_ID, r["network_id"]),
+                key=lambda r: (r["network_id"] != ratings.REFERENCE_ID, r["network_id"]),
             ),
         )
         sources = []
