@@ -1,8 +1,8 @@
 """Plot global ratings against cumulative unique training games.
 
 Counts ancestral checkpoint games assigned to training, excluding validation.
-Repeated epochs/replay do not count games again. The random reference is at 0,
-separate from the logarithmic training-game axis which starts at 100.
+Repeated epochs/replay do not count games again. The random reference is at 0
+on the same linear training-game axis as the networks.
 """
 
 import argparse
@@ -81,20 +81,10 @@ def collect_points(model_store):
 
 
 def plot(points, output, title="Network ratings", labels=False):
-    from matplotlib.ticker import FuncFormatter, LogLocator
+    from matplotlib.ticker import FuncFormatter
 
-    if any(p.games < 100 for p in points if not p.reference):
-        raise ValueError(
-            "a rated network has fewer than 100 training games; cannot use x minimum 100"
-        )
     plt = pyplot(output)
-    figure, (zero, axis) = plt.subplots(
-        1,
-        2,
-        figsize=(11, 7),
-        sharey=True,
-        gridspec_kw={"width_ratios": [0.65, 10], "wspace": 0.04},
-    )
+    figure, axis = plt.subplots(figsize=(11, 7))
     networks = [p for p in points if not p.reference]
     axis.errorbar(
         [p.games for p in networks],
@@ -117,28 +107,13 @@ def plot(points, output, title="Network ratings", labels=False):
             )
     references = {p.rating for p in points if p.reference}
     for rating in references:
-        zero.scatter(0, rating, marker="*", s=150, color="black", zorder=5)
-    zero.set_xlim(-0.6, 0.6)  # Keep the entire star inside the zero panel.
-    zero.set_xticks([0])
-    zero.set_ylabel("Rating")
-    axis.set_xscale("log")
-    axis.set_xlim(100, max(120, max(p.games for p in networks) * 1.3))
-    axis.xaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5)))
+        axis.scatter(0, rating, marker="*", s=150, color="black", zorder=5)
+    axis.set_ylabel("Rating")
+    # Leave room around zero so the random-reference star remains fully visible.
+    maximum = max(1, max(p.games for p in networks))
+    axis.set_xlim(-0.03 * maximum, 1.1 * maximum)
     axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
-    zero.spines["right"].set_visible(False)
-    axis.spines["left"].set_visible(False)
-    axis.tick_params(axis="y", which="both", left=False)
-    for panel in (zero, axis):
-        panel.grid(True, which="major", alpha=0.25)
-    # Diagonal marks make clear that 0 is separate from the genuine log axis.
-    for panel, x in ((zero, 1), (axis, 0)):
-        panel.plot(
-            [x - 0.008, x + 0.008],
-            [-0.012, 0.012],
-            transform=panel.transAxes,
-            color="gray",
-            clip_on=False,
-        )
+    axis.grid(True, which="major", alpha=0.25)
     from matplotlib.lines import Line2D
 
     axis.legend(
@@ -156,7 +131,7 @@ def plot(points, output, title="Network ratings", labels=False):
         ]
     )
     figure.suptitle(title)
-    figure.supxlabel("Cumulative unique training games (log scale from 100)", y=0.065)
+    figure.supxlabel("Cumulative unique training games", y=0.065)
     figure.text(
         0.5,
         0.02,

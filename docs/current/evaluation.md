@@ -313,8 +313,8 @@ mise run plot-ratings
 mise run plot-ratings -- --output runs/ratings.svg --labels
 # X is cumulative unique training games from ancestral checkpoint split histories,
 # excluding validation and deduplicating replay/epochs. It is NOT arena games.
-# The main x axis is logarithmic from 100; a separate zero tick contains the
-# fully visible random-bot star. Error bars are ±RD, not 95% confidence.
+# The x axis is linear, with the random-bot star at zero and no axis break.
+# Error bars are ±RD, not 95% confidence.
 # Missing checkpoints/history are errors, never replaced by evaluation counts.
 mise run ratings -- --matches
 # Resolve and hash-verify exact evidence:

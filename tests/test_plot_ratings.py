@@ -102,12 +102,12 @@ class PlotRatingsTests(unittest.TestCase):
         save = plot_ratings.save_figure
 
         def inspect(plt, figure, target):
-            zero, axis = figure.axes
-            self.assertEqual(axis.get_xscale(), "log")
-            self.assertEqual(axis.get_xlim()[0], 100)
-            self.assertLess(zero.get_xlim()[0], 0)
-            self.assertGreater(zero.get_xlim()[1], 0)
-            self.assertEqual(list(zero.get_xticks()), [0])
+            self.assertEqual(len(figure.axes), 1)
+            axis = figure.axes[0]
+            self.assertEqual(axis.get_xscale(), "linear")
+            self.assertLess(axis.get_xlim()[0], 0)
+            self.assertGreater(axis.get_xlim()[1], max(p.games for p in points))
+            self.assertIn(0, axis.get_xticks())
             save(plt, figure, target)
 
         with patch.object(plot_ratings, "save_figure", inspect):
@@ -117,6 +117,16 @@ class PlotRatingsTests(unittest.TestCase):
         self.assertEqual(main(["--model-store", str(self.root / "missing")]), 1)
         plot_ratings.update(self.root)
         self.assertTrue((self.root / "ratings.png").is_file())
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
+    def test_plot_accepts_networks_below_100_games(self):
+        points = [
+            plot_ratings.Point("small-net", 50, 150, 30, False),
+            plot_ratings.Point("random", 0, 100, 0, True),
+        ]
+        output = self.root / "small.png"
+        plot(points, output)
+        self.assertGreater(output.stat().st_size, 1000)
 
     def test_auto_plot_failure_cannot_abort_learning(self):
         with patch.object(plot_ratings, "collect_points", side_effect=RuntimeError("plot failed")):
