@@ -6,8 +6,9 @@ Keep three separate top-level locations:
   checkpoints, optimizer/RNG state, replay, exports, metrics and resumable controls.
 - **`scratch/`**: standalone tests, audits, benchmarks, profiling and debugging.
   Short experimental training sanity checks belong here too.
-- **`models/`**: deliberately retained/published models plus shared ratings and
-  match evidence. Campaigns do not need duplicate model backups here to resume.
+- **`models/`**: selected tenth-round model snapshots plus shared ratings and
+  match evidence. Campaigns do not need these copies to resume. All files are
+  independent ordinary copies, never hardlinks; there is no shared SGF blob pool.
 
 The distinction is purpose, not whether training code executes. Use UTC
 `YYYYMMDD-HHMMSS-description` names directly inside `runs/` and `scratch/`, without
@@ -23,8 +24,14 @@ mise run neural-selfplay -- --model PATH/TO/MODEL --games 3
 mise run pipeline-profile -- --positions PATH/TO/POSITIONS --model PATH/TO/MODEL --checkpoint PATH/TO/CHECKPOINT
 ```
 
-Use `mise run retain-model -- --loop runs/CAMPAIGN/loop` to deliberately preserve
-one model before deleting its campaign. Otherwise deleting a run removes its
+New campaigns automatically save and rate each tenth round under
+`models/<campaign>-rNNNN/`. Backfill existing campaigns with
+`mise run save-models -- --runs runs`; select another completed round with
+`--loop PATH/TO/LOOP --iteration N`. Minimal snapshots contain checkpoint, both
+ONNX graphs and JSON provenance, but no training replay.
+
+Use `mise run retain-model -- --loop runs/CAMPAIGN/loop` only when deliberately
+preserving a full checkpoint/replay recovery pack before deleting its campaign. Otherwise deleting a run removes its
 unretained models from future evaluation pools; rating history and evidence stay
 in `models/`. See [model storage](model-store.md).
 

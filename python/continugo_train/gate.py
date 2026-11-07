@@ -74,7 +74,7 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
         gate["report"] = {"decision": "disabled", "disabled": True, "draws": 0, "truncated": 0}
         runner.save()
         return gate["report"]
-    search = {**config.search(), "simulations": config.gate_simulations}
+    search = dict(runner.state["rating_protocol"]["search"])
     candidate = iteration["model"]
     incumbent = (
         {"checkpoint_sha256": REFERENCE_ID, "network_name": REFERENCE_ID}

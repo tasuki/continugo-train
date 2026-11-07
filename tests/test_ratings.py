@@ -167,9 +167,8 @@ class RatingsTests(helpers.LoopHarness):
             self.assertIn(f"-size{row['board_size']}-game{int(row['game_number']):06}-", path.name)
             self.assertTrue(path.name.endswith(f"-{row['sgf_sha256']}.sgf"))
             self.assertIn("-vs-", path.name)
-            blobs = list((self.store / "sgf-blobs").glob(f"????-??-??/{row['sgf_sha256']}.sgf"))
-            self.assertEqual(len(blobs), 1)
-            self.assertEqual(path.stat().st_ino, blobs[0].stat().st_ino)
+            self.assertEqual(path.stat().st_nlink, 1)
+            self.assertFalse((self.store / "sgf-blobs").exists())
         source = ratings.inference_source(self.store, state["actor"]["checkpoint"]["sha256"])
         self.assertIsNone(state["accepted"])
         self.assertEqual(source["network_name"], state["actor"]["model"]["network_name"])
@@ -313,7 +312,8 @@ class RatingsTests(helpers.LoopHarness):
         for row in migrated:
             old = self.directory / "games" / f"{row['sgf_sha256']}.sgf"
             new = ratings.evidence_path(self.store, row)
-            self.assertEqual(old.stat().st_ino, new.stat().st_ino)
+            self.assertNotEqual(old.stat().st_ino, new.stat().st_ino)
+            self.assertEqual(new.stat().st_nlink, 1)
             sources.append(old)
         before = (self.directory / "matches.csv").read_bytes()
         result = ratings.ingest(self.store, state["rating_protocol"], sources)

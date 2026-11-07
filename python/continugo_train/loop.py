@@ -85,13 +85,14 @@ class LoopConfig:
     gate_max_moves: int = 512
     acceptance_rate: float = 0.5
     actor_policy: str = "latest"
-    evaluation_interval: int = 1
+    evaluation_interval: int = 10
+    save_model_every: int = 10
     model_store: str = str(ROOT / "models")
-    adaptive_max_games: int = 600
-    adaptive_target_rd: float = 25.0
-    adaptive_min_pairs: int = 60
+    adaptive_max_games: int = 360
+    adaptive_target_rd: float = 75.0
+    adaptive_min_pairs: int = 20
     adaptive_min_opponents: int = 2
-    adaptive_min_opponent_pairs: int = 10
+    adaptive_min_opponent_pairs: int = 4
     adaptive_batch_games: int = 4
 
     def validate(self):
@@ -165,6 +166,7 @@ class LoopConfig:
             "workers",
             "shuffle_buffer",
             "cache_positions",
+            "save_model_every",
         ]
         if any(getattr(self, name) < 0 for name in nonnegative):
             raise ValueError("seed, training caps, workers, buffer and cache must be nonnegative")
@@ -429,7 +431,8 @@ class LoopRunner:
             )
         if (
             self.state["rating_protocol"] is not None
-            and ratings.protocol(self.config) != self.state["rating_protocol"]
+            and ratings.protocol(self.config, legacy=self.state["rating_protocol"]["version"] == 1)
+            != self.state["rating_protocol"]
         ):
             raise ValueError(
                 "evaluation/rating executable changed; fork a new loop instead of mixing protocols"
@@ -956,7 +959,9 @@ class LoopRunner:
         from . import adaptive_ratings
         from .round_robin import available_models
 
-        count = len(available_models(self.config.model_store))
+        count = len(
+            available_models(self.config.model_store, feature_spec=self.state["feature_spec"])
+        )
         if count <= self.config.adaptive_min_opponents:
             report = {
                 "stop_reason": "insufficient-opponents; confidence target NOT met",
@@ -1045,6 +1050,22 @@ class LoopRunner:
                         model=self.check_model(item["parent_model"]),
                     )
 
+    def save_milestone(self, iteration):
+        if self.config.save_model_every and iteration["number"] % self.config.save_model_every == 0:
+            from .saved_models import save_round
+
+            destination = save_round(self.root, self.state, iteration)
+            self.log(f"SAVED MODEL: {destination}")
+            if self.state.get("rating_protocol") is not None:
+                from .plot_ratings import update
+
+                update(self.config.model_store)
+
+    def evaluation_due(self, number):
+        return number % self.config.evaluation_interval == 0 or (
+            self.config.save_model_every and number % self.config.save_model_every == 0
+        )
+
     def run(self, stop_after_iteration=None):
         self.verify_committed()
         # Initial checkpoints are unaccepted experimental inputs, not implicit
@@ -1113,6 +1134,7 @@ class LoopRunner:
                 self.save()
             iteration = self.state["iterations"][number - 1]
             if iteration["completed"]:
+                self.save_milestone(iteration)
                 continue
             parent = load_training(self.check(iteration["parent_checkpoint"]))
             self.selfplay(iteration)
@@ -1127,7 +1149,7 @@ class LoopRunner:
                     iteration["checkpoint"], f"iteration-{number:04d}/model"
                 )
                 self.save()
-            if number % self.config.evaluation_interval == 0:
+            if self.evaluation_due(number):
                 if (
                     self.config.gate_games
                     or self.config.reference_games
@@ -1155,7 +1177,7 @@ class LoopRunner:
                 decision = report["decision"]
             else:
                 decision = "not-evaluated"
-            if self.config.adaptive_max_games and number % self.config.evaluation_interval == 0:
+            if self.config.adaptive_max_games and self.evaluation_due(number):
                 # Evaluated candidates point to hash-pinned run-owned exports.
                 # The rating ledger retains evidence independently of training.
                 self.adaptive_evaluation(iteration)
@@ -1174,6 +1196,7 @@ class LoopRunner:
             # Reading an approved publication never switches training or actors.
             self.state["accepted"] = promote.accepted_head(self.config.model_store)
             self.save()
+            self.save_milestone(iteration)
             self.log(
                 f"iteration {number} complete: match={decision}; experimental actor {'advanced' if update_actor else 'held'}; "
                 f"training progress retained at {iteration['checkpoint']['path']}; no automatic promotion"
@@ -1295,6 +1318,8 @@ def run_loop(args):
             for field in fields(LoopConfig):
                 # Preserve frozen old-loop behavior; the enabled default applies
                 # to new campaigns, not implicit upgrades of saved loops.
+                if field.name == "save_model_every":
+                    state["config"].setdefault(field.name, 10)
                 if field.name in {"policy_simulations", "policy_search_probability"}:
                     state["config"].setdefault(
                         field.name,

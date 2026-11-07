@@ -4,7 +4,7 @@ Training campaigns own their checkpoints, optimizer/RNG state, bootstrap/replay
 SGFs, intermediate ONNX exports and loop controls in `runs/`. A campaign does
 **not** need duplicate recovery bundles under `models/` to resume.
 
-One shared `models/` store holds deliberately retained/published models and the
+One shared `models/` store holds selected milestone snapshots, retained/published models and the
 rating ledger/evidence. Do not create a model store for each campaign or place
 one beneath `runs/` or `scratch/`. See [artifact organization](artifacts.md).
 
@@ -12,7 +12,8 @@ one beneath `runs/` or `scratch/`. See [artifact organization](artifacts.md).
 
 ```text
 models/
-  STORE.pt                       ownership/format marker
+  STORE.pt                       ownership/format marker (metadata, not model weights)
+  <campaign>-rNNNN/               checkpoint + both ONNX graphs + metadata.json
   retained/<UTC-dated-name>/      explicitly retained, unaccepted model bundles
   accepted/<UTC-dated-name>/      explicitly approved publications
   LATEST-ACCEPTED                 optional approved head
@@ -21,13 +22,14 @@ models/
   ratings/matches.csv             authoritative rated-match commit ledger
   ratings/inference/<SHA>.pt      hash-pinned locators to run-owned checkpoint/graphs
   ratings/games/                  store-owned match evidence
-  sgf-blobs/YYYY-MM-DD/<SHA>.sgf   deduplicated evidence and explicitly retained replay
   ratings.png                    shared strength plot
 ```
 
-Loops initialize this store without copying any model or replay. They never
-create `training/`, `experimental/`, `LATEST-TRAINING` or `LATEST-EXPERIMENTAL`.
-Training and actor roles are recorded in each campaign's `loop.pt`.
+New campaigns save a minimal model snapshot every tenth completed round and
+calculate its rating with adaptive near-strength matches. They do not copy replay
+or make a full recovery bundle per round. They never create `training/`,
+`experimental/`, `LATEST-TRAINING` or `LATEST-EXPERIMENTAL`. Training and actor roles
+are recorded in each campaign's `loop.pt`.
 
 Only scheduled/evaluated networks and accepted publications enter the rating
 registry. Inference locators contain paths, hashes and a cached cumulative training
@@ -40,14 +42,56 @@ Bundles are write-once/read-only and contain `checkpoint.pt`, exact
 `replay/<SHA>.sgf`, both ONNX graphs, `recovery.pt`, available match evidence and a
 README. Accepted bundles also embed approval. UTC-dated names include a sequence,
 network name and short hash; the full checkpoint hash determines identity.
-Publication reuses and verifies an existing identical bundle. There is no automatic
-retention or pruning. Read-only mode is not access control or a disk-loss backup.
+Publication reuses and verifies an existing identical bundle. There is no automatic full-recovery
+retention or pruning; minimal milestone saving is separate. Read-only mode is not access control or a disk-loss backup.
 
-Store SGFs are copies, never hardlinks to run-owned files. Hardlinks connect only
-store-owned blobs, retained replay and rating evidence. Blobs use UTC first-retention
-days and deduplicate across days; legacy flat blobs remain readable.
+All stored files are ordinary independent copies. Hardlinks are never created,
+including between retained bundles or between an approval candidate and its
+verification view. SGF evidence is copied directly to `ratings/games/`; there is
+no shared `sgf-blobs/` pool.
 
-## Explicit retention
+## Milestone snapshots
+
+```sh
+# Backfill every completed tenth round in each existing campaign:
+mise run save-models -- --runs runs
+# Save another specific completed round explicitly:
+mise run save-models -- --loop runs/CAMPAIGN/loop --iteration 15
+```
+
+Names identify the source campaign and its local round, for example
+`models/20261106-142353-scratch-score-r0020/`. The four files are `checkpoint.pt`,
+`encoder.onnx`, `policy.onnx` and `metadata.json`. JSON records campaign, round,
+source loop, full checkpoint/graph hashes, cumulative progress and training-game
+count. Writes are atomic, verified, idempotent, independent of the source files,
+and never grant model approval. v5 historical graphs are copied as-is, not re-exported
+with incompatible current code. Their frozen runtime remains necessary to use them.
+Minimal snapshots do not copy replay: keep the campaign for exact training recovery,
+or explicitly make a full recovery pack if needed.
+
+New campaigns default to `--save-model-every 10 --evaluation-interval 10`, and saved
+milestones are always evaluation boundaries. Ratings update after each committed
+batch and the milestone save refreshes `models/ratings.png`. Moderate confidence
+uses RD ≤ 75, 20 paired-colour seeds, two opponents with four pairs each, and a
+360-additional-game cap per scheduled candidate. No all-pairs schedule is implied.
+Explicitly disabled evaluation produces no invented rating.
+
+To rate saved snapshots adaptively in a separate restartable background job:
+
+```sh
+mise run rate-saved -- --output scratch/YYYYMMDD-HHMMSS-ratings
+# Resume the same frozen job without replaying committed games:
+mise run rate-saved -- --output scratch/YYYYMMDD-HHMMSS-ratings --resume
+```
+
+This calibrates each model against the reference, then chooses near-strength
+neural opponents until the precision/evidence target or budget is reached.
+Incompatible schemas use separate compatible native runtimes, never cross-schema
+games. Its default extra budget is 360 games per compatible cohort. It does not
+reset the ledger itself; retire old ratings deliberately before requesting a
+fresh start. New results, not archived ratings, determine the current chart.
+
+## Explicit full-recovery retention
 
 Retain a model **before deleting its campaign** if it should remain available:
 
@@ -142,8 +186,8 @@ history is not reconstructed. Retention never grants approval.
 ## Backups
 
 Back up campaigns and the whole model store off-machine. Preserve approvals, both
-rating CSVs, inference metadata, SGF blobs and evidence; one retained bundle does
-not contain the global ledger. Quiesce writers while copying CSVs; `rsync -aH`
-preserves hardlink deduplication. `runs/`, `scratch/` and `models/` are Git-ignored;
+rating CSVs, inference metadata and SGF evidence; one saved model or retained
+bundle does not contain the global ledger. Quiesce writers while copying CSVs;
+use ordinary independent copies (`rsync -a`, without hardlink options). `runs/`, `scratch/` and `models/` are Git-ignored;
 exclude retained work from destructive Git-clean commands. There is no automatic
 backup/upload or garbage collector.

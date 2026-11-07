@@ -100,10 +100,27 @@ It does not backfill old checkpoints or establish strong rating confidence. For
 that, use [adaptive rated matching](evaluation.md#adaptive-rated-matching) with an
 explicit uncertainty/evidence target and hard game budget.
 
+## Milestone saving and rating
+
+New campaigns default to `--save-model-every 10 --evaluation-interval 10`.
+Each completed tenth round saves independent copies of its checkpoint and both
+ONNX graphs in `models/<campaign>-rNNNN/`, alongside readable `metadata.json`.
+The run's original files remain intact. No replay copy, hardlink or model approval
+is created. Saving is idempotent; resume repairs a missed save after a state-commit
+interruption without retraining. `--save-model-every 0` explicitly disables saving.
+Existing v6 loops missing this storage setting use 10; their learning/search and
+saved evaluation budgets stay frozen.
+
+Every save milestone is also an evaluation boundary, even if a separate evaluation
+interval was chosen. Reference calibration and adaptive near-strength matches
+calculate its rating; committed batches and the final save refresh `models/ratings.png`.
+Each campaign has a distinct colour; lines connect its rated rounds. Explicit smoke
+settings disabling all evaluation do not generate ratings or invented results.
+
 ## Periodic evaluation, not automatic publication
 
 `--evaluation-interval N` schedules candidate-vs-parent-actor and reference batches
-(default 1). The initial actor gets a reference batch when enabled, as does every
+(default 10). The initial actor gets a reference batch when enabled, as does every
 scheduled candidate, even after a failed actor match. Other rounds record
 `not-evaluated`. Zero `--gate-games` / `--reference-games` disables that match type.
 See [evaluation](evaluation.md) for budgets, verdicts, ratings, and evidence handling.
@@ -119,7 +136,7 @@ saved loop, enable it explicitly at a completed boundary:
 ```sh
 # New loops: already enabled; --adaptive-max-games 0 opts out for smoke tests.
 # Existing latest-actor loop, paused after round N: enable it without starting N+1.
-.venv/bin/python -m continugo_train.loop --output PATH/TO/LOOP --resume --enable-adaptive-ratings 600 --stop-after-iteration N
+.venv/bin/python -m continugo_train.loop --output PATH/TO/LOOP --resume --enable-adaptive-ratings 360 --stop-after-iteration N
 ```
 
 The resume operation requires a completed boundary and unchanged protocol. It
@@ -135,9 +152,14 @@ before committing the round and advancing its actor. The target is the exact
 candidate checkpoint ID, not whichever network was most recently registered.
 Policy is frozen in these loop settings:
 
-- `--adaptive-target-rd 25`, `--adaptive-min-pairs 60` (120 paired-color games).
-- `--adaptive-min-opponents 2`, `--adaptive-min-opponent-pairs 10`.
-- `--adaptive-batch-games 4`, `--adaptive-max-games 600` (additional cap **per scheduled candidate**).
+- `--adaptive-target-rd 75`, `--adaptive-min-pairs 20` (40 paired-color games).
+- `--adaptive-min-opponents 2`, `--adaptive-min-opponent-pairs 4`.
+- `--adaptive-batch-games 4`, `--adaptive-max-games 360` (additional cap **per scheduled candidate**).
+
+This is moderate rating precision, not a tight strength claim or approval. Opponents
+are selected adaptively near the current estimated strength, not by an all-pairs
+schedule. The evaluator stops at the evidence/precision target or the hard budget;
+unmet confidence is reported explicitly. Incompatible model schemas do not play.
 
 Opponent selection and uncertainty interpretation follow
 [adaptive rated matching](evaluation.md#adaptive-rated-matching). Each batch

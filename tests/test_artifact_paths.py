@@ -62,29 +62,20 @@ class ArtifactPathsTests(helpers.LoopHarness):
             str(Path(first["directory"]).relative_to(store)),
         )
 
-    def test_sgf_days_use_first_retention_and_deduplicate_across_midnight(self):
-        store = self.root / "daily-store"
-        first_day = datetime(2026, 11, 1, 23, 30, tzinfo=UTC)
-        with patch.object(archive, "utc_now", return_value=first_day):
+    def test_replay_and_rating_evidence_are_independent_copies(self):
+        store = self.root / "copy-store"
+        with patch.object(archive.os, "link", side_effect=AssertionError("no hardlinks")):
             reference = archive.publish(store, "training", self.source)
-        bundle = Path(reference["directory"])
-        replay = next((bundle / "replay").glob("*.sgf"))
-        blobs = store / "sgf-blobs"
-        original = blobs / "2026-11-01" / replay.name
-        self.assertEqual(original.stat().st_ino, replay.stat().st_ino)
-        self.assertEqual(list(blobs.glob("*.sgf")), [])
-        evidence = store / "ratings" / "games"
-        with patch.object(archive, "utc_now", return_value=first_day + timedelta(days=1)):
+            bundle = Path(reference["directory"])
+            replay = next((bundle / "replay").glob("*.sgf"))
+            evidence = store / "ratings/games"
             archive.retain_evidence(store, [(replay, replay.stem)], evidence)
-            self.assertFalse((blobs / "2026-11-02").exists())
-            self.assertEqual((evidence / replay.name).stat().st_ino, original.stat().st_ino)
-            # Different raw bytes (same valid game) are a genuinely new blob.
-            source = self.root / "new-import.sgf"
-            source.write_bytes(replay.read_bytes() + b"\n")
-            checksum = archive.digest(source)
-            archive.retain_evidence(store, [(source, checksum)], evidence)
-        self.assertTrue((blobs / "2026-11-02" / f"{checksum}.sgf").is_file())
-        self.assertEqual(len(list(blobs.rglob(replay.name))), 1)
+        target = evidence / replay.name
+        self.assertEqual(target.read_bytes(), replay.read_bytes())
+        self.assertNotEqual(target.stat().st_ino, replay.stat().st_ino)
+        self.assertEqual(target.stat().st_nlink, 1)
+        self.assertEqual(replay.stat().st_nlink, 1)
+        self.assertFalse((store / "sgf-blobs").exists())
         shutil.rmtree(self.corpus)
         self.source.unlink()
         archive.verify_bundle(reference)
@@ -100,7 +91,8 @@ class ArtifactPathsTests(helpers.LoopHarness):
             store, [(replay, checksum)], destination, filenames={checksum: name}
         )
         target = destination / name
-        self.assertEqual(target.stat().st_ino, replay.stat().st_ino)
+        self.assertNotEqual(target.stat().st_ino, replay.stat().st_ino)
+        self.assertEqual(target.stat().st_nlink, 1)
         archive.retain_evidence(
             store, [(replay, checksum)], destination, filenames={checksum: name}
         )
@@ -130,61 +122,22 @@ class ArtifactPathsTests(helpers.LoopHarness):
                 store, [(replay, checksum)], destination, filenames={checksum: name}
             )
 
-    def test_sgf_retention_day_is_utc_not_local_calendar_day(self):
-        store = self.root / "utc-blob-store"
-        local = datetime(2026, 11, 2, 1, tzinfo=timezone(timedelta(hours=3)))
-        with patch.object(archive, "utc_now", return_value=local):
-            archive.publish(store, "training", self.source)
-        self.assertEqual([path.name for path in (store / "sgf-blobs").iterdir()], ["2026-11-01"])
-
-    def test_flat_legacy_blobs_are_reused_without_new_daily_duplicates(self):
-        store = self.root / "legacy-blob-store"
-        reference = archive.publish(store, "training", self.source)
-        blobs = store / "sgf-blobs"
-        for path in list(blobs.glob("????-??-??/*.sgf")):
-            path.rename(blobs / path.name)
-        for path in list(blobs.iterdir()):
-            if path.is_dir():
-                path.rmdir()
-        replay = next((Path(reference["directory"]) / "replay").glob("*.sgf"))
-        with patch.object(archive, "utc_now", return_value=datetime(2030, 1, 1, tzinfo=UTC)):
-            archive.retain_evidence(store, [(replay, replay.stem)], store / "ratings/games")
-        self.assertFalse((blobs / "2030-01-01").exists())
-        self.assertEqual((blobs / replay.name).stat().st_ino, replay.stat().st_ino)
-        archive.verify_bundle(reference)
-
-    def test_duplicate_corrupt_and_symlinked_blob_paths_fail_closed(self):
-        store = self.root / "bad-blob-store"
-        reference = archive.publish(store, "training", self.source)
-        blobs = store / "sgf-blobs"
-        original = next(blobs.glob("????-??-??/*.sgf"))
+    def test_corrupt_or_symlinked_sgf_sources_are_rejected(self):
+        store = self.root / "bad-copy-store"
+        archive.initialize_store(store)
         source = self.root / "source.sgf"
-        source.write_bytes(original.read_bytes())
+        source.write_text("original")
         checksum = archive.digest(source)
-        legacy = blobs / original.name
-        shutil.copyfile(original, legacy)
-        with self.assertRaisesRegex(ValueError, "duplicate SGF blob"):
+        source.write_text("corrupt")
+        with self.assertRaisesRegex(ValueError, "missing/changed"):
             archive.retain_evidence(store, [(source, checksum)], store / "ratings/games")
-        legacy.unlink()
-        original.chmod(0o644)
-        original.write_bytes(b"corrupt")
-        with self.assertRaisesRegex(ValueError, "blob corrupted"):
-            archive.retain_evidence(store, [(source, checksum)], store / "ratings/games")
-        original.write_bytes(source.read_bytes())
-        original.chmod(0o444)
-        outside = self.root / "outside"
-        outside.mkdir()
-        (blobs / "2030-01-01").symlink_to(outside, target_is_directory=True)
-        source.write_bytes(source.read_bytes() + b"\n")
-        with (
-            patch.object(archive, "utc_now", return_value=datetime(2030, 1, 1, tzinfo=UTC)),
-            self.assertRaisesRegex(ValueError, "retention day cannot be a symlink"),
-        ):
+        original = self.root / "original.sgf"
+        source.rename(original)
+        source.symlink_to(original)
+        with self.assertRaisesRegex(ValueError, "missing/changed"):
             archive.retain_evidence(
-                store, [(source, archive.digest(source))], store / "ratings/games"
+                store, [(source, archive.digest(original))], store / "ratings/games"
             )
-        self.assertEqual(list(outside.iterdir()), [])
-        archive.verify_bundle(reference)
 
     def test_short_hash_prefix_is_not_the_identity(self):
         parent = self.root / "collisions"

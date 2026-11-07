@@ -18,7 +18,7 @@ and convincing strength against the reference. The [loop](docs/current/loop.md)
 never promotes automatically.
 
 New campaigns automatically use [adaptive rated matchmaking](docs/current/loop.md#automatic-adaptive-rating-precision)
-for scheduled candidates, targeting RD ≤ 25 plus substantial paired-color evidence,
+for each tenth-round model, targeting RD ≤ 75 plus 20 colour-swapped seed pairs across two opponents,
 without gating the latest actor. `--adaptive-max-games 0` explicitly opts out for
 smoke tests; existing saved loops retain their frozen settings.
 
@@ -34,10 +34,12 @@ the todo or this README.
 - The base `continugo` repository checked out alongside this one at `../continugo`.
 
 All generated artifacts stay here: training campaigns in **`runs/`**, ad hoc tests,
-audits, benchmarks and debugging in **`scratch/`**, deliberately retained models in
-**`models/retained/`**, approved publications in **`models/accepted/`**, and shared
+audits, benchmarks and debugging in **`scratch/`**, tenth-round model snapshots in
+**`models/<campaign>-rNNNN/`**, optional full recovery packs in **`models/retained/`**,
+approved publications in **`models/accepted/`**, and shared
 ratings/evidence in **`models/ratings/`**. Campaigns own their recovery files; no
-per-round model copies are made in the shared store. Names start with UTC
+per-round recovery copies are made in the shared store. Snapshot files and SGF evidence
+are ordinary independent copies, never hardlinks. Names start with UTC
 `YYYYMMDD-HHMMSS`; counters handle
 collisions. New-format campaigns should share one store and rating ledger, not
 create a store per run. If the existing ledger predates score/ownership, use a
@@ -67,6 +69,8 @@ mise run loop -- --help
 mise run loop-status -- --help
 mise run plot-ratings
 mise run plot-metrics -- --run runs/YOUR_CAMPAIGN
+mise run save-models -- --runs runs
+mise run rate-saved -- --help
 mise run retain-model -- --help
 mise run promote -- --help
 mise run arena -- --help

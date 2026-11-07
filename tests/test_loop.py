@@ -246,6 +246,8 @@ class LoopHarness(unittest.TestCase):
                 "0",
                 "--adaptive-max-games",
                 "0",
+                "--evaluation-interval",
+                "1",
                 "--sizes",
                 "13",
                 "--games-per-iteration",

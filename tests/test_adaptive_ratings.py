@@ -219,11 +219,11 @@ class AdaptiveTests(helpers.LoopHarness):
 
     def test_new_campaigns_enable_adaptive_ratings_without_an_opt_in(self):
         defaults = loop.LoopConfig()
-        self.assertEqual(defaults.adaptive_max_games, 600)
-        self.assertEqual(defaults.adaptive_target_rd, 25)
-        self.assertEqual(defaults.adaptive_min_pairs, 60)
+        self.assertEqual(defaults.adaptive_max_games, 360)
+        self.assertEqual(defaults.adaptive_target_rd, 75)
+        self.assertEqual(defaults.adaptive_min_pairs, 20)
         self.assertEqual(defaults.adaptive_min_opponents, 2)
-        self.assertEqual(defaults.adaptive_min_opponent_pairs, 10)
+        self.assertEqual(defaults.adaptive_min_opponent_pairs, 4)
         self.assertEqual(defaults.adaptive_batch_games, 4)
         self.assertIsNone(loop.parse_args([]).adaptive_max_games)
         self.assertEqual(loop.parse_args(["--adaptive-max-games", "0"]).adaptive_max_games, 0)
@@ -252,12 +252,12 @@ class AdaptiveTests(helpers.LoopHarness):
             redirect_stdout(io.StringIO()),
         ):
             state = loop.run_loop(args)
-        self.assertEqual(state["config"]["adaptive_max_games"], 600)
+        self.assertEqual(state["config"]["adaptive_max_games"], 360)
         report = state["iterations"][0]["adaptive_rating"]
         self.assertGreater(report["games"], 0)
         self.assertEqual(report["stop_reason"], "confidence-target-met")
         saved = torch.load(output / report["path"] / "loop.pt", weights_only=True)
-        self.assertEqual(saved["policy"]["max_games"], 600)
+        self.assertEqual(saved["policy"]["max_games"], 360)
 
     def test_older_v5_loop_defaults_to_disabled_until_explicitly_enabled(self):
         state = torch.load(self.source_loop / "loop.pt", weights_only=True)

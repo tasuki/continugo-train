@@ -108,15 +108,18 @@ def identity(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def protocol(config):
+def protocol(config, *, legacy=False):
     counts = Counter(weighted_sizes(config.sizes, config.size_weights))
     divisor = math.gcd(*counts.values())
+    search = {**config.search(), "simulations": config.gate_simulations}
+    if legacy:
+        search.pop("score_weight", None)
     return {
-        "version": 2,
+        "version": 1 if legacy else 2,
         "algorithm": "static-glicko-v1",
         "reference": REFERENCE_ID,
         "board_mix": {str(size): count // divisor for size, count in sorted(counts.items())},
-        "search": {**config.search(), "simulations": config.gate_simulations},
+        "search": search,
         "neural_max_moves": config.gate_max_moves,
         "reference_max_moves": config.reference_max_moves,
         "selection": "maximum-visits-random-ties",
@@ -128,6 +131,7 @@ def protocol(config):
 def _protocol_columns(settings):
     return {
         **{k: settings[k] for k in PROTOCOL_COLUMNS if k not in SEARCH_TYPES},
+        **({"score_weight": ""} if settings["version"] == 1 else {}),
         **settings["search"],
         "board_mix": ",".join(f"{k}:{v}" for k, v in settings["board_mix"].items()),
     }
@@ -139,7 +143,11 @@ def _protocol_from_row(row):
         settings[key] = int(settings[key])
     settings["board_mix"] = dict(item.split(":") for item in settings["board_mix"].split(","))
     settings["board_mix"] = {k: int(v) for k, v in settings["board_mix"].items()}
-    settings["search"] = {k: kind(row[k]) for k, kind in SEARCH_TYPES.items()}
+    settings["search"] = {
+        k: kind(row[k])
+        for k, kind in SEARCH_TYPES.items()
+        if k != "score_weight" or settings["version"] != 1
+    }
     return settings
 
 
@@ -582,12 +590,22 @@ def register_checkpoint(store, checkpoint, *, model=None):
             }
             if records["checkpoint"]["sha256"] != checksum:
                 raise ValueError("checkpoint changed during registration")
+            origin = {}
+            for parent in Path(checkpoint).resolve().parents:
+                if (parent / "loop.pt").is_file():
+                    origin["campaign"] = (
+                        parent.parent.name if parent.name == "loop" else parent.name
+                    )
+                    match = re.search(r"iteration-(\d+)", str(Path(checkpoint).relative_to(parent)))
+                    origin["round"] = int(match[1]) if match else 0
+                    break
             sources = directory / "inference"
             sources.mkdir(exist_ok=True)
             atomic_checkpoint(
                 sources / f"{checksum}.pt",
                 {
                     "checkpoint_sha256": checksum,
+                    **origin,
                     "network_name": tables.networks[checksum]["network"],
                     "training_games": sum(
                         split == "train"
@@ -722,7 +740,7 @@ def ingest(
 ):
     """Validate SGFs, retain store-owned evidence, then commit only unseen games."""
     if (
-        settings.get("version") != 2
+        settings.get("version") not in {1, 2}
         or settings.get("algorithm") != "static-glicko-v1"
         or settings.get("reference") != REFERENCE_ID
     ):

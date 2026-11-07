@@ -128,6 +128,29 @@ class PlotRatingsTests(unittest.TestCase):
         plot(points, output)
         self.assertGreater(output.stat().st_size, 1000)
 
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
+    def test_campaigns_have_distinct_colors_and_lines_follow_round_order(self):
+        points = [
+            plot_ratings.Point("a20", 200, 160, 20, False, "campaign-a", 20),
+            plot_ratings.Point("b10", 50, 120, 30, False, "campaign-b", 10),
+            plot_ratings.Point("a10", 100, 140, 25, False, "campaign-a", 10),
+            plot_ratings.Point("b20", 150, 150, 20, False, "campaign-b", 20),
+            plot_ratings.Point("random", 0, 100, 0, True),
+        ]
+        save = plot_ratings.save_figure
+
+        def inspect(plt, figure, target):
+            curves = {item.get_label(): item.lines[0] for item in figure.axes[0].containers}
+            self.assertEqual(set(curves), {"campaign-a", "campaign-b"})
+            self.assertEqual(list(curves["campaign-a"].get_xdata()), [100, 200])
+            self.assertEqual(list(curves["campaign-b"].get_xdata()), [50, 150])
+            self.assertEqual(curves["campaign-a"].get_linestyle(), "-")
+            self.assertNotEqual(curves["campaign-a"].get_color(), curves["campaign-b"].get_color())
+            save(plt, figure, target)
+
+        with patch.object(plot_ratings, "save_figure", inspect):
+            plot(points, self.root / "campaigns.png")
+
     def test_auto_plot_failure_cannot_abort_learning(self):
         with patch.object(plot_ratings, "collect_points", side_effect=RuntimeError("plot failed")):
             plot_ratings.update(self.root)

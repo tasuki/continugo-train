@@ -15,10 +15,13 @@ from .train import atomic_checkpoint
 VERSION = "rated-round-robin-v1"
 
 
-def available_models(store):
+def available_models(store, *, feature_spec=None):
     """Rated models still available in campaigns or deliberately retained bundles."""
     with ratings.transaction(store) as (tables, _):
         rows = [r for r in tables.network_rows() if r["network_id"] != ratings.REFERENCE_ID]
+    from .saved_models import saved_sources
+
+    saved = saved_sources(store)
     available = []
     for row in rows:
         checksum = row["network_id"]
@@ -29,8 +32,19 @@ def available_models(store):
             if source is not None:
                 break
         if source is None:
+            source = saved.get(checksum)
+        if source is None:
             source = ratings.inference_source(store, checksum)
         if source is not None:
+            if feature_spec is not None:
+                checkpoint = (
+                    source["checkpoint"]["path"]
+                    if isinstance(source, dict)
+                    else source / "checkpoint.pt"
+                )
+                saved_checkpoint = torch.load(checkpoint, map_location="cpu", weights_only=True)
+                if saved_checkpoint["feature_spec"] != feature_spec:
+                    continue
             available.append((row, source))
     return available
 
@@ -59,7 +73,7 @@ def initialize(root, source, bundles, games, seed):
     store = Path(config.model_store).resolve()
     if root.is_relative_to(store) or store.is_relative_to(root):
         raise ValueError("evaluation output must be separate from the model store")
-    settings = ratings.protocol(config)
+    settings = ratings.protocol(config, legacy=source["rating_protocol"]["version"] == 1)
     if settings != source["rating_protocol"]:
         raise ValueError("source loop evaluation binaries/settings changed")
     models, checkpoints = snapshot_models(root, source, bundles)

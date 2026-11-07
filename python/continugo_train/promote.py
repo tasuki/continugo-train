@@ -9,8 +9,8 @@ import argparse
 import fcntl
 import hashlib
 import json
-import os
 import re
+import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -127,7 +127,7 @@ def verify_model(directory):
     with tempfile.TemporaryDirectory(prefix=".approval-model-", dir=directory.parent) as temporary:
         view = Path(temporary)
         for name in ["encoder.onnx", "policy.onnx"]:
-            os.link(directory / name, view / name)
+            shutil.copyfile(directory / name, view / name)
         verify_export(view, checkpoint, load_training(checkpoint))
 
 

@@ -205,10 +205,10 @@ def initialize(root, source, args):
     store = Path(config.model_store).resolve()
     if root.is_relative_to(store) or store.is_relative_to(root):
         raise ValueError("evaluation output must be separate from model store")
-    settings = ratings.protocol(config)
+    settings = ratings.protocol(config, legacy=source["rating_protocol"]["version"] == 1)
     if settings != source["rating_protocol"]:
         raise ValueError("source loop evaluation binaries/settings changed")
-    available = available_models(store)
+    available = available_models(store, feature_spec=source["feature_spec"])
     rows = [row for row, _ in available]
     count = args.pool_latest if args.pool_latest is not None else len(rows)
     targets = (
@@ -266,7 +266,10 @@ def run(args, *, parent_lock_fd=None):
             source = torch.load(args.loop / "loop.pt", map_location="cpu", weights_only=True)
             state = initialize(root, source, args)
             atomic_checkpoint(root / "loop.pt", state)
-        locks = (parent_lock_fd, lock_fd) if parent_lock_fd is not None else lock_fd
+        parent_locks = (
+            (parent_lock_fd,) if isinstance(parent_lock_fd, int) else tuple(parent_lock_fd or ())
+        )
+        locks = (*parent_locks, lock_fd) if parent_locks else lock_fd
         runner = LoopRunner(root, state, locks)
         runner.verify_runtime()
         for model in state["models"].values():
@@ -319,12 +322,12 @@ SETUP_DEFAULTS = {
     "latest": 3,
     "targets": None,
     "pool_latest": None,
-    "target_rd": 25.0,
-    "min_pairs": 60,
+    "target_rd": 75.0,
+    "min_pairs": 20,
     "min_opponents": 2,
-    "min_opponent_pairs": 10,
+    "min_opponent_pairs": 4,
     "batch_games": 4,
-    "max_games": 600,
+    "max_games": 360,
     "seed": 9300000,
 }
 

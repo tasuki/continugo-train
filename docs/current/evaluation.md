@@ -94,13 +94,13 @@ consistently beat it. **Prefer adaptive near-strength matching**, not a fixed
 round-robin, when the purpose is rating precision:
 
 ```sh
-mise run rate-models -- --loop PATH/TO/LOOP --latest 3 --target-rd 25 --min-pairs 60 --min-opponents 2 --min-opponent-pairs 10 --batch-games 4 --max-games 600 --seed 9400000 --output scratch/adaptive-ratings
+mise run rate-models -- --loop PATH/TO/LOOP --latest 3 --target-rd 75 --min-pairs 20 --min-opponents 2 --min-opponent-pairs 4 --batch-games 4 --max-games 360 --seed 9400000 --output scratch/adaptive-ratings
 mise run rate-models -- --output scratch/adaptive-ratings --resume
 ```
 
 The newest three **available registered** neural checkpoints are the precision targets;
 `--targets FULL_CHECKPOINT_ID...` instead pins exact available targets independently of
-registration order. Run-owned exports and deliberately retained/accepted bundles
+registration order. Run-owned exports, saved milestone snapshots and retained/accepted bundles
 form the opponent pool (or restrict it with `--pool-latest N`). Deleted unretained
 models remain in rating history but are not available opponents. No random opponents are
 scheduled. After every four games (two same-seed color pairs), ingest outcomes
@@ -114,17 +114,17 @@ results therefore change subsequent opponents, not a precomputed bracket.
 
 Each target must meet **all** of:
 
-- Global Glicko RD ≤ 25, anchored to the reference through actual evidence.
-- At least **60 complete, distinct color-swapped seed pairs** (120 games) of
+- Global Glicko RD ≤ 75, anchored to the reference through actual evidence.
+- At least **20 complete, distinct color-swapped seed pairs** (40 games) of
   compatible head-to-head evidence; prior ledger evidence counts too.
-- At least **two neural opponents with ten complete pairs each**.
+- At least **two neural opponents with four complete pairs each**.
 
-This is a substantially stricter evidence/precision policy than twenty games or
-RD ≈ 55–76. **RD is model-based uncertainty, not a guaranteed 95% confidence
+This is moderate confidence with paired evidence and opponent diversity, not a
+high-precision ranking. Request a smaller `--target-rd` explicitly for a tighter study. **RD is model-based uncertainty, not a guaranteed 95% confidence
 interval**; paired-game correlation, model misspecification and adaptive sampling
 limit such interpretations. Close ratings may remain statistically indistinguishable;
 meeting the policy does not force a ranking or imply a particular win probability.
-The hard cap is **600 additional games**, counting truncations against the budget.
+The default hard cap is **360 additional games**, counting truncations against the budget.
 A budget stop explicitly says the target was **not met**. Truncations, incomplete
 pairs, repeated seeds and repeated colors cannot satisfy the paired-evidence gate.
 Paired evidence is filtered to the source loop's exact evaluation protocol.
@@ -139,6 +139,29 @@ not a claim of meeting this stronger precision policy. New campaigns enable the
 loop's [automatic adaptive phase](loop.md#automatic-adaptive-rating-precision) by
 default, applying the stronger policy to scheduled candidates without manual runs.
 Older saved loops retain their frozen settings and can be explicitly upgraded.
+
+## Saved milestones and fresh background ratings
+
+New campaigns automatically save, rate and plot each tenth round. Milestone
+snapshots use `models/<campaign>-rNNNN/`; the graph assigns a distinct colour to
+each campaign and connects its rated rounds in order, without joining different
+campaigns. The x-axis remains cumulative unique training games; error bars are
+± rating deviation, not 95% confidence intervals.
+
+Backfill snapshots with `mise run save-models -- --runs runs`, then evaluate them
+with `mise run rate-saved -- --output scratch/YYYYMMDD-HHMMSS-ratings`. The saved-model
+runner calibrates all models with ten reference games each, then adaptively
+chooses similarly rated neural opponents. It is **not** an all-pairs schedule.
+The default extra budget is 360 games per compatible cohort; unmet RD/evidence
+requirements are explicitly reported. Use the same output with `--resume` after
+interruption; native fingerprints, seeds, completed SGFs and ledger commits are
+verified, and finished games are not replayed.
+
+Historical model schemas use compatible frozen evaluation runtimes and are not
+matched against incompatible schemas. The shared reference anchors them, but
+cross-protocol ratings should still be compared cautiously. No historical ledger
+is imported by this command. Resetting old ratings is a separate deliberate
+operation; the current background job started from an empty ledger.
 
 ## Rated round-robin
 
@@ -218,7 +241,7 @@ Inside the durable model store:
 ratings/
   networks.csv   scheduled/evaluated networks, exactly one row per network
   matches.csv    one row per processed SGF, batch history and post-batch ratings
-  games/*.sgf    dated, readable immutable evidence (store-owned hardlinks)
+  games/*.sgf    dated, readable immutable evidence (independent copies)
   inference/     hash-pinned run-owned model locators and cached training-game counts
   .lock
 ```
@@ -297,7 +320,7 @@ are rebuilt from committed snapshots as usual.
 Legacy match CSVs also migrate automatically: batch sequences come from their
 original ledger insertion order, and per-batch game order is preserved. Dates,
 protocols, results, decisions, hashes, and rating snapshots are unchanged. Readable
-SGF hardlinks are created and synced **before** atomically publishing their ledger
+Independent SGF copies are verified and synced **before** atomically publishing their ledger
 paths; original `games/<full-SGF-SHA>.sgf` links are retained for old backups and
 safe retry after interruption. No files are renamed in place or deleted, and
 no rating math is replayed. Back up the store before migration; older software

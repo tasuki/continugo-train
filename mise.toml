@@ -66,6 +66,14 @@ run = ".venv/bin/python -m continugo_train.plot_ratings"
 description = "Read-only training, experimental actor, accepted identity and live loop progress"
 run = ".venv/bin/python -m continugo_train.status"
 
+[tasks.save-models]
+description = "Save independent model snapshots every tenth campaign round, including historical runs"
+run = ".venv/bin/python -m continugo_train.saved_models"
+
+[tasks.rate-saved]
+description = "Restartable fresh evaluation of saved models using compatible frozen runtimes"
+run = ".venv/bin/python -m continugo_train.rate_saved"
+
 [tasks.retain-model]
 description = "Explicitly retain one campaign model with its checkpoint, replay and inference graphs"
 run = ".venv/bin/python -m continugo_train.retain"
