@@ -259,6 +259,27 @@ impl ReplayGame {
         })
     }
 
+    /// Display geometry from authoritative replay, never reconstructed Python rules.
+    pub fn viewer_position(&self, ply: usize) -> Result<serde_json::Value, String> {
+        let game = self.positions.get(ply).ok_or("ply beyond record")?;
+        let play = self
+            .positions
+            .get(ply + 1)
+            .and_then(|next| next.record().last())
+            .ok_or("no move at ply")?;
+        let action = match play {
+            Play::Place(stone) => (stone.spot.x + 1000 * stone.spot.y) as u32,
+            Play::Pass(_) => Action::PASS.index(),
+        };
+        let stones: Vec<_> = game
+            .position()
+            .stones()
+            .iter()
+            .map(|stone| (stone.spot.x, stone.spot.y, player_index(stone.color)))
+            .collect();
+        Ok(serde_json::json!({"stones": stones, "action": action}))
+    }
+
     pub fn position(&self, ply: usize) -> Result<ReplayPosition, String> {
         let game = self
             .positions

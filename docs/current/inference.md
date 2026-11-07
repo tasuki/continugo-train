@@ -83,6 +83,11 @@ ordinary diagnostic JSON remains unchanged. Self-play can write run totals with
 `--stats-json NEW_FILE`. For representative positions plus real training/self-play,
 use the [pipeline profiler](profiling.md).
 
+For a visual per-move dashboard with embedded images, all input planes and heads,
+use the [self-contained neural game microscope](nn-viewer.md): `mise run nn-view`
+for existing SGFs, or `--nn-html --nn-checkpoint FILE` on self-play/arena. This
+opt-in checkpoint replay includes ownership, which production exports omit.
+
 ## Feature extraction and context caching
 
 - `--feature-threads 6`: bounded Rayon pool sharing one immutable prepared position;

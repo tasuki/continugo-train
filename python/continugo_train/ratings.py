@@ -345,6 +345,50 @@ def _retain_rows(store, directory, rows, sources):
     )
 
 
+def _retain_sidecars(store, directory, rows, records, checkpoints):
+    """A rated commit requires an atomic, self-contained own-actor report per SGF."""
+    from . import nn_view
+
+    available = {archive.digest(path): Path(path) for path in checkpoints}
+    for actor in {row[color] for row in rows for color in ("black", "white")}:
+        if actor != REFERENCE_ID and actor not in available:
+            source = inference_source(store, actor)
+            if source:
+                available[actor] = Path(source["checkpoint"]["path"])
+    threads = torch.get_num_threads()
+    try:
+        torch.set_num_threads(min(threads, 2))
+        for row in rows:
+            sgf = directory / _check_sgf_path(row)
+            target = sgf.with_suffix(".nn.html")
+            actors = [row["black"], row["white"]]
+            if target.is_symlink():
+                raise ValueError(f"unexpected NN sidecar symlink: {target}")
+            if target.exists():
+                try:
+                    data = json.loads(
+                        target.read_text()
+                        .split('<script id="data" type="application/json">', 1)[1]
+                        .split("</script>", 1)[0]
+                    )
+                    if (
+                        data.get("mode") == nn_view.RATED_MODE
+                        and data.get("sgf_sha256") == row["sgf_sha256"]
+                        and data.get("actors") == actors
+                    ):
+                        continue
+                except (ValueError, IndexError):
+                    pass  # Repair stale/partial sidecars, never trust their presence alone.
+            with tempfile.TemporaryDirectory(prefix=".nn-", dir=target.parent) as temporary:
+                draft = Path(temporary) / "report.html"
+                nn_view.generate_rated(sgf, draft, records[row["sgf_sha256"]]["info"], available)
+                archive.seal_file(draft)
+                os.replace(draft, target)
+                archive.sync_directory(target.parent)
+    finally:
+        torch.set_num_threads(threads)
+
+
 def _load(directory):
     tables = Tables()
     rows = _read_csv(
@@ -684,6 +728,7 @@ def _inspect(path, settings, names, feature_binary):
         "result": info["result"],
         "board_size": info["board_size"],
         "path": Path(path),
+        "info": info,
     }
 
 
@@ -749,6 +794,7 @@ def ingest(
         raise ValueError("rating protocol is not in canonical CSV form")
     if archive.digest(rating_binary) != settings["rating_sha256"]:
         raise ValueError("rating executable changed from the frozen protocol")
+    checkpoints = tuple(checkpoints)
     with transaction(store) as (tables, directory):
         for checkpoint in checkpoints:
             _register(tables, checkpoint)
@@ -768,6 +814,7 @@ def ingest(
         existing = [tables.seen[sha] for sha in records if sha in tables.seen]
         if existing:
             _retain_rows(store, directory, existing, {sha: r["path"] for sha, r in records.items()})
+            _retain_sidecars(store, directory, existing, records, checkpoints)
         new = [r for sha, r in sorted(records.items()) if sha not in tables.seen]
         if new:
             _rate(tables, new, rating_binary)
@@ -800,6 +847,7 @@ def ingest(
                 row["sgf_path"] = str(Path("games") / _sgf_name(tables, row))
                 rows.append(row)
             _retain_rows(store, directory, rows, {r["sha256"]: r["path"] for r in new})
+            _retain_sidecars(store, directory, rows, records, checkpoints)
             tables.matches.extend(rows)
         result = {"event": event, "new_games": len(new)}
     if new:

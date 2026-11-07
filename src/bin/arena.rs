@@ -6,6 +6,7 @@ use clap::Parser;
 use continugo_rules::{Board, Color, territory};
 use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator},
+    nn_html::NnHtmlArgs,
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
     search::{SearchConfig, rollout::RolloutArgs},
     selfplay::{
@@ -84,10 +85,16 @@ struct Args {
     feature_threads: usize,
     #[arg(long, default_value_t = 64)]
     cache_positions: usize,
+    #[command(flatten)]
+    nn_view: NnHtmlArgs,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    args.nn_view.validate(true, args.incumbent.is_some())?;
+    if args.nn_view.nn_html && args.unguided {
+        return Err("--nn-html requires a neural candidate".into());
+    }
     let binary_id = format!("{:x}", Sha256::digest(fs::read(std::env::current_exe()?)?));
     let schedule = weighted_sizes(&args.sizes, &args.size_weights)?;
     let end = args
@@ -185,8 +192,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(path)?
+            .open(&path)?
             .write_all(record.sgf.as_bytes())?;
+        args.nn_view.render(&path, candidate_black)?;
         eprintln!(
             "arena game {}/{end}: size={size} seed={seed} candidate={color} moves={} completed={} elapsed={:.3}s",
             ordinal + 1,

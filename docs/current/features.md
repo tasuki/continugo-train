@@ -255,6 +255,14 @@ The Python client adds its own request/read and decode/copy clocks. No profile
 flag is sent by ordinary clients. Rebuild both clients and servers for CGFEAT02.
 See [profiling](profiling.md) for stage overlap, IPC residuals and memory limits.
 
+The [NN viewer](nn-viewer.md) additionally uses optional `cells: [id, ...]`
+(explicit complete-cell extraction; `[]` gives coarse-only tensors) and
+`view: true`. A successful view request appends the same u64-length JSON trailer
+with a `view` field containing Rust-replayed stone geometry and the move played;
+`FeatureClient.last_view` exposes it. Profile and view can be combined in one
+trailer. Errors never append a trailer. Omitting these fields preserves ordinary
+training selection and transport, and the tensor packet/schema is unchanged.
+
 ### CGFEAT02 packet layout
 
 Little endian, no padding. Header: Python struct `<8s11If2If` (68 bytes):

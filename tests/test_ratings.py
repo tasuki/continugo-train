@@ -1,6 +1,7 @@
 import csv
 import importlib.util
 import io
+import json
 import shutil
 import subprocess
 import unittest
@@ -168,6 +169,21 @@ class RatingsTests(helpers.LoopHarness):
             self.assertTrue(path.name.endswith(f"-{row['sgf_sha256']}.sgf"))
             self.assertIn("-vs-", path.name)
             self.assertEqual(path.stat().st_nlink, 1)
+            sidecar = path.with_suffix(".nn.html")
+            self.assertTrue(sidecar.is_file())
+            data = json.loads(
+                sidecar.read_text()
+                .split('<script id="data" type="application/json">')[1]
+                .split("</script>")[0]
+            )
+            self.assertEqual(data["sgf_sha256"], row["sgf_sha256"])
+            self.assertEqual(data["actors"], [row["black"], row["white"]])
+            self.assertTrue(
+                all(
+                    f["model"] == row["black" if f["player"] == 0 else "white"]
+                    for f in data["frames"]
+                )
+            )
             self.assertFalse((self.store / "sgf-blobs").exists())
         source = ratings.inference_source(self.store, state["actor"]["checkpoint"]["sha256"])
         self.assertIsNone(state["accepted"])
@@ -184,6 +200,23 @@ class RatingsTests(helpers.LoopHarness):
             ratings.main(["--model-store", str(self.store), "--accepted-only"])
         accepted = list(csv.DictReader(io.StringIO(result.getvalue())))
         self.assertEqual(accepted, [])
+
+    def test_missing_sidecar_is_repaired_idempotently_and_failure_cannot_commit(self):
+        state = self.rated_loop(self.root / "loop")
+        rows = self.matches()
+        paths = [ratings.evidence_path(self.store, row) for row in rows]
+        before = (self.directory / "matches.csv").read_bytes()
+        paths[0].with_suffix(".nn.html").unlink()
+        with (
+            patch("continugo_train.nn_view.generate_rated", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            ratings.ingest(self.store, state["rating_protocol"], paths)
+        self.assertEqual((self.directory / "matches.csv").read_bytes(), before)
+        result = ratings.ingest(self.store, state["rating_protocol"], paths)
+        self.assertEqual(result["new_games"], 0)
+        self.assertTrue(paths[0].with_suffix(".nn.html").is_file())
+        self.assertEqual((self.directory / "matches.csv").read_bytes(), before)
 
     def test_registration_time_is_persisted_and_cli_uses_the_same_order(self):
         registered = datetime(2026, 11, 1, tzinfo=UTC)

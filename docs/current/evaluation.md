@@ -145,7 +145,10 @@ Older saved loops retain their frozen settings and can be explicitly upgraded.
 New campaigns automatically save, rate and plot each tenth round. Milestone
 snapshots use `models/<campaign>-rNNNN/`; the graph assigns a distinct colour to
 each campaign and connects its rated rounds in order, without joining different
-campaigns. The x-axis remains cumulative unique training games; error bars are
+campaigns. Legend entries include the network-family prefixes used in game
+filenames, e.g. `cg4 · 20261106-142353-scratch-score`. A family prefix can be shared
+by several campaigns; the full campaign name still distinguishes the curves.
+The x-axis remains cumulative unique training games; error bars are
 ± rating deviation, not 95% confidence intervals.
 
 Backfill snapshots with `mise run save-models -- --runs runs`, then evaluate them

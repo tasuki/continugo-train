@@ -21,7 +21,7 @@ models/
   ratings/networks.csv            shared network metadata and ratings
   ratings/matches.csv             authoritative rated-match commit ledger
   ratings/inference/<SHA>.pt      hash-pinned locators to run-owned checkpoint/graphs
-  ratings/games/                  store-owned match evidence
+  ratings/games/                  store-owned match SGFs + mandatory .nn.html sidecars
   ratings.png                    shared strength plot
 ```
 
@@ -48,7 +48,10 @@ retention or pruning; minimal milestone saving is separate. Read-only mode is no
 All stored files are ordinary independent copies. Hardlinks are never created,
 including between retained bundles or between an approval candidate and its
 verification view. SGF evidence is copied directly to `ratings/games/`; there is
-no shared `sgf-blobs/` pool.
+no shared `sgf-blobs/` pool. Before a new match is committed, its self-contained
+[NN viewer](nn-viewer.md) sidecar is atomically published beside the SGF. Each
+visualized move uses its own player's checkpoint; random/unavailable/unsupported
+turns are skipped with reasons, never substituted with the opposing network.
 
 ## Milestone snapshots
 

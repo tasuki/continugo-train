@@ -5,6 +5,7 @@ pub mod feature_io;
 pub mod features;
 pub mod inference;
 mod liberty_area;
+pub mod nn_html;
 pub mod profile;
 pub mod replay;
 pub mod sampling;

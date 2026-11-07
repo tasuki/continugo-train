@@ -115,6 +115,11 @@ run = ".venv/bin/python -m continugo_train.round_robin"
 description = "Native ONNX diagnostics (CUDA by default; --device cpu for CPU)"
 run = ".venv/bin/python -m continugo_train.runtime infer"
 
+[tasks.nn-view]
+description = "Self-contained per-move HTML microscope for a training or rated SGF"
+depends = ["build-features"]
+run = ".venv/bin/python -m continugo_train.nn_view"
+
 [tasks.model-bench]
 description = "Benchmark synthetic coarse/selected-cell inference and training (FP32)"
 run = ".venv/bin/python -m continugo_train.benchmark"

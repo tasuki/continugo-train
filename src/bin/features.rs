@@ -60,6 +60,10 @@ struct Request {
     ply: usize,
     samples_per_diameter: usize,
     file_sha256: Option<String>,
+    /// Explicit complete cells for offline network visualization; None keeps training selection.
+    cells: Option<Vec<usize>>,
+    #[serde(default)]
+    view: bool,
     /// Successful responses append a u64-length framed JSON timing trailer.
     #[serde(default)]
     profile: bool,
@@ -84,6 +88,7 @@ fn serve() -> Result<(), Box<dyn Error>> {
     for line in io::stdin().lock().lines() {
         let line = line?;
         let mut timings = None;
+        let mut view = None;
         let response = (|| -> Result<Vec<u8>, String> {
             let request: Request = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             let tick = request.profile.then(Instant::now);
@@ -99,7 +104,21 @@ fn serve() -> Result<(), Box<dyn Error>> {
                 cached = Some((request.sgf, hash, game));
             }
             let sample = cached.as_ref().unwrap().2.position(request.ply)?;
-            let actions = target_cell_actions(&sample, request.samples_per_diameter)?;
+            let actions = if let Some(cells) = request.cells {
+                let size = continugo_train::features::resolution(
+                    sample.game.board().diameter(),
+                    request.samples_per_diameter,
+                )?;
+                if cells.iter().any(|&cell| cell >= size * size) {
+                    return Err("cell outside coarse grid".into());
+                }
+                continugo_train::cells::actions(&cells, size)
+            } else {
+                target_cell_actions(&sample, request.samples_per_diameter)?
+            };
+            if request.view {
+                view = Some(cached.as_ref().unwrap().2.viewer_position(request.ply)?);
+            }
             if let Some(tick) = tick {
                 let replay_and_selection_seconds = tick.elapsed().as_secs_f64();
                 let (packet, stages) = encode_position_profiled(
@@ -130,6 +149,9 @@ fn serve() -> Result<(), Box<dyn Error>> {
             Ok(bytes) => (0u8, bytes),
             Err(error) => (1, error.into_bytes()),
         };
+        if status != 0 {
+            view = None;
+        }
         let tick = timings.as_ref().map(|_| Instant::now());
         output.write_all(&[status])?;
         output.write_all(&(bytes.len() as u64).to_le_bytes())?;
@@ -138,7 +160,15 @@ fn serve() -> Result<(), Box<dyn Error>> {
         if let Some(mut timings) = timings {
             timings["output_write_seconds"] = tick.unwrap().elapsed().as_secs_f64().into();
             timings["peak_rss_mib"] = peak_rss_mib().into();
+            if let Some(view) = &view {
+                timings["view"] = view.clone();
+            }
             let trailer = serde_json::to_vec(&timings)?;
+            output.write_all(&(trailer.len() as u64).to_le_bytes())?;
+            output.write_all(&trailer)?;
+            output.flush()?;
+        } else if let Some(view) = view {
+            let trailer = serde_json::to_vec(&serde_json::json!({"view": view}))?;
             output.write_all(&(trailer.len() as u64).to_le_bytes())?;
             output.write_all(&trailer)?;
             output.flush()?;

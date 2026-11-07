@@ -8,6 +8,7 @@ on the same linear training-game axis as the networks.
 import argparse
 import csv
 import math
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -125,6 +126,13 @@ def collect_points(model_store):
     return points
 
 
+def campaign_label(campaign, points):
+    """Include the family prefixes used in network names and rated-game files."""
+    families = {match[0] for point in points if (match := re.match(r"cg\d+(?=-|$)", point.network))}
+    prefix = "/".join(sorted(families, key=lambda family: int(family[2:])))
+    return f"{prefix} · {campaign}" if prefix else campaign
+
+
 def plot(points, output, title="Network ratings", labels=False):
     from matplotlib.ticker import FuncFormatter
 
@@ -148,7 +156,7 @@ def plot(points, output, title="Network ratings", labels=False):
             capsize=3,
             alpha=0.85,
             color=colors(color_index),
-            label=campaign,
+            label=campaign_label(campaign, series),
         )
     if labels:
         for point in networks:

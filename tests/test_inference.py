@@ -88,6 +88,94 @@ class NativeInferenceTests(unittest.TestCase):
             text=True,
         )
 
+    def test_opt_in_html_replay_preserves_selfplay_sgf_and_supports_arena(self):
+        directory = self.root / "nn-view"
+        common = [
+            "--model",
+            str(self.bundle),
+            "--engine",
+            "neural",
+            "--device",
+            "cpu",
+            "--ort-library",
+            str(self.library),
+            "--games",
+            "1",
+            "--sizes",
+            "9",
+            "--size-weights",
+            "uniform",
+            "--max-moves",
+            "2",
+            "--simulations",
+            "1",
+            "--concurrent-games",
+            "1",
+        ]
+        binary = str(ROOT / "target/release/continugo-train")
+        baseline = subprocess.run(
+            [binary, *common, "--output", str(directory / "plain")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        viewed = subprocess.run(
+            [
+                binary,
+                *common,
+                "--output",
+                str(directory / "viewed"),
+                "--nn-html",
+                "--nn-checkpoint",
+                str(self.checkpoint),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(viewed.returncode, 0, viewed.stderr)
+        self.assertEqual(
+            next((directory / "plain").glob("*.sgf")).read_bytes(),
+            next((directory / "viewed").glob("*.sgf")).read_bytes(),
+        )
+        self.assertEqual(len(list((directory / "viewed").glob("*.nn.html"))), 1)
+        arena = subprocess.run(
+            [
+                str(ROOT / "target/release/arena"),
+                "--candidate",
+                str(self.bundle),
+                "--incumbent",
+                str(self.bundle),
+                "--device",
+                "cpu",
+                "--ort-library",
+                str(self.library),
+                "--games",
+                "2",
+                "--sizes",
+                "9",
+                "--size-weights",
+                "uniform",
+                "--max-moves",
+                "2",
+                "--simulations",
+                "1",
+                "--nn-html",
+                "--nn-checkpoint",
+                str(self.checkpoint),
+                "--nn-opponent-checkpoint",
+                str(self.checkpoint),
+                "--output",
+                str(directory / "arena"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(arena.returncode, 0, arena.stderr)
+        self.assertEqual(len(list((directory / "arena").glob("*.nn.html"))), 2)
+
     def test_cached_parallel_queries_match_uncached_serial_results(self):
         source = self.root / "cache.sgf"
         source.write_text(SGF)

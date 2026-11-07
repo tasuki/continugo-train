@@ -69,6 +69,7 @@ mise run loop -- --help
 mise run loop-status -- --help
 mise run plot-ratings
 mise run plot-metrics -- --run runs/YOUR_CAMPAIGN
+mise run nn-view -- --sgf GAME.sgf --checkpoint MODEL/checkpoint.pt
 mise run save-models -- --runs runs
 mise run rate-saved -- --help
 mise run retain-model -- --help
@@ -78,6 +79,13 @@ mise run rate-models -- --help
 ```
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
+
+To see what the network sees, use the [neural game microscope](docs/current/nn-viewer.md):
+`mise run nn-view` for existing training/rated SGFs, or add
+`--nn-html --nn-checkpoint FILE` to neural self-play/arena. Each `.nn.html` is a
+standalone desktop dashboard with embedded images and ←/→ move navigation.
+Rated games always get these sidecars in `models/ratings/games/`, from each
+mover's own network; random or unsupported turns are skipped.
 
 Use timestamped names in both `runs/` and `scratch/`. A short training sanity check
 belongs in `scratch/`; a continuing training campaign belongs in `runs/`.
@@ -92,6 +100,7 @@ See [artifact organization](docs/current/artifacts.md).
 - [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Network architecture](docs/current/network.md)
+- [Self-contained neural game viewer](docs/current/nn-viewer.md)
 - [Score/ownership labels, utility and diagnostics](docs/current/auxiliary.md)
 
 Update current docs alongside code changes. Keep proposals in `docs/todo.md` and

@@ -320,6 +320,7 @@ class FeatureClient:
     def __init__(self, binary: str | Path | None = None, *, profile: bool = False):
         self.profile = profile
         self.last_profile = None
+        self.last_view = None
         self.process = subprocess.Popen(
             [str(feature_binary(binary)), "--serve"],
             stdin=subprocess.PIPE,
@@ -365,9 +366,17 @@ class FeatureClient:
         return b"".join(chunks)
 
     def load(
-        self, sgf: str | Path, ply: int, *, density: int = 4, file_sha256: str | None = None
+        self,
+        sgf: str | Path,
+        ply: int,
+        *,
+        density: int = 4,
+        file_sha256: str | None = None,
+        cells: list[int] | None = None,
+        view: bool = False,
     ) -> PositionFeatures:
         self.last_profile = None
+        self.last_view = None
         started = time.perf_counter() if self.profile else 0
         request = {
             "sgf": str(Path(sgf).resolve()),
@@ -375,6 +384,10 @@ class FeatureClient:
             "samples_per_diameter": density,
             "file_sha256": file_sha256,
         }
+        if cells is not None:
+            request["cells"] = cells
+        if view:
+            request["view"] = True
         if self.profile:
             request["profile"] = True
         encoded = json.dumps(request).encode() + b"\n"
@@ -397,12 +410,14 @@ class FeatureClient:
             raise ValueError(data.decode(errors="replace"))
         if status != 0:
             raise RuntimeError("invalid feature-server status")
-        if self.profile:
+        if self.profile or view:
             packet_received = time.perf_counter()
             trailer_length = struct.unpack("<Q", self._read(8))[0]
-            if trailer_length > 65536:
+            if trailer_length > 1_000_000:
                 raise RuntimeError("invalid feature-server timing length")
             server = json.loads(self._read(trailer_length))
+            self.last_view = server.pop("view", None)
+        if self.profile:
             decode_started = time.perf_counter()
             measurements = {f"server_{key}": value for key, value in server.items()}
             sample = decode_sample(data, timings=measurements)

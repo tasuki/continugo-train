@@ -151,6 +151,40 @@ class PlotRatingsTests(unittest.TestCase):
         with patch.object(plot_ratings, "save_figure", inspect):
             plot(points, self.root / "campaigns.png")
 
+    def test_campaign_labels_include_distinct_network_families(self):
+        def point(name):
+            return plot_ratings.Point(name, 100, 150, 30, False)
+
+        self.assertEqual(
+            plot_ratings.campaign_label("campaign", [point("cg4-b4c32-s10-d20")]),
+            "cg4 · campaign",
+        )
+        self.assertEqual(
+            plot_ratings.campaign_label("campaign", [point("cg1-b4c32"), point("cg1-b4c64")]),
+            "cg1 · campaign",
+        )
+        self.assertEqual(
+            plot_ratings.campaign_label("campaign", [point("cg10-b4c32"), point("cg2-b4c32")]),
+            "cg2/cg10 · campaign",
+        )
+        self.assertEqual(plot_ratings.campaign_label("campaign", [point("custom-net")]), "campaign")
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
+    def test_plot_legend_uses_filename_family_prefix(self):
+        points = [
+            plot_ratings.Point("cg4-b4c32-s10-d20", 100, 150, 30, False, "score-campaign"),
+            plot_ratings.Point("random", 0, 100, 0, True),
+        ]
+        save = plot_ratings.save_figure
+
+        def inspect(plt, figure, target):
+            labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
+            self.assertIn("cg4 · score-campaign", labels)
+            save(plt, figure, target)
+
+        with patch.object(plot_ratings, "save_figure", inspect):
+            plot(points, self.root / "families.png")
+
     def test_auto_plot_failure_cannot_abort_learning(self):
         with patch.object(plot_ratings, "collect_points", side_effect=RuntimeError("plot failed")):
             plot_ratings.update(self.root)

@@ -7,6 +7,7 @@ use clap::Parser;
 use continugo_rules::{Board, territory};
 use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
+    nn_html::NnHtmlArgs,
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
     search::{SearchConfig, rollout::RolloutArgs},
     selfplay::{
@@ -101,6 +102,8 @@ struct Args {
     /// Write machine-readable run totals and inference stages to a new JSON file.
     #[arg(long)]
     stats_json: Option<PathBuf>,
+    #[command(flatten)]
+    nn_view: NnHtmlArgs,
     /// Directory for self-contained .sgf records, or '-' for stdout.
     #[arg(long, default_value = "-")]
     output: PathBuf,
@@ -134,6 +137,12 @@ impl Args {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+    args.nn_view.validate(false, false)?;
+    if args.nn_view.nn_html
+        && (!matches!(args.engine, Engine::Neural) || args.output.as_os_str() == "-")
+    {
+        return Err("--nn-html requires --engine neural and an --output directory".into());
+    }
     if args.profile && !matches!(args.engine, Engine::Random) {
         return Err("--profile currently requires --engine random".into());
     }
@@ -238,7 +247,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             writeln!(stdout, "{}", record.sgf).map_err(|e| e.to_string())?;
             stdout.flush().map_err(|e| e.to_string())?;
         } else {
-            save_record(&args.output, index + 1, &record).map_err(|e| e.to_string())?;
+            let path = save_record(&args.output, index + 1, &record).map_err(|e| e.to_string())?;
+            args.nn_view.render(&path, true)?;
         }
         let output_seconds = output_started.elapsed().as_secs_f64();
         eprintln!(
@@ -323,7 +333,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn save_record(directory: &Path, number: u32, record: &GameRecord) -> Result<(), Box<dyn Error>> {
+fn save_record(
+    directory: &Path,
+    number: u32,
+    record: &GameRecord,
+) -> Result<PathBuf, Box<dyn Error>> {
     let stem = format!(
         "game-{number:06}-size{}-seed{}",
         record.metadata.board_size, record.metadata.seed
@@ -334,7 +348,7 @@ fn save_record(directory: &Path, number: u32, record: &GameRecord) -> Result<(),
         .create_new(true)
         .open(&sgf_path)?;
     sgf_file.write_all(record.sgf.as_bytes())?;
-    Ok(())
+    Ok(sgf_path)
 }
 
 #[cfg(test)]
