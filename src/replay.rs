@@ -280,6 +280,40 @@ impl ReplayGame {
         Ok(serde_json::json!({"stones": stones, "action": action}))
     }
 
+    /// Optional rendering facts for input-design previews. These are not NN
+    /// inputs: group membership, exact adjacency edges and liberty-center spans.
+    pub fn viewer_group_geometry(&self, ply: usize) -> Result<serde_json::Value, String> {
+        let game = self.positions.get(ply).ok_or("ply beyond record")?;
+        let position = game.position();
+        let stones = position.stones();
+        let mut groups = Vec::new();
+        for color in [Color::Black, Color::White] {
+            for members in position.groups(color) {
+                let mut connections = Vec::new();
+                for (i, &a) in members.iter().enumerate() {
+                    for &b in &members[i + 1..] {
+                        if game.board().adjacent(stones[a].spot, stones[b].spot) {
+                            connections.push([a, b]);
+                        }
+                    }
+                }
+                let spans = position.liberty_spans(&members);
+                let liberty_area =
+                    crate::liberty_area::in_stone_discs(&spans, game.board().stone_radius()) as f32;
+                let spans: Vec<_> = spans.iter().map(|s| [s.y, s.left, s.right]).collect();
+                groups.push(serde_json::json!({
+                    "player": player_index(color),
+                    "size_feature": crate::features::count_feature(members.len()),
+                    "liberty_area_stones": liberty_area,
+                    "members": members,
+                    "connections": connections,
+                    "liberty_spans": spans,
+                }));
+            }
+        }
+        Ok(serde_json::Value::Array(groups))
+    }
+
     pub fn position(&self, ply: usize) -> Result<ReplayPosition, String> {
         let game = self
             .positions

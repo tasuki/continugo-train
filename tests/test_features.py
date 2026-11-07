@@ -17,6 +17,7 @@ from continugo_train.features import (
     FeatureProfile,
     decode_sample,
     load_position,
+    ownership_weights,
 )
 from continugo_train.losses import joint_loss
 from continugo_train.model import NetworkConfig, PolicyValueNet, cell_actions, cell_ids
@@ -67,7 +68,9 @@ class RealFeatureTests(unittest.TestCase):
         self.assertEqual(white.legal.tolist(), [False, True])
         self.assertEqual(white.coarse[0].count_nonzero(), 0)
         self.assertGreater(white.coarse[1].count_nonzero(), 0)
-        self.assertGreater(white.coarse[5].max().item(), 1.0)  # Raw stone-disc area, not clipped.
+        self.assertGreater(white.coarse[5].sum().item(), 0)  # Enemy liberty-center coverage.
+        self.assertTrue(((white.coarse >= 0) & (white.coarse <= 1)).all())
+        self.assertGreater(white.coarse[7].sum().item(), white.coarse[5].sum().item())
         self.assertEqual(white.policy_targets()[0].tolist(), [2])
         black = self.load(2, actions=[276200])
         self.assertEqual(black.outcome, 1)
@@ -76,9 +79,9 @@ class RealFeatureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             black.policy_targets()  # No fabricated targets for an unannotated node.
 
-    def test_capture_flags_are_float32_and_painted_on_group_stones(self):
+    def test_legacy_capture_flags_are_preserved_only_for_old_models(self):
         self.sgf.write_text(SGF.replace("dSdS", "aMaM"))
-        sample = self.load(1, actions=[38038, 92092])
+        sample = self.load(1, actions=[38038, 92092], feature_schema=4)
         self.assertEqual(sample.coarse.dtype, torch.float32)
         self.assertEqual(sample.exact.dtype, torch.float32)
         self.assertEqual(sample.legal.dtype, torch.bool)
@@ -87,11 +90,58 @@ class RealFeatureTests(unittest.TestCase):
         self.assertTrue(((flags == 0) | (flags == 1)).all())
         self.assertEqual(sample.coarse[6].count_nonzero(), 0)
         self.assertGreater(sample.coarse[7].count_nonzero(), 0)
-        torch.testing.assert_close(sample.coarse[7], sample.coarse[1])
+        hard = self.load(1, actions=[38038], feature_schema=4)
+        torch.testing.assert_close(sample.coarse[7], hard.coarse[1])
         self.assertEqual(sample.legal.tolist(), [False, True])
         self.assertGreater(sample.exact[1, 3], 0)  # The concrete placement captures.
-        defended = self.load(2, actions=[38038])
-        torch.testing.assert_close(defended.coarse[6], defended.coarse[0])
+        defended = self.load(2, actions=[38038], feature_schema=4)
+        hard = self.load(2, actions=[38038], feature_schema=4)
+        torch.testing.assert_close(defended.coarse[6], hard.coarse[0])
+
+    def test_area_antialiasing_is_versioned_and_preserves_other_planes(self):
+        with FeatureClient(self.binary) as client:
+            aa = client.load(self.sgf, 1, cells=[])
+            hard = client.load(self.sgf, 1, cells=[], feature_schema=4)
+            self.assertEqual(aa.feature_schema, 5)
+            self.assertEqual(len(COARSE_PLANES), 12)
+            self.assertFalse(
+                any("capturable" in name or "liberty_area" in name for name in COARSE_PLANES)
+            )
+            self.assertEqual(
+                COARSE_PLANES[4:8],
+                (
+                    "friendly_liberty_centers",
+                    "enemy_liberty_centers",
+                    "friendly_liberty_footprints",
+                    "enemy_liberty_footprints",
+                ),
+            )
+            self.assertEqual(hard.feature_schema, 4)
+            self.assertTrue(((aa.coarse[1] > 0) & (aa.coarse[1] < 1)).any())
+            self.assertTrue(((hard.coarse[1] == 0) | (hard.coarse[1] == 1)).all())
+            torch.testing.assert_close(aa.coarse[8:], hard.coarse[8:], rtol=0, atol=0)
+            explicit = client.load(self.sgf, 1, cells=[], feature_schema=5)
+            self.assertEqual(explicit.coarse.shape[0], 12)
+            torch.testing.assert_close(aa.coarse, explicit.coarse, rtol=0, atol=0)
+            with self.assertRaisesRegex(ValueError, "schema"):
+                client.load(self.sgf, 1, cells=[], feature_schema=6)
+            import math
+
+            covered = (aa.coarse[1] * ownership_weights(aa.resolution)).sum().item()
+            self.assertAlmostEqual(covered, math.pi * (aa.diameter / 2) ** 2 / 1_000_000, places=8)
+            with self.assertRaisesRegex(ValueError, "schema"):
+                client.load(self.sgf, 1, cells=[], feature_schema=999)
+            again = client.load(self.sgf, 1, cells=[])
+            torch.testing.assert_close(aa.coarse, again.coarse)
+
+    def test_antialiasing_encodes_motion_that_binary_occupancy_loses(self):
+        hard_before = self.load(1, actions=[500500], feature_schema=4)
+        aa_before = self.load(1, actions=[500500])
+        self.sgf.write_text(SGF.replace("dSdS", "dTdS"))  # x=200 -> x=201, same coarse cell.
+        hard_after = self.load(1, actions=[500500], feature_schema=4)
+        aa_after = self.load(1, actions=[500500])
+        torch.testing.assert_close(hard_before.coarse[:2], hard_after.coarse[:2], rtol=0, atol=0)
+        self.assertFalse(torch.equal(aa_before.coarse[:2], aa_after.coarse[:2]))
 
     def test_complete_target_cell_sample_drives_a_hierarchical_training_step(self):
         sample = self.load()
@@ -218,14 +268,16 @@ class RealFeatureTests(unittest.TestCase):
         mutations.append(bytes(nonfinite))
         invalid_flag = bytearray(packet)
         resolution = struct.unpack_from("<I", packet, 28)[0]
-        struct.pack_into("<f", invalid_flag, HEADER.size + 6 * resolution**2 * 4, 0.5)
+        struct.pack_into("<f", invalid_flag, HEADER.size, -0.5)
         mutations.append(bytes(invalid_flag))
         for value in (-1.0, 2.0, float("nan"), float("inf")):
             flag = bytearray(packet)
-            struct.pack_into("<f", flag, HEADER.size + 6 * resolution**2 * 4, value)
+            struct.pack_into("<f", flag, HEADER.size, value)
             mutations.append(bytes(flag))
         illegal_byte = bytearray(packet)
-        struct.pack_into("B", illegal_byte, HEADER.size + 12 * resolution**2 * 4 + 10 * 4, 255)
+        struct.pack_into(
+            "B", illegal_byte, HEADER.size + len(COARSE_PLANES) * resolution**2 * 4 + 10 * 4, 255
+        )
         mutations.append(bytes(illegal_byte))
         old_schema = bytearray(packet)
         struct.pack_into("<I", old_schema, 8, SCHEMA_VERSION - 1)

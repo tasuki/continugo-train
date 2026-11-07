@@ -1,13 +1,18 @@
-# Real neural features — schema version 4
+# Real neural features — schema version 5 (draft)
+
+Schema 5 remains an unreleased draft until the next new training run starts.
+Input-design previews may explore alternatives under this same draft version;
+they do not silently change the current training tensors described below.
 
 Extraction lives in `src/features.rs`; rule facts come from `continugo-rules`.
 `Position::liberty_spans` returns the exact integer liberty-center intervals used
-for UI-style geometry. `PreparedPosition::analyze_group` reuses those spans and
-finds an exact legal one-placement capture witness when one exists. Coarse
-extraction borrows the prepared groups rather than rebuilding them. Group analysis
-lazily builds a per-position union of blocker intervals on each board row, shared
-by exact span extraction and capture-cover scanning. Move-only preparation never
-builds that index; it does not change validation, witnesses or capture decisions.
+for UI-style geometry. Schema 5 uses `PreparedPosition::liberty_spans` to share
+lazy blocker rows between groups, without running an opposing one-placement capture
+search, then rasterizes per-colour unions of centers and footprints. Coarse extraction
+borrows the prepared groups rather than rebuilding them. Legacy schema-4 extraction
+still uses `PreparedPosition::analyze_group`, including its exact capture witness
+and shared blocker-row cache, to preserve old model inputs. This changes no rules,
+move validation, witnesses or capture decisions.
 `PreparedPosition::analyze_move` uses the existing prepared validator for
 connections, captures and resulting group size. Area integration
 lives in `src/liberty_area.rs`; normal move validation never pays for it. No game
@@ -20,33 +25,66 @@ to action coordinates 0 and 999. `H = W = ceil(999 * density / diameter) + 1`,
 using the actual Rust stone diameter; density defaults to four intervals per
 stone diameter (38/54/78 samples for 9/13/19 equivalents). Extraction caps grids
 at 2048 samples per side. Raster sample locations
-are rounded to the nearest integer coordinate. A stone paints its physical disk
-(strict distance less than its radius), not its larger move-exclusion disk.
+are rounded to the nearest integer coordinate. Occupancy is **area-antialiased**:
+each pixel contains the fraction of its control volume covered by physical stone
+discs, not their larger move-exclusion discs. Pixel boundaries are midway between
+rounded samples, with outer boundaries 0 and 1000 (the same rectangles used for
+ownership targets). Rust computes circle/rectangle intersections analytically;
+this is not viewer interpolation, blur, or a supersampling approximation. Fully
+covered pixels are 1, empty pixels 0, and boundary pixels fractional. Legal stone
+discs have disjoint interiors, so coverage adds when several discs touch one pixel.
+
+Schema 5 removes both capturability flags and the per-group liberty-area scalar.
+It includes **both** spatial liberty representations. Grid resolution, cell
+partition, exact move features and labels are unchanged. New extraction computes
+neither capture witnesses nor per-group scalar areas: profiled
+`capturability.calls` and `liberty_area.calls` are zero.
 
 | Channels | Contents |
 |---|---|
-| 0, 1 | Friendly / enemy stone disks, 0 or 1 |
-| 2, 3 | Friendly / enemy group size, painted on member stones |
-| 4, 5 | Friendly / enemy group liberty area in stone-disc units, painted on member stones |
-| 6, 7 | Friendly / enemy group is capturable in one opposing placement, 0.0 or 1.0 |
+| 0, 1 | Friendly / enemy physical stone-disc area coverage, float in [0,1] |
+| 2, 3 | Friendly / enemy log group size on connected group shapes |
+| 4, 5 | Friendly / enemy liberty-center union coverage |
+| 6, 7 | Friendly / enemy liberty-footprint union coverage |
 | 8–11 | Left / right / top / bottom border distances |
 
-Group-size and other count features use `ln(1 + count) / ln(1 + 1_000_000)`.
-Area is directly divided by `π * stone_radius²`, with **no cap, clipping or log
-transform**. There are no move-history planes, liberty-coordinate count fields,
-or exactly-one-integer-liberty flags.
-Border distances are measured from the permitted stone-center boundary in stone
-diameters, clipped to [0,4], then divided by four. Outside that boundary they are
-zero. Channels other than borders are zero on empty raster samples.
+**Connected group size:** each group's member discs are joined by thin capsules
+along exactly the same-colour adjacency edges supplied by the rules. Bridge radius
+is 0.30 times stone radius. The shape carries `ln(1 + size) / ln(1 + 1_000_000)`;
+where shapes overlap, the largest group feature wins before pixel averaging.
+These bridges are an input representation, not additional stones or changed
+connections. Physical occupancy channels never include bridges.
 
-Liberty centers are physically unblocked, in-bounds integer points adjacent to at
-least one group member, exactly as in the shared rules. They are not fully
-validated moves or counts of cached witnesses; see the area definition below.
+**Liberty centers:** Rust's exact integer row spans are unioned per colour, so
+shared liberties are counted once. Each integer center occupies a 1×1 unit cell
+about its coordinate. Circle-independent rectangle intersections give exact area
+coverage of those cells in each coarse pixel. An isolated center remains a tiny
+positive signal rather than being missed by point sampling.
 
-All coarse planes and per-coordinate feature columns are **float32**, including
-binary occupancy/capture flags. Area integration uses float64 internally before
-conversion. The separate legality mask is u8 on the wire / `torch.bool` in Python;
-action IDs are u32 on the wire / `torch.int64` in Python.
+**Liberty footprints:** sweep the physical stone radius over those same unioned
+spans, forming round-ended capsules. The plane is union coverage in [0,1], never
+a sum over alternatives or groups. It shows possible occupied regions, not group
+area in stone-disc units. Nearby alternatives overlap; one isolated center still
+produces a stone-sized footprint. Per-group liberty identity is not encoded in
+either spatial liberty map.
+
+Group shapes and footprint unions use 8×8 midpoint antialias samples per pixel at
+normal training resolutions. To bound intermediate memory at unusual densities,
+samples per axis are `min(8, max(1, 1024 // resolution))`. Zero-area control volumes
+are zero. Occupancy remains analytic and center coverage remains exact. Rasterization
+lives in `src/features/raster.rs` and `src/features/spatial.rs`. Empty colours skip
+spatial canvases entirely; footprint rasterization maintains disjoint row unions
+and accumulates sample counts directly into coarse pixels, without a second
+supersampled canvas. These optimizations preserve the original raster bits.
+
+All schema-5 coarse values are in [0,1]. Border distances are measured from the
+permitted stone-center boundary in stone diameters, clipped to [0,4], then divided
+by four; outside that boundary they are zero. Liberty centers are physically
+unblocked, in-bounds integer points adjacent to a group, not a fully validated
+move-legality mask. There are no move-history, per-group area, or capturability
+planes. All coarse planes and exact columns are **float32**, with geometry computed
+in float64. Legality is separately u8 on the wire / `torch.bool` in Python; action
+IDs are u32 on the wire / `torch.int64` in Python.
 
 ## Exact coordinate input `[N, 10]` and legality `[N]`
 
@@ -72,7 +110,11 @@ mask for the network. It includes suicide and captures, not just geometric
 availability. It **never applies the direct random bot's eye-avoidance filter**.
 Finished games cannot be policy inputs. The shared rules do not enforce ko.
 
-## Exact one-move capturability
+## Legacy one-move capturability (schema 4 only)
+
+These two coarse planes are absent from new schema-5 models. They remain available
+only to existing twelve-plane networks, not as zero-filled placeholder inputs.
+Exact per-candidate captures in the detailed policy are unchanged.
 
 Each group's flag is 1 iff its **opposite color** has a legal placement that
 removes the whole group on the unchanged position. It is painted on all of that
@@ -97,7 +139,11 @@ against exhaustive legal placements in dense mixed-color setups. Corner captures
 with many liberties, protected separate pockets, both colors, and turn changes
 are covered. Normal self-play/search behavior is unchanged.
 
-## UI-style liberty area and numerical accuracy
+## Liberty-footprint geometry and legacy scalar area
+
+Schema 5 represents the following shape spatially, unioned per colour and
+antialiased as described above. The scalar integration below is used only by
+legacy schema-4 extraction (and optional preview diagnostics), not current inputs.
 
 We measure the region drawn by `Coverage.elm`: each exact integer liberty-center
 row span is swept by a disk of the **physical stone radius** (a horizontal capsule,
@@ -220,6 +266,16 @@ mkdir -p runs
 mise run features -- --sgf FILE --ply 0 --actions 200200,500500 --output scratch/position.cfeat
 ```
 
+New extraction/training defaults to schema 5 (twelve planes: antialiased occupancy,
+connected group size, liberty centers, liberty footprints and borders; no scalar
+liberty-area or capturability planes). Existing schema-4 score/ownership models retain their
+original twelve point-sampled planes, including the capture flags. Native inference
+reads the schema from ONNX metadata, and the viewer reads it from the checkpoint.
+Explicit offline diagnostics can request `--feature-schema 4`, or the corresponding
+`feature_schema=4` Python argument. Packet decoding requires the requested schema;
+it never silently accepts old features for new training. New training requires
+fresh schema-5 checkpoints; old weights/sidecars are not converted or truncated.
+
 The one-shot `load_position` convenience helper replays the SGF per request.
 The offline trainer instead uses `FeatureClient` / `features --serve`: each worker
 keeps one fully validated game's pre-move snapshots and samples positions without
@@ -255,12 +311,21 @@ The Python client adds its own request/read and decode/copy clocks. No profile
 flag is sent by ordinary clients. Rebuild both clients and servers for CGFEAT02.
 See [profiling](profiling.md) for stage overlap, IPC residuals and memory limits.
 
+Requests may specify `feature_schema: 4` to preserve an existing model's original
+twelve inputs; omitted/default `feature_schema: 5` produces the new twelve inputs.
+The returned header contains that schema. Python clients explicitly select the
+expected schema when decoding, so a server/client mismatch is rejected.
+
 The [NN viewer](nn-viewer.md) additionally uses optional `cells: [id, ...]`
 (explicit complete-cell extraction; `[]` gives coarse-only tensors) and
 `view: true`. A successful view request appends the same u64-length JSON trailer
 with a `view` field containing Rust-replayed stone geometry and the move played;
-`FeatureClient.last_view` exposes it. Profile and view can be combined in one
-trailer. Errors never append a trailer. Omitting these fields preserves ordinary
+`FeatureClient.last_view` exposes it. Optional `view_geometry: true` additionally
+includes exact group membership, rule-adjacent member pairs, normalized group size,
+liberty area and integer liberty-center spans. These are rendering facts for input
+design previews, not extra tensor channels or changed rules. Python exposes the
+option as `FeatureClient.load(..., view_geometry=True)`; it implies view metadata.
+Profile and view can be combined in one trailer. Errors never append a trailer. Omitting these fields preserves ordinary
 training selection and transport, and the tensor packet/schema is unchanged.
 
 ### CGFEAT02 packet layout
@@ -282,9 +347,14 @@ labels share the outcome validity flag. See [auxiliary supervision](auxiliary.md
 Target IDs are canonical Rust IDs, including pass at 1,000,000; they are **not**
 subset output columns. Python checks schema, dimensions, length, finiteness,
 legality encoding and action domains before creating writable tensors.
-Schema 4 has 12 planes / 10 move fields; its input definitions have not changed.
-Old packets and checkpoints without `targets: final-area-v1` are incompatible.
+Schemas 4 and 5 both have twelve coarse planes / ten exact fields, but their
+channel meanings differ. Schema 5 uses spatial centers and footprints instead of
+scalar liberty area and capture flags. Schema 4 remains supported for existing
+score/ownership inference and visualization. Header schema and model feature names,
+not width alone, identify the semantics. Packets/checkpoints
+without `targets: final-area-v1` remain incompatible.
 Rebuild
 the extractor and discard incompatible derived packets/checkpoints; source SGFs
-remain usable. Feature changes require a schema-version bump and compatible
-checkpoint/ONNX feature metadata.
+remain usable. Once this draft is finalized by starting the next training run,
+further feature changes require a schema-version bump and compatible checkpoint/ONNX
+feature metadata.

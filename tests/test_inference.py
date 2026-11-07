@@ -236,8 +236,8 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertNotIn("group_construction", stages)
             self.assertNotIn("spans_and_capturability", stages)
             self.assertEqual(stages["liberty_spans"]["calls"], stages["groups"])
-            self.assertEqual(stages["capturability"]["calls"], stages["groups"])
-            self.assertEqual(stages["liberty_area"]["calls"], stages["groups"])
+            self.assertEqual(stages["capturability"]["calls"], 0)
+            self.assertEqual(stages["liberty_area"]["calls"], 0)
             if value_only:
                 self.assertEqual(report["stats"]["scorer_batches"], 0)
             plain = self.infer(source, [1000000], value_only=value_only)
@@ -336,6 +336,33 @@ class NativeInferenceTests(unittest.TestCase):
                     self.assertIsNotNone(actual)
                     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-5)
             self.assertLess(int(re.search(r"exact_coordinates: (\d+)", native.stderr)[1]), 50000)
+
+    def test_legacy_exports_keep_original_twelve_plane_inputs(self):
+        source = self.root / "legacy-schema.sgf"
+        source.write_text(SGF)
+        model = PolicyValueNet(replace(self.model.config, input_planes=12)).eval()
+        for schema in (4,):
+            checkpoint = self.root / f"schema{schema}.pt"
+            torch.save(
+                {
+                    "config": asdict(model.config),
+                    "model": model.state_dict(),
+                    "feature_spec": feature_spec(4, schema=schema),
+                    "epoch": 1,
+                },
+                checkpoint,
+            )
+            bundle = self.root / f"schema{schema}-model"
+            export_checkpoint(checkpoint, bundle)
+            sample = load_position(source, 1, actions=[500500], feature_schema=schema)
+            self.assertEqual(sample.coarse.shape[0], 12)
+            with torch.inference_mode():
+                _, _, value, score = model.encode_search(sample.coarse[None])
+            native = self.infer(source, [1000000], model=bundle, value_only=True)
+            self.assertEqual(native.returncode, 0, native.stderr)
+            result = json.loads(native.stdout)
+            self.assertAlmostEqual(result["value"], value.item(), places=6)
+            self.assertAlmostEqual(result["score"], score.item(), places=6)
 
     def test_leaky_value_head_export_matches_native_cpu_and_cuda(self):
         source = self.root / "leaky.sgf"

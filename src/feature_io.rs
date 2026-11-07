@@ -1,7 +1,7 @@
 //! CGFEAT02 tensor packet, including validated final score/ownership targets.
 
 use crate::{
-    features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION},
+    features::{FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION, coarse_planes},
     replay::{ReplayPosition, player_index},
 };
 use continugo_rules::{Action, COORDINATE_ACTIONS};
@@ -37,7 +37,8 @@ pub fn encode_position(
     actions: &[Action],
     full_domain: bool,
 ) -> Result<Vec<u8>, String> {
-    encode::<false>(sample, ply, density, actions, full_domain).map(|(packet, _)| packet)
+    encode::<false>(sample, ply, density, actions, full_domain, SCHEMA_VERSION)
+        .map(|(packet, _)| packet)
 }
 
 pub fn encode_position_profiled(
@@ -47,7 +48,23 @@ pub fn encode_position_profiled(
     actions: &[Action],
     full_domain: bool,
 ) -> Result<(Vec<u8>, FeatureTimings), String> {
-    encode::<true>(sample, ply, density, actions, full_domain)
+    encode::<true>(sample, ply, density, actions, full_domain, SCHEMA_VERSION)
+}
+
+pub fn encode_position_schema(
+    sample: &ReplayPosition,
+    ply: usize,
+    density: usize,
+    actions: &[Action],
+    full_domain: bool,
+    schema: u32,
+    profile: bool,
+) -> Result<(Vec<u8>, FeatureTimings), String> {
+    if profile {
+        encode::<true>(sample, ply, density, actions, full_domain, schema)
+    } else {
+        encode::<false>(sample, ply, density, actions, full_domain, schema)
+    }
 }
 
 fn encode<const PROFILE: bool>(
@@ -56,10 +73,11 @@ fn encode<const PROFILE: bool>(
     density: usize,
     actions: &[Action],
     full_domain: bool,
+    schema: u32,
 ) -> Result<(Vec<u8>, FeatureTimings), String> {
     let mut timings = FeatureTimings::default();
     let tick = PROFILE.then(Instant::now);
-    let extractor = FeatureExtractor::new(&sample.game, density)?;
+    let extractor = FeatureExtractor::with_schema(&sample.game, density, schema)?;
     if let Some(tick) = tick {
         timings.coarse_seconds = tick.elapsed().as_secs_f64();
     }
@@ -92,8 +110,8 @@ fn encode<const PROFILE: bool>(
     let mut packet = Vec::with_capacity(length);
     packet.extend_from_slice(b"CGFEAT02");
     for number in [
-        SCHEMA_VERSION,
-        COARSE_PLANES.len() as u32,
+        schema,
+        coarse_planes(schema)?.len() as u32,
         MOVE_FEATURES.len() as u32,
         sample.game.board().size() as u32,
         sample.game.board().diameter() as u32,

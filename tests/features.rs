@@ -55,9 +55,19 @@ fn profiled_coarse_features_preserve_bits_and_count_work() {
         assert!(profile.spans > 0);
         assert_eq!(profile.preparation.calls, 1);
         assert_eq!(profile.liberty_spans.calls, 2);
-        assert_eq!(profile.capturability.calls, 2);
-        assert_eq!(profile.liberty_area.calls, 2);
-        assert_eq!(profile.painting.calls, 4); // allocation, two groups, borders
+        assert_eq!(profile.capturability.calls, 0);
+        assert_eq!(COARSE_PLANES.len(), 12);
+        assert!(
+            COARSE_PLANES
+                .iter()
+                .all(|name| !name.contains("capturable"))
+        );
+        let (legacy, legacy_profile) = FeatureExtractor::profiled_with_schema(&game, 4, 4).unwrap();
+        assert_eq!(legacy_profile.capturability.calls, 2);
+        let area = ordinary.resolution.pow(2);
+        assert_eq!(&ordinary.coarse[8 * area..], &legacy.coarse[8 * area..]);
+        assert_eq!(profile.liberty_area.calls, 0);
+        assert_eq!(profile.painting.calls, 5); // allocation, two groups, antialiasing, borders
         let mut total = continugo_train::features::CoarseProfile::default();
         total.merge(&profile);
         total.merge(&profile);
@@ -150,21 +160,20 @@ fn one_move_capture_planes_use_legal_opposing_moves_not_liberty_counts() {
                 .iter()
                 .all(|s| s.color == Color::White)
         );
-        let enemy = FeatureExtractor::new(&corner, 4).unwrap();
+        let enemy = FeatureExtractor::with_schema(&corner, 4, 4).unwrap();
         let area = enemy.resolution.pow(2);
+        let hard = FeatureExtractor::with_schema(&corner, 4, 4).unwrap();
         assert_eq!(
-            &enemy.coarse[area..2 * area],
+            &hard.coarse[area..2 * area],
             &enemy.coarse[7 * area..8 * area]
         );
         assert!(enemy.coarse[7 * area..8 * area].contains(&1.0));
         let passed = corner.pass().unwrap();
-        let friendly = FeatureExtractor::new(&passed, 4).unwrap();
-        assert_eq!(
-            &friendly.coarse[..area],
-            &friendly.coarse[6 * area..7 * area]
-        );
+        let friendly = FeatureExtractor::with_schema(&passed, 4, 4).unwrap();
+        let hard = FeatureExtractor::with_schema(&passed, 4, 4).unwrap();
+        assert_eq!(&hard.coarse[..area], &friendly.coarse[6 * area..7 * area]);
         let center = Game::new(board).play(Spot { x: 500, y: 500 }).unwrap();
-        let safe = FeatureExtractor::new(&center, 4).unwrap();
+        let safe = FeatureExtractor::with_schema(&center, 4, 4).unwrap();
         assert!(safe.coarse[6 * area..8 * area].iter().all(|&x| x == 0.0));
     }
 }
@@ -252,7 +261,7 @@ fn the_bootstrap_eye_filter_is_not_a_neural_legality_rule() {
     ] {
         game = game.play(Spot { x, y }).unwrap().pass().unwrap();
     }
-    let features = FeatureExtractor::new(&game, 4).unwrap();
+    let features = FeatureExtractor::with_schema(&game, 4, 4).unwrap();
     let area = features.resolution.pow(2);
     assert!(
         features.coarse[6 * area..8 * area]
@@ -261,19 +270,97 @@ fn the_bootstrap_eye_filter_is_not_a_neural_legality_rule() {
     ); // Separate protected pockets.
     assert_eq!(features.moves(&[action(166, 166)]).unwrap().legal, vec![1]);
     let attack_position = game.play(Spot { x: 830, y: 830 }).unwrap();
-    let attack_features = FeatureExtractor::new(&attack_position, 4).unwrap();
+    let attack_features = FeatureExtractor::with_schema(&attack_position, 4, 4).unwrap();
     assert!(attack_features.coarse[7 * area..8 * area].contains(&1.0));
     let attack = attack_features.moves(&[action(166, 166)]).unwrap();
     assert_eq!(attack.legal, vec![1]);
     assert_eq!(attack.exact[3], count_feature(1));
     assert_eq!(attack.exact[4], count_feature(8));
     let one_liberty = attack_position.pass().unwrap();
-    let features = FeatureExtractor::new(&one_liberty, 4).unwrap();
+    let features = FeatureExtractor::with_schema(&one_liberty, 4, 4).unwrap();
     let area = features.resolution.pow(2);
     // One touching liberty center sweeps exactly one physical stone-disc.
     assert!(features.coarse[4 * area..5 * area].contains(&1.0));
     assert!(features.coarse[6 * area..7 * area].contains(&1.0)); // Opponent threat, even on the owner's turn.
     assert_eq!(features.moves(&[action(166, 166)]).unwrap().legal, vec![0]);
+}
+
+#[test]
+fn antialiased_occupancy_preserves_disc_area_and_other_features() {
+    for size in [9, 13, 19] {
+        let board = Board::new(size).unwrap();
+        let r = board.stone_radius();
+        for (x, y) in [(r, r), (500, 500), (1000 - r, 1000 - r), (200, 201)] {
+            let game = Game::new(board).play(Spot { x, y }).unwrap();
+            let aa = FeatureExtractor::new(&game, 4).unwrap();
+            let hard = FeatureExtractor::with_schema(&game, 4, 4).unwrap();
+            let area = aa.resolution.pow(2);
+            let plane = &aa.coarse[area..2 * area];
+            assert!(plane.iter().all(|&v| (0.0..=1.0).contains(&v)));
+            assert!(plane.iter().any(|&v| v > 0.0 && v < 1.0));
+            assert!(
+                hard.coarse[..2 * area]
+                    .iter()
+                    .all(|&v| v == 0.0 || v == 1.0)
+            );
+            assert_eq!(&aa.coarse[8 * area..], &hard.coarse[8 * area..]);
+            assert!(
+                aa.coarse
+                    .iter()
+                    .all(|&v| v.is_finite() && (0.0..=1.0).contains(&v))
+            );
+            let bounds = continugo_train::targets::raster_bounds(aa.resolution);
+            let mut covered = 0.0;
+            for y in 0..aa.resolution {
+                for x in 0..aa.resolution {
+                    covered += f64::from(plane[y * aa.resolution + x])
+                        * (bounds[x + 1] - bounds[x])
+                        * (bounds[y + 1] - bounds[y]);
+                }
+            }
+            assert!(
+                (covered - std::f64::consts::PI * f64::from(r * r)).abs() < 0.02,
+                "size {size}, ({x},{y}): {covered}"
+            );
+            let actions = [action(200, 200), action(500, 500), action(999, 999)];
+            let a = aa.moves(&actions).unwrap();
+            let b = hard.moves(&actions).unwrap();
+            assert_eq!(a.legal, b.legal);
+            assert_eq!(a.exact, b.exact);
+        }
+    }
+    assert!(FeatureExtractor::with_schema(&Game::default(), 4, 999).is_err());
+}
+
+#[test]
+fn adjacent_stone_coverage_sums_and_is_history_independent() {
+    let make = |a, b| {
+        Game::new(Board::new(9).unwrap())
+            .play(Spot { x: a, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap()
+            .play(Spot { x: b, y: 500 })
+            .unwrap()
+    };
+    let game = make(400, 510);
+    let reversed = make(510, 400);
+    let aa = FeatureExtractor::new(&game, 4).unwrap();
+    assert_eq!(
+        aa.coarse,
+        FeatureExtractor::new(&reversed, 4).unwrap().coarse
+    );
+    let n = aa.resolution;
+    let edges = continugo_train::targets::raster_bounds(n);
+    let mut covered = 0.0;
+    for y in 0..n {
+        for x in 0..n {
+            covered += f64::from(aa.coarse[n * n + y * n + x])
+                * (edges[x + 1] - edges[x])
+                * (edges[y + 1] - edges[y]);
+        }
+    }
+    assert!((covered - 2.0 * std::f64::consts::PI * 55.0f64.powi(2)).abs() < 0.02);
 }
 
 fn scored_record() -> sgf::Record {

@@ -109,7 +109,7 @@ def export_checkpoint(checkpoint, output):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
     config = NetworkConfig(**saved["config"])
     spec = saved["feature_spec"]
-    if spec != feature_spec(spec["samples_per_diameter"]):
+    if spec != feature_spec(spec["samples_per_diameter"], schema=spec["schema"]):
         raise ValueError("checkpoint has incompatible features")
     if config.input_planes != len(spec["coarse"]) or config.move_features != len(spec["moves"]):
         raise ValueError("checkpoint architecture has incompatible feature widths")

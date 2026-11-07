@@ -34,8 +34,11 @@ and zero loss weight.
 Final polygons are built lazily; a worker caches one final ownership raster for
 its current game/density and reuses it across sampled plies. Metadata inspection
 does not rasterize. `CGFEAT02` carries these derived labels; SGFs remain the game
-records. Input schema 4 and `cells-v1` policy semantics are unchanged, while
-checkpoint/ONNX feature metadata additionally requires `targets: final-area-v1`.
+records. `cells-v1` policy semantics and auxiliary labels are unchanged by the
+schema-5 input update (antialiased occupancy, connected groups, spatial liberty
+centers/footprints instead of scalar liberty area and coarse capture flags).
+Schema-4 inference and schema-5 checkpoint/ONNX feature metadata both require
+`targets: final-area-v1`.
 
 ## Heads and objective
 

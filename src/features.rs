@@ -1,10 +1,13 @@
-//! Version-4 side-to-move neural inputs. Rule facts use the shared validator.
-//! Group liberty area matches the UI's radius-swept exact integer center spans,
-//! numerically integrated in stone-disc units once per existing group.
+//! Draft version-5 inputs: antialiased stones, connected group size, spatial
+//! liberty-center and liberty-footprint unions, and borders. Legacy version 4
+//! retains scalar group liberty area and capturability for existing models.
 
 use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
 };
+
+mod raster;
+mod spatial;
 
 use crate::profile::Stage;
 use rayon::prelude::*;
@@ -44,8 +47,41 @@ impl CoarseProfile {
     }
 }
 
-pub const SCHEMA_VERSION: u32 = 4;
+// Unreleased draft: finalize schema 5 only when the next training run starts.
+pub const SCHEMA_VERSION: u32 = 5;
+pub const POINT_SAMPLED_SCHEMA: u32 = 4;
+
+pub fn validate_schema(schema: u32) -> Result<(), String> {
+    if matches!(schema, POINT_SAMPLED_SCHEMA | SCHEMA_VERSION) {
+        Ok(())
+    } else {
+        Err(format!("unsupported feature schema {schema}"))
+    }
+}
+pub fn coarse_planes(schema: u32) -> Result<&'static [&'static str], String> {
+    validate_schema(schema)?;
+    Ok(if schema == SCHEMA_VERSION {
+        &COARSE_PLANES
+    } else {
+        &LEGACY_COARSE_PLANES
+    })
+}
+
 pub const COARSE_PLANES: [&str; 12] = [
+    "friendly_stones",
+    "enemy_stones",
+    "friendly_group_size",
+    "enemy_group_size",
+    "friendly_liberty_centers",
+    "enemy_liberty_centers",
+    "friendly_liberty_footprints",
+    "enemy_liberty_footprints",
+    "left_border",
+    "right_border",
+    "top_border",
+    "bottom_border",
+];
+pub const LEGACY_COARSE_PLANES: [&str; 12] = [
     "friendly_stones",
     "enemy_stones",
     "friendly_group_size",
@@ -105,13 +141,18 @@ pub struct FeatureExtractor<'a> {
     game: &'a Game,
     prepared: PreparedPosition<'a>,
     pub resolution: usize,
-    /// Plane-major [12, H, W].
+    /// Plane-major [12, H, W]; schema determines channel meanings.
     pub coarse: Vec<f32>,
 }
 
 impl<'a> FeatureExtractor<'a> {
     pub fn new(game: &'a Game, samples_per_diameter: usize) -> Result<Self, String> {
-        Self::build::<false>(game, samples_per_diameter).map(|(extractor, _)| extractor)
+        Self::with_schema(game, samples_per_diameter, SCHEMA_VERSION)
+    }
+
+    /// Preserve point-sampled inputs for explicitly versioned existing models.
+    pub fn with_schema(game: &'a Game, density: usize, schema: u32) -> Result<Self, String> {
+        Self::build::<false>(game, density, schema).map(|(extractor, _)| extractor)
     }
 
     /// Diagnostic path with identical rules and rasters; ordinary extraction has
@@ -120,13 +161,23 @@ impl<'a> FeatureExtractor<'a> {
         game: &'a Game,
         samples_per_diameter: usize,
     ) -> Result<(Self, CoarseProfile), String> {
-        Self::build::<true>(game, samples_per_diameter)
+        Self::profiled_with_schema(game, samples_per_diameter, SCHEMA_VERSION)
+    }
+
+    pub fn profiled_with_schema(
+        game: &'a Game,
+        density: usize,
+        schema: u32,
+    ) -> Result<(Self, CoarseProfile), String> {
+        Self::build::<true>(game, density, schema)
     }
 
     fn build<const PROFILE: bool>(
         game: &'a Game,
         samples_per_diameter: usize,
+        schema: u32,
     ) -> Result<(Self, CoarseProfile), String> {
+        validate_schema(schema)?;
         let mut profile = CoarseProfile::default();
         let tick = PROFILE.then(Instant::now);
         let mut this = Self::for_moves(game)?;
@@ -138,11 +189,17 @@ impl<'a> FeatureExtractor<'a> {
         let board = game.board();
         let resolution = resolution(board.diameter(), samples_per_diameter)?;
         this.resolution = resolution;
+        let edges = crate::targets::raster_bounds(resolution);
+        let area = resolution * resolution;
         let tick = PROFILE.then(Instant::now);
-        this.coarse = vec![0.0; COARSE_PLANES.len() * resolution * resolution];
+        let planes = coarse_planes(schema)?.len();
+        this.coarse = vec![0.0; planes * resolution * resolution];
         if let Some(tick) = tick {
             profile.painting.record(tick);
         }
+        let grid = (schema == SCHEMA_VERSION).then(|| spatial::Grid::new(&edges));
+        let mut sizes: [Option<Vec<f32>>; 2] = [None, None];
+        let mut liberties = [Vec::new(), Vec::new()];
         for color in [game.on_move(), game.on_move().other()] {
             let offset = usize::from(color != game.on_move());
             for members in this.prepared.groups(color) {
@@ -150,40 +207,67 @@ impl<'a> FeatureExtractor<'a> {
                     profile.groups += 1;
                 }
                 let size = count_feature(members.len());
+                if let Some(grid) = &grid {
+                    let tick = PROFILE.then(Instant::now);
+                    let spans = this.prepared.liberty_spans(members);
+                    if let Some(tick) = tick {
+                        profile.liberty_spans.record(tick);
+                        profile.spans += spans.len() as u64;
+                    }
+                    let tick = PROFILE.then(Instant::now);
+                    grid.group(
+                        sizes[offset].get_or_insert_with(|| grid.canvas()),
+                        board,
+                        game.position().stones(),
+                        members,
+                        size,
+                    );
+                    liberties[offset].extend(spans);
+                    if let Some(tick) = tick {
+                        profile.painting.record(tick);
+                    }
+                    continue;
+                }
+                // Legacy schema 4: keep every original feature bit unchanged.
                 let analysis = if PROFILE {
                     let (analysis, stages) = this.prepared.analyze_group_profiled(members);
                     profile.liberty_spans.calls += 1;
                     profile.liberty_spans.seconds += stages.liberty_spans_seconds;
                     profile.capturability.calls += 1;
                     profile.capturability.seconds += stages.capturability_seconds;
-                    profile.spans += analysis.liberty_spans.len() as u64;
                     analysis
                 } else {
                     this.prepared.analyze_group(members)
                 };
+                let (spans, capturable) = (
+                    analysis.liberty_spans,
+                    u8::from(analysis.capture_in_one.is_some()) as f32,
+                );
+                if PROFILE {
+                    profile.spans += spans.len() as u64;
+                }
                 let tick = PROFILE.then(Instant::now);
-                let liberty_area = crate::liberty_area::in_stone_discs(
-                    &analysis.liberty_spans,
-                    board.stone_radius(),
-                ) as f32;
+                let liberty_area =
+                    crate::liberty_area::in_stone_discs(&spans, board.stone_radius()) as f32;
                 if let Some(tick) = tick {
                     profile.liberty_area.record(tick);
                 }
-                let capturable = u8::from(analysis.capture_in_one.is_some()) as f32;
                 let tick = PROFILE.then(Instant::now);
                 for &i in members {
                     let spot = game.position().stones()[i].spot;
+                    let fields = [
+                        (offset, 1.0),
+                        (2 + offset, size),
+                        (4 + offset, liberty_area),
+                        (6 + offset, capturable),
+                    ];
+                    let fields = &fields[..];
                     Self::paint(
                         &mut this.coarse,
                         resolution,
                         board.stone_radius(),
                         spot,
-                        &[
-                            (offset, 1.0),
-                            (2 + offset, size),
-                            (4 + offset, liberty_area),
-                            (6 + offset, capturable),
-                        ],
+                        fields,
                     );
                 }
                 if let Some(tick) = tick {
@@ -191,13 +275,47 @@ impl<'a> FeatureExtractor<'a> {
                 }
             }
         }
+        if let Some(grid) = &grid {
+            let tick = PROFILE.then(Instant::now);
+            // Stable geometric order makes float accumulation independent of
+            // move history/group enumeration for the same physical position.
+            let mut stones: Vec<_> = game.position().stones().iter().collect();
+            stones.sort_unstable_by_key(|stone| (stone.spot.x, stone.spot.y));
+            for stone in stones {
+                let offset = usize::from(stone.color != game.on_move());
+                raster::paint(
+                    &mut this.coarse[offset * area..(offset + 1) * area],
+                    board.stone_radius(),
+                    stone.spot,
+                    &edges,
+                );
+            }
+            for (offset, spans) in liberties.iter_mut().enumerate() {
+                let Some(canvas) = &sizes[offset] else {
+                    continue;
+                };
+                let spans = spatial::union_spans(std::mem::take(spans));
+                let group = grid.reduce(canvas);
+                let centers = spatial::centers(&spans, &edges);
+                let footprints = grid.footprints(&spans, board.stone_radius());
+                for (plane, values) in [
+                    (2 + offset, group),
+                    (4 + offset, centers),
+                    (6 + offset, footprints),
+                ] {
+                    this.coarse[plane * area..(plane + 1) * area].copy_from_slice(&values);
+                }
+            }
+            if let Some(tick) = tick {
+                profile.painting.record(tick);
+            }
+        }
         let tick = PROFILE.then(Instant::now);
-        let area = resolution * resolution;
         for y in 0..resolution {
             for x in 0..resolution {
                 let spot = Self::grid_spot(resolution, x, y);
                 for (direction, value) in this.borders(spot).into_iter().enumerate() {
-                    this.coarse[(8 + direction) * area + y * resolution + x] = value;
+                    this.coarse[(planes - 4 + direction) * area + y * resolution + x] = value;
                 }
             }
         }

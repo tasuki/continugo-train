@@ -4,7 +4,8 @@
 use clap::Parser;
 use continugo_rules::{Action, COORDINATE_ACTIONS};
 use continugo_train::{
-    feature_io::{encode_position, encode_position_profiled, target_cell_actions},
+    feature_io::{encode_position_schema, target_cell_actions},
+    features::SCHEMA_VERSION,
     replay::ReplayGame,
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,9 @@ struct Args {
     ply: usize,
     #[arg(long, default_value_t = 4)]
     samples_per_diameter: usize,
+    /// 5 = spatial groups/liberty centers/footprints; 4 = original scalar/flag planes.
+    #[arg(long, default_value_t = SCHEMA_VERSION)]
+    feature_schema: u32,
     #[arg(long, value_delimiter = ',', num_args = 1.., value_parser = clap::value_parser!(u32).range(0..COORDINATE_ACTIONS as i64))]
     actions: Option<Vec<u32>>,
     /// Diagnostic reference only: extract all million coordinates, not training.
@@ -60,10 +64,14 @@ struct Request {
     ply: usize,
     samples_per_diameter: usize,
     file_sha256: Option<String>,
+    feature_schema: Option<u32>,
     /// Explicit complete cells for offline network visualization; None keeps training selection.
     cells: Option<Vec<usize>>,
     #[serde(default)]
     view: bool,
+    /// Rendering facts only; never alter tensor semantics or training inputs.
+    #[serde(default)]
+    view_geometry: bool,
     /// Successful responses append a u64-length framed JSON timing trailer.
     #[serde(default)]
     profile: bool,
@@ -116,17 +124,24 @@ fn serve() -> Result<(), Box<dyn Error>> {
             } else {
                 target_cell_actions(&sample, request.samples_per_diameter)?
             };
-            if request.view {
-                view = Some(cached.as_ref().unwrap().2.viewer_position(request.ply)?);
+            if request.view || request.view_geometry {
+                let replay = &cached.as_ref().unwrap().2;
+                let mut metadata = replay.viewer_position(request.ply)?;
+                if request.view_geometry {
+                    metadata["groups"] = replay.viewer_group_geometry(request.ply)?;
+                }
+                view = Some(metadata);
             }
             if let Some(tick) = tick {
                 let replay_and_selection_seconds = tick.elapsed().as_secs_f64();
-                let (packet, stages) = encode_position_profiled(
+                let (packet, stages) = encode_position_schema(
                     &sample,
                     request.ply,
                     request.samples_per_diameter,
                     &actions,
                     false,
+                    request.feature_schema.unwrap_or(SCHEMA_VERSION),
+                    true,
                 )?;
                 timings = Some(serde_json::json!({
                     "replay_and_selection_seconds": replay_and_selection_seconds,
@@ -136,13 +151,16 @@ fn serve() -> Result<(), Box<dyn Error>> {
                 }));
                 Ok(packet)
             } else {
-                encode_position(
+                encode_position_schema(
                     &sample,
                     request.ply,
                     request.samples_per_diameter,
                     &actions,
                     false,
+                    request.feature_schema.unwrap_or(SCHEMA_VERSION),
+                    false,
                 )
+                .map(|(packet, _)| packet)
             }
         })();
         let (status, bytes) = match response {
@@ -221,12 +239,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     let started = Instant::now();
-    let packet = encode_position(
+    let (packet, _) = encode_position_schema(
         &sample,
         args.ply,
         args.samples_per_diameter,
         &actions,
         full_domain,
+        args.feature_schema,
+        false,
     )?;
     let extraction = started.elapsed().as_secs_f64();
     let started = Instant::now();

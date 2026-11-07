@@ -29,6 +29,7 @@ from .features import (
     SCHEMA_VERSION,
     TARGET_VERSION,
     FeatureProfile,
+    coarse_planes,
     feature_binary,
     ownership_weights,
 )
@@ -94,12 +95,13 @@ class Options:
             raise ValueError("invalid validation fraction or optimizer settings")
 
 
-def feature_spec(density):
+def feature_spec(density, *, schema=SCHEMA_VERSION):
+    planes = coarse_planes(schema)
     return {
-        "schema": SCHEMA_VERSION,
+        "schema": schema,
         "policy": POLICY_VERSION,
         "targets": TARGET_VERSION,
-        "coarse": list(COARSE_PLANES),
+        "coarse": list(planes),
         "moves": list(MOVE_FEATURES),
         "samples_per_diameter": density,
     }

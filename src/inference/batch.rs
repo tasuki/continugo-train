@@ -1,6 +1,6 @@
 //! Resolution-bucketed encoding and selective, complete-cell exact scoring.
 use super::{Evaluation, LeafEstimate, OnnxEvaluator, cache::Context};
-use crate::features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, resolution};
+use crate::features::{FeatureExtractor, MOVE_FEATURES, resolution};
 use continugo_rules::{COORDINATE_ACTIONS, Game};
 use ort::value::Tensor;
 use rayon::prelude::*;
@@ -97,20 +97,23 @@ impl OnnxEvaluator {
         for (size, indices) in pending {
             let tick = Instant::now();
             let density = self.metadata.feature_spec.samples_per_diameter;
+            let schema = self.metadata.feature_spec.schema;
             let profile = self.profile_coarse;
             let extract = |&i: &usize| {
                 if profile {
-                    FeatureExtractor::profiled(games[i], density)
+                    FeatureExtractor::profiled_with_schema(games[i], density, schema)
                         .map(|(e, stages)| (e.coarse, stages))
                 } else {
-                    FeatureExtractor::new(games[i], density).map(|e| (e.coarse, Default::default()))
+                    FeatureExtractor::with_schema(games[i], density, schema)
+                        .map(|e| (e.coarse, Default::default()))
                 }
             };
             let rasters: Result<Vec<_>, _> = match &self.feature_pool {
                 Some(pool) => pool.install(|| indices.par_iter().map(extract).collect()),
                 None => indices.iter().map(extract).collect(),
             };
-            let mut coarse = Vec::with_capacity(indices.len() * COARSE_PLANES.len() * size * size);
+            let planes = self.metadata.feature_spec.coarse.len();
+            let mut coarse = Vec::with_capacity(indices.len() * planes * size * size);
             for (raster, stages) in rasters? {
                 coarse.extend(raster);
                 self.stats.coarse_stages.merge(&stages);
@@ -121,7 +124,7 @@ impl OnnxEvaluator {
             let tick = Instant::now();
             let batch = indices.len();
             let encoded = self.encoder.run(ort::inputs![
-                "coarse" => Tensor::from_array(([batch, COARSE_PLANES.len(), size, size], coarse))?
+                "coarse" => Tensor::from_array(([batch, planes, size, size], coarse))?
             ]?)?;
             let (shape, spatial) = encoded["spatial"].try_extract_raw_tensor::<f32>()?;
             let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;

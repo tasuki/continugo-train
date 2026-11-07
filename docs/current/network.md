@@ -93,7 +93,11 @@ estimating their partition function. Coverage/strength remain experimental.
 
 Checkpoint and ONNX metadata require policy version **`cells-v1`**. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
-validated SGF visit/outcome records remain usable. Feature schema 4 is unchanged.
+validated SGF visit/outcome records remain usable. New training uses feature
+draft schema 5 with twelve coarse planes: antialiased occupancy, connected group
+size, spatial liberty centers/footprints and borders; no scalar liberty area or
+capturability flags. Schema-4 score/ownership inference and viewing explicitly preserve all
+twelve original inputs. See [features](features.md).
 The pass-preserving normalization correction changes native execution only, not
 weights, features, graph outputs, or the training objective. Current exports additionally require `targets: final-area-v1`; old policy/value-only
 checkpoints/graphs are incompatible. Changed native fingerprints require a new

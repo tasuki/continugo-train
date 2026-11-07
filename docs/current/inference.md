@@ -51,7 +51,11 @@ Export atomically publishes two opset-17 graphs as one new directory:
   raw placement logits. Batch, spatial, and candidate axes are dynamic.
 
 Both graphs embed matching feature definitions, density, architecture, checkpoint
-hash, and epoch. There is no metadata sidecar. Loading rejects incompatible
+hash, and epoch. Draft schema-5 models have twelve coarse planes: antialiased
+occupancy, connected group size, spatial liberty centers/footprints and borders,
+without scalar liberty area or capturability flags. Existing schema-4 score/ownership models keep all twelve
+original point-sampled inputs, selected explicitly from this metadata.
+Re-exporting does not upgrade or truncate a model's inputs. There is no metadata sidecar. Loading rejects incompatible
 metadata or mixed graph pairs; `cells-v1` is required and old dense bundles must
 be retrained/re-exported. Chunking avoids rerunning the encoder; default
 chunks are 65,536 coordinates. See [features](features.md) for input semantics.

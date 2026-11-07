@@ -14,7 +14,7 @@ from test_features import SGF
 
 from continugo_train import data
 from continugo_train import train as trainer
-from continugo_train.features import FeatureClient, inspect_game
+from continugo_train.features import COARSE_PLANES, FeatureClient, inspect_game
 from continugo_train.train import atomic_checkpoint, parse_args, train
 
 
@@ -153,7 +153,7 @@ class OfflineDataTests(unittest.TestCase):
     def test_collate_pads_sparse_targets_and_rejects_mixed_resolutions(self):
         def sample(resolution, indices, visits, count=3):
             return data.TrainingSample(
-                torch.zeros(12, resolution, resolution),
+                torch.zeros(len(COARSE_PLANES), resolution, resolution),
                 torch.zeros(count, 10),
                 torch.ones(count, dtype=torch.bool),
                 torch.tensor(indices),
@@ -170,7 +170,7 @@ class OfflineDataTests(unittest.TestCase):
         first = sample(4, [0, 3], [7.0, 1.0])
         second = sample(4, [1], [3.0], count=1)
         batch = data.collate([first, second])
-        self.assertEqual(batch.coarse.shape, (2, 12, 4, 4))
+        self.assertEqual(batch.coarse.shape, (2, len(COARSE_PLANES), 4, 4))
         self.assertEqual(batch.exact.shape, (2, 3, 10))
         self.assertEqual(batch.indices.tolist(), [[0, 3], [3, 3]])
         self.assertEqual(batch.legal.tolist(), [[True, True, True], [True, False, False]])
@@ -216,7 +216,7 @@ class OfflineDataTests(unittest.TestCase):
         def serial(*_):
             for i, resolution in enumerate([4, 7, 4, 7, 4]):
                 yield data.TrainingSample(
-                    torch.full((12, resolution, resolution), float(i)),
+                    torch.full((len(COARSE_PLANES), resolution, resolution), float(i)),
                     torch.zeros(0, 10),
                     torch.ones(0, dtype=torch.bool),
                     torch.tensor([0]),

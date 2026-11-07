@@ -11,7 +11,13 @@ from test_features import SGF
 
 from continugo_train.data import scan_corpus
 from continugo_train.diagnose import diagnose
-from continugo_train.features import HEADER, FeatureClient, decode_sample, ownership_weights
+from continugo_train.features import (
+    COARSE_PLANES,
+    HEADER,
+    FeatureClient,
+    decode_sample,
+    ownership_weights,
+)
 from continugo_train.losses import joint_loss
 from continugo_train.model import NetworkConfig, PolicyValueNet
 from continugo_train.train import Options, feature_spec
@@ -67,7 +73,7 @@ class AuxiliaryTests(unittest.TestCase):
     def test_ownership_loss_is_area_weighted_and_new_heads_receive_gradients(self):
         n = 8
         model = self.model().train()
-        coarse = torch.randn(2, 12, n, n)
+        coarse = torch.randn(2, len(COARSE_PLANES), n, n)
         exact = torch.empty(2, 0, 10)
         actions = torch.empty(2, 0, dtype=torch.int64)
         legal = torch.empty(2, 0, dtype=torch.bool)
@@ -148,7 +154,7 @@ class AuxiliaryTests(unittest.TestCase):
 
     def test_tiny_auxiliary_problem_overfits_and_search_omits_ownership(self):
         model = self.model().eval()
-        coarse = torch.randn(2, 12, 8, 8)
+        coarse = torch.randn(2, len(COARSE_PLANES), 8, 8)
         score_target = torch.tensor([0.7, -0.7])
         ownership_target = torch.stack((torch.ones(8, 8), -torch.ones(8, 8)))
         optimizer = torch.optim.Adam(model.parameters(), lr=0.02)

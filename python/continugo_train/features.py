@@ -20,8 +20,10 @@ import numpy as np
 import torch
 from torch import Tensor
 
-SCHEMA_VERSION = 4
-COARSE_PLANES = (
+# Unreleased draft: finalize schema 5 only when the next training run starts.
+SCHEMA_VERSION = 5
+POINT_SAMPLED_SCHEMA = 4
+LEGACY_COARSE_PLANES = (
     "friendly_stones",
     "enemy_stones",
     "friendly_group_size",
@@ -35,6 +37,28 @@ COARSE_PLANES = (
     "top_border",
     "bottom_border",
 )
+COARSE_PLANES = (
+    "friendly_stones",
+    "enemy_stones",
+    "friendly_group_size",
+    "enemy_group_size",
+    "friendly_liberty_centers",
+    "enemy_liberty_centers",
+    "friendly_liberty_footprints",
+    "enemy_liberty_footprints",
+    "left_border",
+    "right_border",
+    "top_border",
+    "bottom_border",
+)
+
+
+def coarse_planes(schema=SCHEMA_VERSION):
+    if schema not in (POINT_SAMPLED_SCHEMA, SCHEMA_VERSION):
+        raise ValueError(f"unsupported feature schema {schema}")
+    return COARSE_PLANES if schema == SCHEMA_VERSION else LEGACY_COARSE_PLANES
+
+
 MOVE_FEATURES = (
     "legal",
     "connected_groups",
@@ -81,6 +105,7 @@ class PositionFeatures:
     full_domain: bool
     score: float | None
     ownership: Tensor | None
+    feature_schema: int = SCHEMA_VERSION
 
     def network_inputs(self, device="cpu") -> tuple[Tensor, Tensor, Tensor, Tensor]:
         return (
@@ -121,7 +146,12 @@ class PositionFeatures:
         return columns, self.visits.to(torch.float32)
 
 
-def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatures:
+def decode_sample(
+    data: bytes,
+    *,
+    feature_schema: int = SCHEMA_VERSION,
+    timings: dict | None = None,
+) -> PositionFeatures:
     tick = time.perf_counter() if timings is not None else 0
     if len(data) < HEADER.size:
         raise ValueError("truncated feature header")
@@ -145,8 +175,9 @@ def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatur
     ) = HEADER.unpack_from(data)
     if (
         magic != b"CGFEAT02"
-        or version != SCHEMA_VERSION
-        or planes != len(COARSE_PLANES)
+        or feature_schema not in (POINT_SAMPLED_SCHEMA, SCHEMA_VERSION)
+        or version != feature_schema
+        or planes != len(coarse_planes(feature_schema))
         or fields != len(MOVE_FEATURES)
     ):
         raise ValueError("unsupported feature schema")
@@ -202,7 +233,10 @@ def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatur
         tick = now
     if (
         not np.isfinite(coarse).all()
-        or ((coarse[6:8] != 0) & (coarse[6:8] != 1)).any()
+        or ((coarse[:2] < 0) | (coarse[:2] > 1)).any()
+        or (version == SCHEMA_VERSION and ((coarse < 0) | (coarse > 1)).any())
+        or (version == POINT_SAMPLED_SCHEMA and ((coarse[:2] != 0) & (coarse[:2] != 1)).any())
+        or (version != SCHEMA_VERSION and ((coarse[6:8] != 0) & (coarse[6:8] != 1)).any())
         or not np.isfinite(exact).all()
         or (raw_legal > 1).any()
         or (actions >= PASS).any()
@@ -245,6 +279,7 @@ def decode_sample(data: bytes, *, timings: dict | None = None) -> PositionFeatur
         bool(full),
         score if labeled else None,
         torch.from_numpy(ownership) if labeled else None,
+        version,
     )
     if timings is not None:
         timings["decode_tensors_seconds"] = time.perf_counter() - tick
@@ -314,7 +349,7 @@ class FeatureClient:
     """One Rust process, one cached validated game, arbitrary pre-move requests.
 
     Each response is status u8 + length u64 + a CGFEAT02 packet or UTF-8 error.
-    The feature schema is unchanged; JSON lines are IPC commands, not game records.
+    Tensor semantics are explicitly versioned; JSON lines are IPC, not game records.
     """
 
     def __init__(self, binary: str | Path | None = None, *, profile: bool = False):
@@ -374,6 +409,8 @@ class FeatureClient:
         file_sha256: str | None = None,
         cells: list[int] | None = None,
         view: bool = False,
+        view_geometry: bool = False,
+        feature_schema: int = SCHEMA_VERSION,
     ) -> PositionFeatures:
         self.last_profile = None
         self.last_view = None
@@ -384,10 +421,14 @@ class FeatureClient:
             "samples_per_diameter": density,
             "file_sha256": file_sha256,
         }
+        if feature_schema != SCHEMA_VERSION:
+            request["feature_schema"] = feature_schema
         if cells is not None:
             request["cells"] = cells
-        if view:
+        if view or view_geometry:
             request["view"] = True
+        if view_geometry:
+            request["view_geometry"] = True
         if self.profile:
             request["profile"] = True
         encoded = json.dumps(request).encode() + b"\n"
@@ -410,17 +451,17 @@ class FeatureClient:
             raise ValueError(data.decode(errors="replace"))
         if status != 0:
             raise RuntimeError("invalid feature-server status")
-        if self.profile or view:
+        if self.profile or view or view_geometry:
             packet_received = time.perf_counter()
             trailer_length = struct.unpack("<Q", self._read(8))[0]
-            if trailer_length > 1_000_000:
+            if trailer_length > (32_000_000 if view_geometry else 1_000_000):
                 raise RuntimeError("invalid feature-server timing length")
             server = json.loads(self._read(trailer_length))
             self.last_view = server.pop("view", None)
         if self.profile:
             decode_started = time.perf_counter()
             measurements = {f"server_{key}": value for key, value in server.items()}
-            sample = decode_sample(data, timings=measurements)
+            sample = decode_sample(data, feature_schema=feature_schema, timings=measurements)
             measurements.update(
                 request_encode_seconds=encode_seconds,
                 request_write_seconds=write_seconds,
@@ -444,7 +485,7 @@ class FeatureClient:
             measurements["roundtrip_seconds"] = time.perf_counter() - started
             self.last_profile = measurements
         else:
-            sample = decode_sample(data)
+            sample = decode_sample(data, feature_schema=feature_schema)
         if sample.ply != ply or sample.samples_per_diameter != density or sample.full_domain:
             raise RuntimeError("feature-server response does not match the request")
         return sample
@@ -458,6 +499,7 @@ def load_position(
     full_domain: bool = False,
     samples_per_diameter: int = 4,
     binary: str | Path | None = None,
+    feature_schema: int = SCHEMA_VERSION,
 ) -> PositionFeatures:
     """Replay/validate SGF with Rust, returning one pre-move feature sample.
 
@@ -476,6 +518,7 @@ def load_position(
         "--samples-per-diameter",
         str(samples_per_diameter),
     ]
+    command += ["--feature-schema", str(feature_schema)]
     if full_domain:
         if actions is not None:
             raise ValueError("full_domain conflicts with an explicit subset")
@@ -487,4 +530,4 @@ def load_position(
     result = subprocess.run(command, capture_output=True, check=False)
     if result.returncode:
         raise ValueError(result.stderr.decode(errors="replace").strip())
-    return decode_sample(result.stdout)
+    return decode_sample(result.stdout, feature_schema=feature_schema)

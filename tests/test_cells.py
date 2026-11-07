@@ -4,6 +4,7 @@ import unittest
 import torch
 
 from continugo_train.data import TrainingSample, collate
+from continugo_train.features import COARSE_PLANES
 from continugo_train.losses import hierarchical_policy_value_loss, joint_loss
 from continugo_train.model import (
     NetworkConfig,
@@ -60,7 +61,7 @@ class CellPolicyTests(unittest.TestCase):
         actions = cell_actions([0, 39], 38)
         exact = torch.zeros(1, actions.numel(), 10)
         legal = torch.ones(1, actions.numel(), dtype=torch.bool)
-        logits, _ = model(torch.zeros(1, 12, 38, 38), exact, actions, legal)
+        logits, _ = model(torch.zeros(1, len(COARSE_PLANES), 38, 38), exact, actions, legal)
         owners = cell_ids(actions, 38)
         for cell in [0, 39]:
             torch.testing.assert_close(
@@ -78,7 +79,7 @@ class CellPolicyTests(unittest.TestCase):
         self.assertAlmostEqual(loss.policy.item(), expected, places=5)
 
     def test_omitting_zero_target_cells_does_not_change_loss_or_gradients(self):
-        coarse = torch.randn(1, 12, 38, 38)
+        coarse = torch.randn(1, len(COARSE_PLANES), 38, 38)
         all_actions = cell_actions([39, 40], 38)
         all_exact = torch.randn(1, all_actions.numel(), 10)
         count = cell_actions([39], 38).numel()
@@ -105,7 +106,7 @@ class CellPolicyTests(unittest.TestCase):
 
     def test_ragged_padding_and_pass_only_training_match_unbatched(self):
         actions = cell_actions([39], 38)
-        coarse = torch.randn(12, 38, 38)
+        coarse = torch.randn(len(COARSE_PLANES), 38, 38)
         first = TrainingSample(
             coarse,
             torch.randn(actions.numel(), 10),

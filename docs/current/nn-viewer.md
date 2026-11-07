@@ -66,8 +66,12 @@ because production ONNX exports omit ownership. Standalone native binaries find
 Each page is a **pre-move position**, relative to the player about to move:
 
 - Authoritatively replayed physical board, with a cross at the move played.
-- All 12 coarse input planes, named and scaled. Uncapped liberty area is shown in
-  raw stone-disc units, not clipped to one.
+- Every coarse input plane, named and scaled: twelve in either schema, with
+  different meanings. Draft schema 5 shows antialiased occupancy, connected group
+  size, both liberty-center and liberty-footprint unions, and borders. It has no
+  scalar liberty-area or capturable-in-one planes. Legacy schema 4 keeps its actual
+  point-sampled inputs and flags; its uncapped scalar liberty area is shown in raw
+  stone-disc units, not clipped to one.
 - Coarse cell logits and global softmax probabilities, plus separate pass mass.
 - Diagnostic selected-cell coverage, exact legal raw logits, conditional
   `P(move | cell)`, and redistributed final placement probabilities.

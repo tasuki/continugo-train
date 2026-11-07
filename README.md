@@ -3,7 +3,10 @@
 Rust self-play experiments using shared ContinuGo rules, plus a configurable PyTorch policy/value network.
 
 The [neural policy](docs/current/network.md) selects non-overlapping coarse cells
-before exact coordinate analysis, with whole-board exploration and pass. The
+before exact coordinate analysis, with whole-board exploration and pass.
+New training uses [twelve coarse input planes](docs/current/features.md)
+(draft schema 5): antialiased stones, connected group size, liberty centers,
+liberty footprints and borders—without scalar liberty area or capturability flags. Existing schema-4 models retain their original inputs. The
 network also learns [final score and ownership](docs/current/auxiliary.md).
 Fresh score/ownership training is required; old policy/value-only checkpoints,
 exports and loop controls are not migrated. Validated source SGFs remain usable.

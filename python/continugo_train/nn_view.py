@@ -19,7 +19,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .features import COARSE_PLANES, MOVE_FEATURES, PASS, FeatureClient, inspect_game
+from .features import (
+    MOVE_FEATURES,
+    PASS,
+    SCHEMA_VERSION,
+    FeatureClient,
+    coarse_planes,
+    inspect_game,
+)
 from .model import NetworkConfig, PolicyValueNet, cell_ids, local_log_probs
 from .train import feature_spec
 
@@ -100,11 +107,31 @@ def load_checkpoint(path):
     identity = hashlib.sha256(path.read_bytes()).hexdigest()
     saved = torch.load(path, map_location="cpu", weights_only=True)
     spec = saved["feature_spec"]
-    if spec != feature_spec(spec["samples_per_diameter"]):
+    if spec != feature_spec(spec["samples_per_diameter"], schema=spec["schema"]):
         raise ValueError(f"{path}: incompatible feature schema")
-    model = PolicyValueNet(NetworkConfig(**saved["config"])).eval()
+    config = NetworkConfig(**saved["config"])
+    if config.input_planes != len(spec["coarse"]) or config.move_features != len(spec["moves"]):
+        raise ValueError(f"{path}: architecture does not match feature schema")
+    model = PolicyValueNet(config).eval()
     model.load_state_dict(saved["model"])
+    model.feature_schema = spec["schema"]
     return model, spec["samples_per_diameter"], identity
+
+
+def coarse_plane_image(name, values, index, schema):
+    legacy_area = schema == 4 and index in (4, 5)
+    limits = (0, max(1.0, float(values.max()))) if legacy_area else (0, 1)
+    if schema == 4:
+        note = "Point-sampled" if index < 2 else ("Raw area; not clipped" if legacy_area else "")
+    else:
+        notes = (
+            "Area-antialiased",
+            "Connected groups; log size",
+            "Liberty-center union coverage",
+            "Liberty-footprint union coverage",
+        )
+        note = notes[index // 2] if index < 8 else ""
+    return heatmap(name, values, limits=limits, note=note)
 
 
 def action_name(action):
@@ -114,8 +141,15 @@ def action_name(action):
 @torch.inference_mode()
 def frame(client, sgf, ply, loaded, info):
     model, density, identity = loaded
+    schema = getattr(model, "feature_schema", SCHEMA_VERSION)
     sample = client.load(
-        sgf, ply, density=density, cells=[], view=True, file_sha256=info["file_sha256"]
+        sgf,
+        ply,
+        density=density,
+        cells=[],
+        view=True,
+        file_sha256=info["file_sha256"],
+        feature_schema=schema,
     )
     view = client.last_view
     coarse = sample.coarse[None]
@@ -135,7 +169,12 @@ def frame(client, sgf, ply, loaded, info):
         bearing = torch.cat((bearing, torch.tensor([view["action"]])))
     selected.update(cell_ids(bearing, resolution).tolist())
     sample = client.load(
-        sgf, ply, density=density, cells=sorted(selected), file_sha256=info["file_sha256"]
+        sgf,
+        ply,
+        density=density,
+        cells=sorted(selected),
+        file_sha256=info["file_sha256"],
+        feature_schema=schema,
     )
     actions, exact, legal = sample.actions, sample.exact, sample.legal
     cells = cell_ids(actions, resolution)
@@ -254,6 +293,7 @@ def frame(client, sgf, ply, loaded, info):
         "board_size": sample.board_size,
         "diameter": sample.diameter,
         "resolution": resolution,
+        "feature_schema": schema,
         "view": view,
         "move": action_name(view["action"]),
         "counterfactual": counterfactual,
@@ -278,13 +318,10 @@ def frame(client, sgf, ply, loaded, info):
         "policy": policy_maps,
         "heads": output_maps,
         "coarse": [
-            heatmap(
-                name,
-                values,
-                limits=(0, max(1.0, float(values.max()))) if i in (4, 5) else (0, 1),
-                note="Raw area; not clipped" if i in (4, 5) else "",
+            coarse_plane_image(name, values, i, schema)
+            for i, (name, values) in enumerate(
+                zip(coarse_planes(schema), sample.coarse, strict=True)
             )
-            for i, (name, values) in enumerate(zip(COARSE_PLANES, sample.coarse, strict=True))
         ],
         "exact": [
             heatmap(
@@ -326,7 +363,7 @@ dialog{max-width:94vw;max-height:94vh;background:#172134;color:#fff;border:1px s
 <main><aside class="panel"><canvas id="board" width="600" height="600"></canvas><h2 id="turn"></h2><div id="stats"></div><p class="muted">Pre-move position. Orange cross = move played. All network quantities are side-to-move relative, not always Black.</p><p class="muted">Diagnostic checkpoint replay, not a live tree trace. Complete top-ranked cells + recorded visit/move cells; live search also uses seeded exploration and independent proposals.</p><p class="muted">Blue = negative, orange = positive for signed maps. Other maps: dark → bright. Transparent checkerboard = not evaluated. Probability/visit pixels sum; exact features/logits average. Click an image to enlarge.</p><small id="provenance"></small></aside>
 <section><h2>Hierarchical policy · coarse → exact → search</h2><div id="policy" class="gallery"></div></section>
 <section><h2>Critics & ownership · shared trunk input, separate heads</h2><div id="heads" class="gallery"></div></section>
-<div id="inputs"><section><h2>Every coarse input plane</h2><div id="coarse" class="gallery"></div></section><section><h2>Every exact move input feature</h2><div id="exact" class="gallery"></div></section></div>
+<div id="inputs"><section><h2 id="coarsetitle">Every coarse input plane</h2><div id="coarse" class="gallery"></div></section><section><h2>Every exact move input feature</h2><div id="exact" class="gallery"></div></section></div>
 <details class="panel"><summary>All projected policy-context input channels</summary><p>These shared spatial channels feed the coarse cell head and are bilinearly sampled at each exact coordinate before adding the exact-feature projection. RMS above is only a summary; these are the individual channel values.</p><div id="context" class="gallery"></div></details>
 <details class="panel"><summary>Top diagnostic policy actions · exact feature values & methodology</summary><p>Local softmax uses all legal coordinates in each complete selected cell. Final policy redistributes placement mass over nonempty selected cells, preserving global coarse pass probability (or pass=1 if none). Input planes use fixed [0,1] scales except uncapped liberty areas; every map shows its range. Value is expected win/draw/loss outcome; “points” counts draws as half, not strict win probability. Score is signed final area / board area; stone units divide by stone-disc area. Ownership is auxiliary, not used in search. This report does not recompute ratings or change SGF training labels.</p><div style="overflow:auto"><table id="candidates"></table></div></details></main>
 <dialog id="zoom"><button id="close">Close (Esc)</button><h2 id="zoomtitle"></h2><img id="zoomimage" alt="Enlarged heatmap"></dialog>
@@ -341,8 +378,8 @@ let index=0;
 function gallery(id,images){$(id).replaceChildren(...images.map(image=>{const f=document.createElement('figure'),img=document.createElement('img'),c=document.createElement('figcaption'),s=document.createElement('small');img.src=image.src;img.alt=image.name;c.textContent=image.name;s.textContent=`${fmt(image.low)} … ${fmt(image.high)} ${image.note}`;img.title=s.textContent;img.onclick=()=>{$('zoomtitle').textContent=image.name+' · '+s.textContent;$('zoomimage').src=image.src;$('zoom').showModal()};f.append(img,c,s);return f}))}
 function board(f){const c=$('board').getContext('2d'),scale=560/1000,xy=v=>20+v*scale;c.clearRect(0,0,600,600);c.strokeStyle='#6a5035';c.lineWidth=1;for(let i=0;i<=10;i++){c.beginPath();c.moveTo(xy(i*100),20);c.lineTo(xy(i*100),580);c.moveTo(20,xy(i*100));c.lineTo(580,xy(i*100));c.stroke()}for(const [x,y,color] of f.view.stones){c.beginPath();c.arc(xy(x),xy(y),f.diameter/2*scale,0,Math.PI*2);c.fillStyle=color?'#f3f4f7':'#10141b';c.fill();c.strokeStyle='#566';c.stroke()}if(f.view.action!==1000000){let x=xy(f.view.action%1000),y=xy(Math.floor(f.view.action/1000));c.strokeStyle='#ff701f';c.lineWidth=4;c.beginPath();c.moveTo(x-9,y);c.lineTo(x+9,y);c.moveTo(x,y-9);c.lineTo(x,y+9);c.stroke()}}
 function show(i){if(!frames.length)return;index=Math.max(0,Math.min(frames.length-1,i));const f=frames[index];$('slider').value=index;$('prev').disabled=!index;$('next').disabled=index===frames.length-1;$('position').textContent=`Move ${f.ply+1} / ${data.moves||frames.length} · view ${index+1}/${frames.length}`;$('turn').textContent=`${f.player?'White':'Black'} to play ${f.move}${f.counterfactual?' · counterfactual NN':''}`;
-$('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points ${fmt(f.points_pct,1)}%`,`Score ${fmt(f.score)} · ${fmt(f.score_stones,1)} stones`,`Head utility ${fmt(f.utility)} (score weight ${f.score_weight})`,`Policy training ${f.train_policy?'enabled':'absent/masked'}`,`Final outcome ${fmt(f.outcome,0)} · score ${fmt(f.score_target)}`,`P(pass) coarse ${fmt(f.coarse_pass,5)} / final ${fmt(f.pass,5)}`,`Search visits ${f.visits} · pass ${f.pass_visits}`,`${f.resolution}² raster · size ${f.board_size}`,`${f.cells} cells · ${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
-$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,f[name]);
+$('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points ${fmt(f.points_pct,1)}%`,`Score ${fmt(f.score)} · ${fmt(f.score_stones,1)} stones`,`Head utility ${fmt(f.utility)} (score weight ${f.score_weight})`,`Policy training ${f.train_policy?'enabled':'absent/masked'}`,`Final outcome ${fmt(f.outcome,0)} · score ${fmt(f.score_target)}`,`P(pass) coarse ${fmt(f.coarse_pass,5)} / final ${fmt(f.pass,5)}`,`Search visits ${f.visits} · pass ${f.pass_visits}`,`${f.resolution}² raster · size ${f.board_size} · inputs v${f.feature_schema||4}`,`${f.cells} cells · ${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
+$('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,f[name]);
 const table=$('candidates');table.replaceChildren();let tr=document.createElement('tr');for(const name of ['Action','P(move)','Raw logit','P(move|cell)',...data.features]){const th=document.createElement('th');th.textContent=name;tr.append(th)}table.append(tr);for(const row of f.candidates){tr=document.createElement('tr');for(const value of [row.action,fmt(row.p,6),fmt(row.logit),fmt(row.local,6),...(row.features||data.features.map(()=>null)).map(v=>fmt(v))]){const td=document.createElement('td');td.textContent=value;tr.append(td)}table.append(tr)}}
 const skipped=data.skipped||[];if(skipped.length){$('skipped').hidden=false;$('skippedtitle').textContent=`${skipped.length} moves skipped (random or unsupported network)`;for(const s of skipped){const li=document.createElement('li');li.textContent=`Move ${s.ply+1} · ${s.player?'White':'Black'}: ${s.reason}`;$('skiplist').append(li)}}
 if(!frames.length){document.querySelector('main').hidden=true;$('notice').hidden=false;$('notice').textContent='No moves can be visualized with the available supported checkpoints. See the skipped-move reasons below; the original game is embedded in SGF ↓.';$('position').textContent=`0 visualizable / ${data.moves||0} moves`;for(const id of ['slider','prev','next'])$(id).disabled=true}

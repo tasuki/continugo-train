@@ -10,7 +10,7 @@ mod proposals;
 pub use batch::InferenceOutput;
 use cache::ContextCache;
 
-use crate::features::{COARSE_PLANES, MOVE_FEATURES, SCHEMA_VERSION};
+use crate::features::{MOVE_FEATURES, coarse_planes};
 use continugo_rules::Game;
 use ort::{
     execution_providers::{
@@ -183,6 +183,10 @@ pub struct OnnxEvaluator {
 }
 
 impl OnnxEvaluator {
+    pub fn feature_schema(&self) -> u32 {
+        self.metadata.feature_spec.schema
+    }
+
     pub fn samples_per_diameter(&self) -> usize {
         self.metadata.feature_spec.samples_per_diameter
     }
@@ -284,9 +288,9 @@ impl OnnxEvaluator {
             format!("incompatible selective-policy metadata; retrain/re-export: {e}")
         })?;
         let spec = &metadata.feature_spec;
-        if spec.schema != SCHEMA_VERSION
-            || spec.policy != "cells-v1"
-            || spec.coarse != COARSE_PLANES
+        let planes = coarse_planes(spec.schema)?;
+        if spec.policy != "cells-v1"
+            || spec.coarse != planes
             || spec.moves != MOVE_FEATURES
             || spec.samples_per_diameter == 0
             || spec.targets != crate::targets::TARGET_VERSION

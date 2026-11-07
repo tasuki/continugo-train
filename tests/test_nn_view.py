@@ -5,7 +5,7 @@ import struct
 import tempfile
 import unittest
 import zlib
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -88,7 +88,9 @@ class NnViewerTests(unittest.TestCase):
                     )
         self.assertEqual(data["frames"][1]["view"]["stones"], [[200, 200, 0]])
         self.assertEqual(data["frames"][0]["view"]["action"], 200200)
-        self.assertGreater(data["frames"][1]["coarse"][5]["high"], 1)  # No liberty-area clipping.
+        self.assertEqual(data["frames"][1]["coarse"][5]["high"], 1)
+        self.assertEqual(data["frames"][1]["coarse"][5]["name"], "enemy_liberty_centers")
+        self.assertEqual(data["frames"][1]["coarse"][7]["name"], "enemy_liberty_footprints")
         with self.assertRaises(FileExistsError):
             generate(self.sgf, self.checkpoint, output)
         self.assertEqual(output.read_text(), text)
@@ -107,6 +109,26 @@ class NnViewerTests(unittest.TestCase):
             self.assertIsNotNone(client.last_view)
             client.load(self.sgf, 0)
             self.assertIsNone(client.last_view)
+
+    def test_optional_group_geometry_has_rules_membership_connections_and_liberties(self):
+        self.sgf.write_text("(;FF[9071]GM[9071]SZ[13];B[dSdS];W[];B[fqdS];W[];B[])")
+        with FeatureClient(profile=True) as client:
+            plain = client.load(self.sgf, 3, cells=[], view=True)
+            self.assertNotIn("groups", client.last_view)
+            detailed = client.load(self.sgf, 3, cells=[], view_geometry=True)
+            torch.testing.assert_close(plain.coarse, detailed.coarse, rtol=0, atol=0)
+            (group,) = client.last_view["groups"]
+            self.assertEqual(group["player"], 0)
+            self.assertEqual(set(group["members"]), {0, 1})
+            self.assertEqual(group["connections"], [[0, 1]])
+            self.assertTrue(group["liberty_spans"])
+            self.assertTrue(all(left <= right for _, left, right in group["liberty_spans"]))
+            legacy = client.load(self.sgf, 3, cells=[], feature_schema=4)
+            self.assertAlmostEqual(group["liberty_area_stones"], float(legacy.coarse[5].max()))
+            self.assertAlmostEqual(group["size_feature"], float(legacy.coarse[3].max()))
+            self.assertIn("server_coarse_seconds", client.last_profile)
+            client.load(self.sgf, 3, cells=[], view=True)
+            self.assertNotIn("groups", client.last_view)  # no unread geometry trailer
 
     def test_frame_critics_match_eager_and_policy_mass_is_preserved(self):
         info = inspect_game(self.sgf)
@@ -217,6 +239,29 @@ class NnViewerTests(unittest.TestCase):
         self.assertIn("No moves can be visualized", text)
         with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
             generate_rated(self.sgf, self.root / "bad-rated.html", info, {identity: unsupported})
+
+    def test_legacy_viewers_keep_all_original_inputs(self):
+        old_model = PolicyValueNet(replace(self.model.config, input_planes=12)).eval()
+        for schema in (4,):
+            saved = {
+                "config": asdict(old_model.config),
+                "model": old_model.state_dict(),
+                "feature_spec": feature_spec(4, schema=schema),
+            }
+            old = self.root / f"legacy-schema{schema}.pt"
+            torch.save(saved, old)
+            loaded = load_checkpoint(old)
+            self.assertEqual(loaded[0].feature_schema, schema)
+            with FeatureClient() as client, torch.inference_mode():
+                f = frame(client, self.sgf, 1, loaded, inspect_game(self.sgf))
+                sample = client.load(self.sgf, 1, cells=[], feature_schema=schema)
+                expected = old_model.encode_search(sample.coarse[None])[2].item()
+            self.assertEqual(f["feature_schema"], schema)
+            self.assertEqual(len(f["coarse"]), 12)
+            self.assertGreater(f["coarse"][5]["high"], 1)  # Legacy scalar is not clipped.
+            self.assertEqual(f["coarse"][6]["name"], "friendly_capturable_in_one")
+            self.assertEqual(f["coarse"][1]["note"], "Point-sampled")
+            self.assertAlmostEqual(f["value"], expected)
 
     def test_png_rgba_transparency_binning_and_safe_json(self):
         image = heatmap("test", np.array([[0.0, np.nan], [1.0, 0.5]]), limits=(0, 1))
