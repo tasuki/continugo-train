@@ -13,7 +13,7 @@ import torch
 from . import gate, ratings
 from .features import inspect_game
 from .loop import LoopConfig, LoopRunner, atomic_bytes, loop_lock
-from .round_robin import latest_bundles, snapshot_models
+from .round_robin import available_models, snapshot_models
 from .train import atomic_checkpoint
 
 VERSION = "adaptive-ratings-v1"
@@ -208,8 +208,8 @@ def initialize(root, source, args):
     settings = ratings.protocol(config)
     if settings != source["rating_protocol"]:
         raise ValueError("source loop evaluation binaries/settings changed")
-    with ratings.transaction(store) as (tables, _):
-        rows = [r for r in tables.network_rows() if r["network_id"] != ratings.REFERENCE_ID]
+    available = available_models(store)
+    rows = [row for row, _ in available]
     count = args.pool_latest if args.pool_latest is not None else len(rows)
     targets = (
         list(dict.fromkeys(args.targets))
@@ -223,7 +223,7 @@ def initialize(root, source, args):
         raise ValueError(
             "explicit targets must be registered neural checkpoints in the opponent pool"
         )
-    bundles = latest_bundles(store, count)
+    bundles = [bundle for _, bundle in available[:count]]
     models, checkpoints = snapshot_models(root, source, bundles)
     return {
         "version": VERSION,

@@ -505,29 +505,19 @@ class LoopRunner:
                     for record in iteration[key]["games"]:
                         if record:
                             self.check(record)
-            for key in ["training_archive", "experimental_archive"]:
-                if iteration[key]:
-                    archive.verify_bundle(iteration[key])
         initial_reference = self.state.get("initial_reference")
         if initial_reference and initial_reference.get("reference"):
             for record in initial_reference["reference"]["games"]:
                 if record:
                     self.check(record)
-        for key in [
-            "initial_training_archive",
-            "initial_actor_training_archive",
-            "initial_experimental_archive",
-        ]:
-            if self.state[key]:
-                archive.verify_bundle(self.state[key])
         for role in ["training", "actor"]:
             if self.state[role]:
                 self.check(self.state[role]["checkpoint"])
-                archive.verify_bundle(self.state[role]["archive"])
                 if role == "actor":
                     self.check_model(self.state[role]["model"])
 
     def recovery(self, checkpoint, kind, *, model=None, iteration=None):
+        """Explicit retention only; ordinary training never publishes recovery copies."""
         candidates = [str(self.check(record)) for record in self.state["bootstrap"]]
         # Recovery packs can be used even after their original corpus paths vanish.
         source = Path(checkpoint.get("source", self.check(checkpoint)))
@@ -964,9 +954,9 @@ class LoopRunner:
         if iteration.get("adaptive_rating") is not None:
             return iteration["adaptive_rating"]
         from . import adaptive_ratings
+        from .round_robin import available_models
 
-        with ratings.transaction(self.config.model_store) as (tables, _):
-            count = sum(n != ratings.REFERENCE_ID for n in tables.networks)
+        count = len(available_models(self.config.model_store))
         if count <= self.config.adaptive_min_opponents:
             report = {
                 "stop_reason": "insufficient-opponents; confidence target NOT met",
@@ -1023,12 +1013,37 @@ class LoopRunner:
         self.log(f"ADAPTIVE RATINGS iteration={iteration['number']}: {report}")
         return report
 
-    def actor_pointer(self):
-        archive.latest_pointer(
-            Path(self.config.model_store),
-            "experimental",
-            Path(self.state["actor"]["archive"]["directory"]),
-        )
+    def register_inference_sources(self):
+        """Locate already-evaluated run-owned models without making model copies."""
+        with ratings.transaction(self.config.model_store) as (tables, _):
+            registered = set(tables.networks)
+        if (
+            self.config.reference_games
+            and self.state["initial_model"]
+            and self.state["initial_actor_checkpoint"]["sha256"] in registered
+        ):
+            ratings.register_checkpoint(
+                self.config.model_store,
+                self.check(self.state["initial_actor_checkpoint"]),
+                model=self.check_model(self.state["initial_model"]),
+            )
+        for item in self.state["iterations"]:
+            if (
+                item.get("model")
+                and item["checkpoint"]["sha256"] in registered
+                and any(item.get(key) for key in ["gate", "reference", "adaptive_rating"])
+            ):
+                ratings.register_checkpoint(
+                    self.config.model_store,
+                    self.check(item["checkpoint"]),
+                    model=self.check_model(item["model"]),
+                )
+                if item.get("gate") and item["parent_actor_checkpoint"]["sha256"] in registered:
+                    ratings.register_checkpoint(
+                        self.config.model_store,
+                        self.check(item["parent_actor_checkpoint"]),
+                        model=self.check_model(item["parent_model"]),
+                    )
 
     def run(self, stop_after_iteration=None):
         self.verify_committed()
@@ -1039,38 +1054,20 @@ class LoopRunner:
                 self.state["initial_actor_checkpoint"], "initial-model"
             )
             self.save()
-        if self.state["initial_actor_training_archive"] is None:
-            self.state["initial_actor_training_archive"] = self.recovery(
-                self.state["initial_actor_checkpoint"], "training"
-            )
-            self.save()
-        if self.state["initial_training_archive"] is None:
-            self.state["initial_training_archive"] = self.recovery(
-                self.state["initial_checkpoint"], "training"
-            )
-            self.save()
-        if self.state["initial_experimental_archive"] is None:
-            self.state["initial_experimental_archive"] = self.recovery(
-                self.state["initial_actor_checkpoint"],
-                "experimental",
-                model=self.state["initial_model"],
-            )
-            self.save()
+        archive.initialize_store(self.config.model_store)
         if self.state["training"] is None:
             self.state["training"] = {
                 "checkpoint": self.state["initial_checkpoint"],
-                "archive": self.state["initial_training_archive"],
             }
         if self.state["actor"] is None:
             self.state["actor"] = {
                 "checkpoint": self.state["initial_actor_checkpoint"],
                 "model": self.state["initial_model"],
-                "archive": self.state["initial_experimental_archive"],
             }
         self.state["accepted"] = promote.accepted_head(self.config.model_store)
         self.save()
-        self.actor_pointer()
         ratings.refresh(self.config.model_store)
+        self.register_inference_sources()
         if self.state.get("initial_reference") is None:
             self.state["initial_reference"] = {
                 "number": 1,
@@ -1082,7 +1079,9 @@ class LoopRunner:
         initial = self.state["initial_reference"]
         if self.config.reference_games:
             ratings.register_checkpoint(
-                self.config.model_store, self.check(self.state["initial_actor_checkpoint"])
+                self.config.model_store,
+                self.check(self.state["initial_actor_checkpoint"]),
+                model=self.check_model(self.state["initial_model"]),
             )
         gate.evaluate(self, initial, reference=True)
         self.rate_evaluation(initial, "reference", [self.state["initial_actor_checkpoint"]])
@@ -1107,8 +1106,6 @@ class LoopRunner:
                         "gate": None,
                         "reference": None,
                         "decision": None,
-                        "training_archive": None,
-                        "experimental_archive": None,
                         "actor_updated": None,
                         "completed": False,
                     }
@@ -1123,15 +1120,7 @@ class LoopRunner:
             options = self.replay(iteration, parent)
             self.training(iteration, parent, options)
             plot_metrics.update(self.root)
-            if iteration["training_archive"] is None:
-                iteration["training_archive"] = self.recovery(
-                    iteration["checkpoint"], "training", iteration=iteration
-                )
-                self.save()
-            self.state["training"] = {
-                "checkpoint": iteration["checkpoint"],
-                "archive": iteration["training_archive"],
-            }
+            self.state["training"] = {"checkpoint": iteration["checkpoint"]}
             self.save()
             if iteration["model"] is None:
                 iteration["model"] = self.export(
@@ -1145,11 +1134,15 @@ class LoopRunner:
                     or self.config.adaptive_max_games
                 ):
                     ratings.register_checkpoint(
-                        self.config.model_store, self.check(iteration["checkpoint"])
+                        self.config.model_store,
+                        self.check(iteration["checkpoint"]),
+                        model=self.check_model(iteration["model"]),
                     )
                 if self.config.gate_games:
                     ratings.register_checkpoint(
-                        self.config.model_store, self.check(iteration["parent_actor_checkpoint"])
+                        self.config.model_store,
+                        self.check(iteration["parent_actor_checkpoint"]),
+                        model=self.check_model(iteration["parent_model"]),
                     )
                 report = gate.evaluate(self, iteration)
                 self.rate_evaluation(
@@ -1162,18 +1155,9 @@ class LoopRunner:
                 decision = report["decision"]
             else:
                 decision = "not-evaluated"
-            if iteration["experimental_archive"] is None:
-                iteration["experimental_archive"] = self.recovery(
-                    iteration["checkpoint"],
-                    "experimental",
-                    model=iteration["model"],
-                    iteration=iteration,
-                )
-                self.save()
             if self.config.adaptive_max_games and number % self.config.evaluation_interval == 0:
-                # The immutable inference bundle must exist before the adaptive
-                # evaluator snapshots its candidate/opponent pool. Ledger SGFs,
-                # not training replay, retain its subsequent rated evidence.
+                # Evaluated candidates point to hash-pinned run-owned exports.
+                # The rating ledger retains evidence independently of training.
                 self.adaptive_evaluation(iteration)
             update_actor = self.config.actor_policy == "latest" or decision in {
                 "passed",
@@ -1183,7 +1167,6 @@ class LoopRunner:
                 self.state["actor"] = {
                     "checkpoint": iteration["checkpoint"],
                     "model": iteration["model"],
-                    "archive": iteration["experimental_archive"],
                 }
             iteration["actor_updated"] = update_actor
             iteration["decision"] = decision
@@ -1191,7 +1174,6 @@ class LoopRunner:
             # Reading an approved publication never switches training or actors.
             self.state["accepted"] = promote.accepted_head(self.config.model_store)
             self.save()
-            self.actor_pointer()
             self.log(
                 f"iteration {number} complete: match={decision}; experimental actor {'advanced' if update_actor else 'held'}; "
                 f"training progress retained at {iteration['checkpoint']['path']}; no automatic promotion"
@@ -1217,6 +1199,11 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--checkpoint", type=Path, help="initial offline-training checkpoint (new loop only)"
+    )
+    parser.add_argument(
+        "--migrate-storage",
+        action="store_true",
+        help="with --resume: detach legacy recovery copies and index run-owned models, then exit without training",
     )
     parser.add_argument(
         "--actor-checkpoint",
@@ -1249,7 +1236,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--stop-after-iteration",
         type=int,
-        help="exit cleanly after this iteration (including evaluation/archive); does not lower the saved total target",
+        help="exit cleanly after this iteration (including evaluation); does not lower the saved total target",
     )
     for field in fields(LoopConfig):
         name = "--" + field.name.replace("_", "-")
@@ -1268,6 +1255,8 @@ def parse_args(argv=None):
 
 
 def run_loop(args):
+    if args.migrate_storage and not args.resume:
+        raise ValueError("--migrate-storage requires --resume")
     if args.output is None:
         if args.resume:
             raise ValueError("--resume requires --output naming the existing loop")
@@ -1445,9 +1434,7 @@ def run_loop(args):
                     saved, bootstrap, data_history(saved, checkpoint_splits(saved))
                 )["data_positions"],
                 "initial_actor_checkpoint": actor_record,
-                "initial_training_archive": None,
-                "initial_actor_training_archive": None,
-                "initial_experimental_archive": None,
+                "storage_version": 2,
                 "training": None,
                 "actor": None,
                 "accepted": None,
@@ -1478,10 +1465,10 @@ def run_loop(args):
         if (
             store.is_relative_to(root)
             or root.is_relative_to(store)
-            or store.is_relative_to(ROOT / "runs")
+            or any(store.is_relative_to(ROOT / name) for name in ["runs", "scratch"])
         ):
             raise ValueError(
-                "model-store must be separate from the loop output and outside disposable runs/"
+                "model-store must be separate from the loop output and outside disposable runs/ and scratch/"
             )
         target = state["target_iterations"]
         if (
@@ -1539,7 +1526,32 @@ def run_loop(args):
             if backup.exists():
                 raise ValueError(f"refusing to overwrite previous configuration backup: {backup}")
             atomic_bytes(backup, adaptive_backup)
+        if state.get("storage_version", 1) < 2:
+            runner.verify_committed()
+            # Storage-only migration: retain the old control file for provenance,
+            # but do not require redundant global backups to resume a campaign.
+            backup = root / "before-run-owned-storage.pt"
+            if not backup.exists():
+                atomic_bytes(backup, (root / "loop.pt").read_bytes())
+            for key in [
+                "initial_training_archive",
+                "initial_actor_training_archive",
+                "initial_experimental_archive",
+            ]:
+                state.pop(key, None)
+            for iteration in state["iterations"]:
+                iteration.pop("training_archive", None)
+                iteration.pop("experimental_archive", None)
+            for role in ["training", "actor"]:
+                if state[role]:
+                    state[role].pop("archive", None)
+            state["storage_version"] = 2
         runner.save()
+        if args.migrate_storage:
+            runner.verify_committed()
+            archive.initialize_store(config.model_store)
+            runner.register_inference_sources()
+            return state
         return runner.run(args.stop_after_iteration)
 
 

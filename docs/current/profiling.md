@@ -13,14 +13,14 @@ checkpoints only (as with training/export).
 ```sh
 # Completed dense source games; no invented training targets.
 mise run selfplay -- --engine random --games 3 --sizes 9,13,19 \
-  --size-weights uniform --seed 0 --output runs/profile-positions
+  --size-weights uniform --seed 0 --output scratch/profile-positions
 
-mise run pipeline-profile -- --positions runs/profile-positions \
-  --model runs/model-001 --checkpoint runs/train-001/best.pt --device cpu
+mise run pipeline-profile -- --positions scratch/profile-positions \
+  --model scratch/model-001 --checkpoint runs/train-001/best.pt --device cpu
 # Repeat sequentially with --device cuda, not alongside another benchmark.
 ```
 
-Omitting `--output` reserves a dated `runs/*-pipeline-profile` directory. Explicit
+Omitting `--output` reserves a dated `scratch/*-pipeline-profile` directory. Explicit
 output must not exist. The command builds release binaries before measurement;
 compilation and Python runtime-location work are excluded from native timings.
 Density is currently fixed at four samples per diameter.
@@ -161,7 +161,7 @@ its order is not reconstructed from the original self-play trajectory.
 ```sh
 # Reuse dense random games, or generate sources with the selfplay command above.
 export CONTINUGO_BENCH_SGFS="runs/20261104-representative-positions/game-000001-size9-seed0.sgf:runs/20261104-representative-positions/game-000002-size13-seed1.sgf:runs/20261104-representative-positions/game-000003-size19-seed2.sgf"
-CONTINUGO_BENCH_OUTPUT="runs/$(date -u +%Y%m%d-%H%M%S)-benson/results.json" \
+CONTINUGO_BENCH_OUTPUT="scratch/$(date -u +%Y%m%d-%H%M%S)-benson/results.json" \
   CONTINUGO_BENCH_FULL_SCAN=1 mise run analysis-bench
 ```
 

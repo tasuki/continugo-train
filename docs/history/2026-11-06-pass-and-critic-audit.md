@@ -3,7 +3,7 @@
 User observed increasingly early passes, explicitly including developed midgames,
 not merely opening passes. Read-only audit of the active cg4 campaign; no search,
 training, frozen Python, checkpoint, optimizer or campaign settings were changed.
-Artifacts: `runs/20261106-182938-pass-audit/`.
+Artifacts: `scratch/20261106-182938-pass-audit/`.
 
 ## Data and pass evidence
 

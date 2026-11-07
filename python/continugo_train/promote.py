@@ -34,8 +34,8 @@ def identity(payload):
 @contextmanager
 def publication_lock(store):
     store = Path(store).resolve()
-    if store.is_relative_to(ROOT / "runs"):
-        raise ValueError("approval store must be outside disposable runs/")
+    if any(store.is_relative_to(ROOT / name) for name in ["runs", "scratch"]):
+        raise ValueError("approval store must be outside disposable runs/ and scratch/")
     marker = store / "STORE.pt"
     if not marker.is_file() or torch.load(marker, weights_only=True) != {
         "format": "continugo-recovery-store",
@@ -85,8 +85,8 @@ def validate_authorization(store, reference, checksum, model):
     source = archive.verify_bundle(payload["source"])
     directory = Path(payload["source"]["directory"]).resolve()
     if (
-        source["kind"] != "experimental"
-        or directory.parent != store / "experimental"
+        source["kind"] not in {"experimental", "retained"}
+        or directory.parent != store / source["kind"]
         or Path(model).resolve() != directory
     ):
         raise ValueError("approval requires the pinned experimental recovery bundle")
@@ -221,14 +221,18 @@ def approve(
         if candidate.is_symlink():
             raise ValueError("candidate cannot be a symlink")
         candidate = candidate.resolve()
-        if candidate.parent != store / "experimental":
-            raise ValueError("candidate must be a store-owned experimental bundle")
+        if candidate.parent not in {store / "experimental", store / "retained"}:
+            raise ValueError("candidate must be a store-owned retained bundle")
         source_reference = {
             "directory": str(candidate),
             "sha256": archive.digest(candidate / "recovery.pt"),
         }
         source = archive.verify_bundle(source_reference)
-        if source["kind"] != "experimental" or source["checkpoint_sha256"] != checkpoint_sha256:
+        if (
+            source["kind"] not in {"experimental", "retained"}
+            or candidate.parent != store / source["kind"]
+            or source["checkpoint_sha256"] != checkpoint_sha256
+        ):
             raise ValueError("candidate does not match the explicitly approved checkpoint hash")
         request = {
             "store": str(store),

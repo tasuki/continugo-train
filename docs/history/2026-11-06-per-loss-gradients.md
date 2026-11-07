@@ -1,7 +1,7 @@
 # Per-loss gradients, cg4 round 18 — 2026-11-06
 
 User requested measurement before changing loss weights. Read-only diagnostic in
-`runs/20261106-213310-loss-gradients/`: checkpoint copy, metadata, source, pinned
+`scratch/20261106-213310-loss-gradients/`: checkpoint copy, metadata, source, pinned
 sample references, per-batch JSON, summary, descent projections and
 **`gradients.png`**. The active network, optimizer, runtime and campaign settings
 were not modified.

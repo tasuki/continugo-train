@@ -1,9 +1,9 @@
 # Why the old value-MSE curve looked better — 2026-11-06
 
 Read-only comparison requested by the user, using the trashed but recoverable
-`/home/vita/data/.Trash-1000/files/runs/20261105-214158-score-ownership-size9/`
+`runs/20261105-214158-score-ownership-size9/` (restored from trash)
 and current cg4. Nothing is restored into the current store or used for training.
-Artifacts: `runs/20261106-190000-old-critic-comparison/`.
+Artifacts: `scratch/20261106-190000-old-critic-comparison/`.
 
 ## Matched training progress
 

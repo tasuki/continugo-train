@@ -8,13 +8,13 @@ execution is not integrated. Use [training](training.md) to produce a checkpoint
 
 ```sh
 mise run setup-gpu
-mise run export -- --checkpoint runs/train-001/best.pt --output runs/model-001
-mise run neural-selfplay -- --model runs/model-001 --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --output runs/neural-001
+mise run export -- --checkpoint runs/train-001/best.pt --output scratch/model-001
+mise run neural-selfplay -- --model scratch/model-001 --games 3 --sizes 9,13,19 --seed 200 --simulations 8 --max-moves 64 --output scratch/neural-001
 ```
 
 `mise run setup` installs inference dependencies; an existing environment can use
 `.venv/bin/python -m pip install -e '.[inference]'`. Use fresh output directories.
-Omitting `--output` reserves UTC-dated `runs/YYYYMMDD-HHMMSS-export/model`,
+Omitting `--output` reserves UTC-dated `scratch/YYYYMMDD-HHMMSS-export/model`,
 `-selfplay`, or `-arena` paths with collision counters. Explicit paths are literal;
 `--output -` previews neural SGFs on stdout. Bare Rust baseline self-play defaults
 to stdout and needs no inference runtime.
@@ -37,7 +37,7 @@ runtime and supply its dependency paths:
 
 ```sh
 export ORT_DYLIB_PATH="$(.venv/bin/python -m continugo_train.export --runtime-path)"
-cargo run --locked --release -- --engine neural --device cpu --model runs/model-001 --sizes 9 --simulations 8
+cargo run --locked --release -- --engine neural --device cpu --model scratch/model-001 --sizes 9 --simulations 8
 ```
 
 ## Model bundle and verification
@@ -64,9 +64,9 @@ checkpoint—not ONNX—is the trainable/recoverable artifact.
 ## Diagnostics
 
 ```sh
-mise run infer -- --model runs/model-001 --sgf FILE --ply 1
-mise run infer -- --model runs/model-001 --sgf FILE --ply 1 --value-only
-mise run infer -- --device cpu --model runs/model-001 --sgf FILE --ply 1 --warmup 1 --iterations 3
+mise run infer -- --model scratch/model-001 --sgf FILE --ply 1
+mise run infer -- --model scratch/model-001 --sgf FILE --ply 1 --value-only
+mise run infer -- --device cpu --model scratch/model-001 --sgf FILE --ply 1 --warmup 1 --iterations 3
 ```
 
 Stdout is a numeric JSON report, not a game record. `--actions` selects printed
@@ -200,8 +200,8 @@ The training loop enables randomized 32/256 budgets by default. Standalone
 self-play retains fixed-budget behavior unless explicitly enabled:
 
 ```sh
-mise run neural-selfplay -- --model runs/model-001 --simulations 32 \
-  --policy-simulations 256 --policy-search-probability 0.25 --output runs/mixed-budget
+mise run neural-selfplay -- --model scratch/model-001 --simulations 32 \
+  --policy-simulations 256 --policy-search-probability 0.25 --output scratch/mixed-budget
 ```
 
 The expensive budget is the **total**, not 256 additional simulations. A separate
@@ -220,7 +220,7 @@ batch limit and a two-ms collection wait. Actual concurrency is capped by the
 number of games requested; request at least twelve games to use all slots:
 
 ```sh
-mise run neural-selfplay -- --model runs/model-001 --games 18 --concurrent-games 12 --inference-batch-size 12 --inference-batch-wait-ms 2 --output runs/batched-001
+mise run neural-selfplay -- --model scratch/model-001 --games 18 --concurrent-games 12 --inference-batch-size 12 --inference-batch-wait-ms 2 --output scratch/batched-001
 ```
 
 See the [concurrency measurements](../history/2026-11-04-concurrency.md) for the

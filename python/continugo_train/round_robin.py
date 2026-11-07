@@ -15,23 +15,35 @@ from .train import atomic_checkpoint
 VERSION = "rated-round-robin-v1"
 
 
+def available_models(store):
+    """Rated models still available in campaigns or deliberately retained bundles."""
+    with ratings.transaction(store) as (tables, _):
+        rows = [r for r in tables.network_rows() if r["network_id"] != ratings.REFERENCE_ID]
+    available = []
+    for row in rows:
+        checksum = row["network_id"]
+        # Prefer durable publications when available; never resurrect missing runs.
+        source = None
+        for kind in ["accepted", "retained", "experimental"]:
+            source = archive.find_bundle(Path(store) / kind, kind, checksum)
+            if source is not None:
+                break
+        if source is None:
+            source = ratings.inference_source(store, checksum)
+        if source is not None:
+            available.append((row, source))
+    return available
+
+
 def latest_bundles(store, count):
     if count < 2:
         raise ValueError("--latest must be at least 2")
-    with ratings.transaction(store) as (tables, _):
-        rows = [r for r in tables.network_rows() if r["network_id"] != ratings.REFERENCE_ID]
-    if len(rows) < count:
-        raise ValueError("not enough registered networks")
-    bundles = []
-    for row in rows[:count]:
-        checksum = row["network_id"]
-        bundle = archive.find_bundle(Path(store) / "experimental", "experimental", checksum)
-        if bundle is None:
-            bundle = archive.find_bundle(Path(store) / "accepted", "accepted", checksum)
-        if bundle is None:
-            raise ValueError(f"no inference recovery bundle for {checksum}")
-        bundles.append(bundle)
-    return bundles
+    available = available_models(store)
+    if len(available) < count:
+        raise ValueError(
+            "not enough available registered networks; restore a run or retain its models first"
+        )
+    return [source for _, source in available[:count]]
 
 
 def initialize(root, source, bundles, games, seed):
@@ -76,11 +88,23 @@ def initialize(root, source, bundles, games, seed):
 def snapshot_models(root, source, bundles):
     models, checkpoints = [], []
     for index, bundle in enumerate(bundles):
-        bundle = Path(bundle).resolve()
-        metadata = archive.verify_bundle(
-            {"directory": str(bundle), "sha256": digest(bundle / "recovery.pt")}
-        )
-        saved = torch.load(bundle / "checkpoint.pt", map_location="cpu", weights_only=True)
+        if isinstance(bundle, dict):
+            metadata = bundle
+            inputs = {
+                "checkpoint.pt": bundle["checkpoint"],
+                "encoder.onnx": bundle["encoder"],
+                "policy.onnx": bundle["policy"],
+            }
+        else:
+            bundle = Path(bundle).resolve()
+            metadata = archive.verify_bundle(
+                {"directory": str(bundle), "sha256": digest(bundle / "recovery.pt")}
+            )
+            inputs = {
+                name: {"path": str(bundle / name), "sha256": digest(bundle / name)}
+                for name in ["checkpoint.pt", "encoder.onnx", "policy.onnx"]
+            }
+        saved = torch.load(inputs["checkpoint.pt"]["path"], map_location="cpu", weights_only=True)
         if saved["feature_spec"] != source["feature_spec"]:
             raise ValueError("all models must share the source loop's feature specification")
         checksum = metadata["checkpoint_sha256"]
@@ -91,10 +115,13 @@ def snapshot_models(root, source, bundles):
         records = {}
         for name in ["encoder.onnx", "policy.onnx", "checkpoint.pt"]:
             path = directory / name
-            shutil.copyfile(bundle / name, path)
+            source_file = Path(inputs[name]["path"])
+            if source_file.is_symlink() or digest(source_file) != inputs[name]["sha256"]:
+                raise ValueError("inference artifact missing or changed before copying")
+            shutil.copyfile(source_file, path)
             records[name] = {"path": str(path.relative_to(root)), "sha256": digest(path)}
-            if records[name]["sha256"] != digest(bundle / name):
-                raise ValueError("bundle changed while copying")
+            if records[name]["sha256"] != inputs[name]["sha256"]:
+                raise ValueError("inference artifact changed while copying")
         if records["checkpoint.pt"]["sha256"] != checksum:
             raise ValueError("checkpoint identity mismatch")
         checkpoints.append(records["checkpoint.pt"])

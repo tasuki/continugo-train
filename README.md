@@ -33,9 +33,12 @@ the todo or this README.
 - [mise](https://mise.jdx.dev/)
 - The base `continugo` repository checked out alongside this one at `../continugo`.
 
-All generated artifacts stay here: timestamped experiments in **`runs/`**, durable
-accepted models in **`models/accepted/`**, training recovery packs in
-**`models/training/`**, and unaccepted actors in **`models/experimental/`**. Names start with UTC `YYYYMMDD-HHMMSS`; counters handle
+All generated artifacts stay here: training campaigns in **`runs/`**, ad hoc tests,
+audits, benchmarks and debugging in **`scratch/`**, deliberately retained models in
+**`models/retained/`**, approved publications in **`models/accepted/`**, and shared
+ratings/evidence in **`models/ratings/`**. Campaigns own their recovery files; no
+per-round model copies are made in the shared store. Names start with UTC
+`YYYYMMDD-HHMMSS`; counters handle
 collisions. New-format campaigns should share one store and rating ledger, not
 create a store per run. If the existing ledger predates score/ownership, use a
 fresh `--model-store` for the new format; historical artifacts stay untouched. Only scheduled/evaluated networks enter
@@ -55,7 +58,7 @@ mise run setup
 ```sh
 mise run test
 mise run check
-mise run selfplay -- --engine random --games 3 --output runs/random
+mise run selfplay -- --engine random --games 3 --output scratch/random
 mise run selfplay -- --help
 mise run model-bench -- --device cuda
 mise run pipeline-profile -- --help
@@ -64,6 +67,7 @@ mise run loop -- --help
 mise run loop-status -- --help
 mise run plot-ratings
 mise run plot-metrics -- --run runs/YOUR_CAMPAIGN
+mise run retain-model -- --help
 mise run promote -- --help
 mise run arena -- --help
 mise run rate-models -- --help
@@ -71,9 +75,16 @@ mise run rate-models -- --help
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
 
+Use timestamped names in both `runs/` and `scratch/`. A short training sanity check
+belongs in `scratch/`; a continuing training campaign belongs in `runs/`.
+Standalone export, neural self-play, arena and profiling outputs default to
+`scratch/`; training/loop outputs default to `runs/`. Explicit paths stay literal.
+See [artifact organization](docs/current/artifacts.md).
+
 ## Documentation
 
 - [Current implementation and operating instructions](docs/current/)
+- [Artifact organization](docs/current/artifacts.md)
 - [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Network architecture](docs/current/network.md)

@@ -192,14 +192,14 @@ A final prediction on a truncated game does not supply a result.
 
 ```sh
 mise run build-features
-mise run selfplay -- --engine mcts --games 1 --sizes 9 --seed 41 --simulations 8 --output runs/mcts
+mise run selfplay -- --engine mcts --games 1 --sizes 9 --seed 41 --simulations 8 --output scratch/mcts
 ```
 
 ```python
 from continugo_train.features import load_position
 from continugo_train.model import PolicyValueNet
 
-sample = load_position("runs/mcts/game-000001-size9-seed41.sgf", ply=0)
+sample = load_position("scratch/mcts/game-000001-size9-seed41.sgf", ply=0)
 model = PolicyValueNet()
 logits, value = model(*sample.network_inputs())
 columns, visits = sample.policy_targets()  # Output columns, with pass last.
@@ -217,7 +217,7 @@ cached for inspection:
 
 ```sh
 mkdir -p runs
-mise run features -- --sgf FILE --ply 0 --actions 200200,500500 --output runs/position.cfeat
+mise run features -- --sgf FILE --ply 0 --actions 200200,500500 --output scratch/position.cfeat
 ```
 
 The one-shot `load_position` convenience helper replays the SGF per request.

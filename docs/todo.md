@@ -5,18 +5,6 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
-## Next learning experiment: fresh score/ownership training
-
-The [heads, authoritative labels and score-aware search](current/auxiliary.md)
-are implemented. Existing policy/value-only checkpoints are not migrated.
-
-- [ ] Review the [fresh campaign](history/2026-11-05-fresh-score-ownership.md),
-  now running separately with the old store. Measure passing, eye preservation,
-  score/value calibration, unassisted strength, and wall-clock cost—not just
-  auxiliary losses. Check `--score-weight 0.5` against zero for unwanted trades
-  of winning chances for score. More search and visit sampling remain separate
-  possible causes of eye filling; extra heads are not assumed to solve them.
-
 ## Later, only if a bottleneck appears
 
 - [ ] Tune the existing search cache: test whether retaining more already-computed

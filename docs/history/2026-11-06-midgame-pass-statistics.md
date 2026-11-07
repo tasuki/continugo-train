@@ -1,7 +1,7 @@
 # Developed-board pass statistics, cg2 versus cg4 — 2026-11-06
 
 Read-only user-requested audit; no active campaign changes. Artifacts:
-`runs/20261106-193548-midgame-passes/` (input manifest, Rust source, per-position
+`scratch/20261106-193548-midgame-passes/` (input manifest, Rust source, per-position
 records, per-round CSV/JSON, summaries, closing-pass counts and examples).
 
 ## Scope and definitions

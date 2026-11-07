@@ -3,7 +3,7 @@
 User asked whether more search would help premature termination and requested
 an actual split of current midgame passes by randomized search budget. Read-only
 audit: **no active campaign changes**. Artifacts and reproducible diagnostic
-source are in `runs/20261106-200313-playout-audit/`.
+source are in `scratch/20261106-200313-playout-audit/`.
 
 ## Observed games
 

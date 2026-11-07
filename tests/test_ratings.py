@@ -138,7 +138,7 @@ class RatingsTests(helpers.LoopHarness):
         rows, matches = self.rows(), self.matches()
         self.assertEqual(
             {p.name for p in self.directory.iterdir()},
-            {".lock", "networks.csv", "matches.csv", "games"},
+            {".lock", "networks.csv", "matches.csv", "games", "inference"},
         )
         self.assertEqual(
             len(matches), 6
@@ -170,12 +170,9 @@ class RatingsTests(helpers.LoopHarness):
             blobs = list((self.store / "sgf-blobs").glob(f"????-??-??/{row['sgf_sha256']}.sgf"))
             self.assertEqual(len(blobs), 1)
             self.assertEqual(path.stat().st_ino, blobs[0].stat().st_ino)
-        bundle = state["actor"]["archive"]
+        source = ratings.inference_source(self.store, state["actor"]["checkpoint"]["sha256"])
         self.assertIsNone(state["accepted"])
-        self.assertEqual(
-            archive.verify_bundle(bundle)["network_name"],
-            state["actor"]["model"]["network_name"],
-        )
+        self.assertEqual(source["network_name"], state["actor"]["model"]["network_name"])
         # Exact SGFs and CSVs do not depend on disposable runs or the source corpus.
         before = (self.directory / "networks.csv").read_bytes()
         shutil.rmtree(output)

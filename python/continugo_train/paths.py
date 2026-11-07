@@ -17,10 +17,14 @@ def timestamp(moment=None):
 
 
 def new_run_directory(label, base=None):
-    """Atomically reserve an empty dated run directory; never reuse old output."""
+    """Reserve dated output: training campaigns in runs/, standalone work in scratch/."""
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", label):
         raise ValueError("invalid run label")
-    base = Path(base) if base is not None else ROOT / "runs"
+    base = (
+        Path(base)
+        if base is not None
+        else ROOT / ("runs" if label in {"train", "loop"} else "scratch")
+    )
     base.mkdir(parents=True, exist_ok=True)
     stem = f"{timestamp()}-{label}"
     for number in range(1, 10000):

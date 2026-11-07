@@ -1,6 +1,7 @@
 /target/
 /.venv/
 /runs/
+/scratch/
 /models/
 /models_*/
 __pycache__/

@@ -33,7 +33,15 @@ class Point:
 
 def training_games(store, network_id):
     """Read the ancestral split ledger, not just the current replay window."""
-    for kind in ("training", "experimental", "accepted"):
+    metadata = Path(store) / "ratings/inference" / f"{network_id}.pt"
+    if metadata.is_file():
+        source = torch.load(metadata, map_location="cpu", weights_only=True)
+        if source.get("checkpoint_sha256") != network_id:
+            raise ValueError("inference source identity mismatch")
+        count = source.get("training_games")
+        if isinstance(count, int) and count >= 0:
+            return count
+    for kind in ("retained", "accepted", "training", "experimental"):
         bundle = archive.find_bundle(Path(store) / kind, kind, network_id)
         if bundle is None:
             continue

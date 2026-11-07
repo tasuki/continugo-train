@@ -33,6 +33,7 @@ from .features import inspect_game
 from .paths import utc_now
 from .progress import checkpoint_progress, network_name
 from .sampling import weighted_sizes
+from .train import atomic_checkpoint, checkpoint_splits
 
 REFERENCE_ID = "random-no-eye-fill-v1"
 ROOT = Path(__file__).resolve().parents[2]
@@ -566,9 +567,57 @@ def _accept(tables, store, reference):
         )
 
 
-def register_checkpoint(store, checkpoint):
-    with transaction(store) as (tables, _):
-        _register(tables, checkpoint)
+def register_checkpoint(store, checkpoint, *, model=None):
+    """Register evaluated metadata, optionally locating a run-owned frozen export."""
+    with transaction(store) as (tables, directory):
+        checksum = _register(tables, checkpoint)
+        if model is not None:
+            files = {"checkpoint": Path(checkpoint).resolve()}
+            files.update(
+                {name: Path(model).resolve() / f"{name}.onnx" for name in ["encoder", "policy"]}
+            )
+            records = {
+                name: {"path": str(path), "sha256": archive.digest(path)}
+                for name, path in files.items()
+            }
+            if records["checkpoint"]["sha256"] != checksum:
+                raise ValueError("checkpoint changed during registration")
+            sources = directory / "inference"
+            sources.mkdir(exist_ok=True)
+            atomic_checkpoint(
+                sources / f"{checksum}.pt",
+                {
+                    "checkpoint_sha256": checksum,
+                    "network_name": tables.networks[checksum]["network"],
+                    "training_games": sum(
+                        split == "train"
+                        for split in checkpoint_splits(
+                            torch.load(checkpoint, map_location="cpu", weights_only=True)
+                        ).values()
+                    ),
+                    **records,
+                },
+            )
+
+
+def inference_source(store, checksum):
+    """Return a verified locator, not a copy. Deleted runs remain in rating history."""
+    path = Path(store) / "ratings/inference" / f"{checksum}.pt"
+    if not path.is_file():
+        return None
+    source = torch.load(path, map_location="cpu", weights_only=True)
+    if source.get("checkpoint_sha256") != checksum:
+        raise ValueError("inference source identity mismatch")
+    for name in ["checkpoint", "encoder", "policy"]:
+        record = source[name]
+        artifact = Path(record["path"])
+        if not artifact.is_file():
+            return None
+        if artifact.is_symlink() or archive.digest(artifact) != record["sha256"]:
+            raise ValueError(f"registered inference artifact missing or changed: {artifact}")
+    if source["checkpoint"]["sha256"] != checksum:
+        raise ValueError("inference checkpoint identity mismatch")
+    return source
 
 
 def register_accepted(store, reference):

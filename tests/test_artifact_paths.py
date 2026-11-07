@@ -26,6 +26,16 @@ class ArtifactPathsTests(helpers.LoopHarness):
         local = moment.astimezone(timezone(timedelta(hours=3)))
         self.assertEqual(paths.timestamp(local), "20261101-123456")
 
+    def test_training_and_standalone_defaults_are_separate(self):
+        with patch.object(paths, "ROOT", self.root):
+            for label in ["train", "loop", "export", "selfplay", "arena", "pipeline-profile"]:
+                result = paths.new_run_directory(label)
+                self.assertEqual(
+                    result.parent, self.root / ("runs" if label in {"train", "loop"} else "scratch")
+                )
+            explicit = self.root / "literal"
+            self.assertEqual(paths.new_run_directory("export", explicit).parent, explicit)
+
     def test_model_bundle_dates_sequence_and_identity_survive_republication(self):
         store = self.root / "dated-store"
         moment = datetime(2026, 11, 1, 12, 34, 56, tzinfo=UTC)

@@ -11,7 +11,7 @@ import test_loop as helpers
 import torch
 from test_features import SGF
 
-from continugo_train import archive, data, gate, loop, ratings
+from continugo_train import archive, data, gate, loop, ratings, retain
 from continugo_train import train as trainer
 from continugo_train.features import inspect_game
 from continugo_train.sampling import DEFAULT_SIZE_WEIGHTS, position_quotas, weighted_sizes
@@ -242,14 +242,17 @@ class AcceptanceTests(helpers.LoopHarness):
         self.assertEqual(second["parent_model"], state["initial_model"])
         self.assertEqual(state["actor"]["model"], state["initial_model"])
         self.assertIsNone(state["accepted"])
-        latest = Path(state["config"]["model_store"]) / "LATEST-TRAINING"
-        self.assertEqual(
-            latest.read_text().strip(),
-            str(Path(second["training_archive"]["directory"]).relative_to(latest.parent)),
-        )
-        self.assertTrue(second["training_archive"])
-        self.assertTrue(second["experimental_archive"])
-        self.assertFalse((latest.parent / "LATEST-ACCEPTED").exists())
+        store = Path(state["config"]["model_store"])
+        for name in [
+            "training",
+            "experimental",
+            "LATEST-TRAINING",
+            "LATEST-EXPERIMENTAL",
+            "LATEST-ACCEPTED",
+        ]:
+            self.assertFalse((store / name).exists())
+        self.assertNotIn("training_archive", second)
+        self.assertNotIn("archive", state["actor"])
         for record in second["games"]:
             self.assertEqual(
                 inspect_game(output / record["path"])["root_comment"]["model"],
@@ -286,7 +289,7 @@ class AcceptanceTests(helpers.LoopHarness):
                 self.run_loop(output, resume=True, extra=["--enable-head-to-head", count])
             self.assertEqual((output / "loop.pt").read_bytes(), before)
 
-    def test_unexpected_draws_are_visible_and_experimental_archives_are_complete(self):
+    def test_unexpected_draws_are_visible_and_explicit_retention_is_complete(self):
         output = self.root / "draws"
         self.jobs.arena_mode = "draw"
         state = self.run_loop(output, extra=["--gate-games", "10"])
@@ -297,8 +300,9 @@ class AcceptanceTests(helpers.LoopHarness):
         self.assertEqual(iteration["decision"], "passed")
         self.assertIsNone(state["accepted"])
         self.assertIn("WARNING DRAW", (output / "loop.log").read_text())
-        reference = state["actor"]["archive"]
+        reference = retain.retain(output)
         metadata = archive.verify_bundle(reference)
+        self.assertEqual(metadata["kind"], "retained")
         bundle = Path(reference["directory"])
         self.assertEqual(metadata["checkpoint_sha256"], iteration["checkpoint"]["sha256"])
         self.assertEqual(
@@ -329,7 +333,7 @@ class AcceptanceTests(helpers.LoopHarness):
         self.assertIsNone(state["accepted"])
         self.assertEqual(state["actor"]["model"], iteration["model"])
         self.assertIn("WARNING TRUNCATED", (output / "loop.log").read_text())
-        self.assertTrue(iteration["training_archive"])
+        self.assertTrue((output / iteration["checkpoint"]["path"]).is_file())
 
     def test_gate_interrupt_reuses_completed_games_without_retraining(self):
         output = self.root / "gate-gap"
@@ -347,15 +351,17 @@ class AcceptanceTests(helpers.LoopHarness):
 
     def test_recovery_after_losing_runs_keeps_training_and_experimental_actor_separate(self):
         output = self.root / "lost-run"
-        state = self.run_loop(output, extra=["--gate-games", "10", "--acceptance-rate", "0.6"])
-        latest = Path(state["iterations"][0]["training_archive"]["directory"])
-        accepted = Path(state["initial_experimental_archive"]["directory"])
+        self.run_loop(output, extra=["--gate-games", "10", "--acceptance-rate", "0.6"])
+        latest_reference = retain.retain(output)
+        initial_reference = retain.retain(output, 0)
+        latest = Path(latest_reference["directory"])
+        accepted = Path(initial_reference["directory"])
         training_hash = archive.digest(latest / "checkpoint.pt")
         accepted_hash = archive.digest(accepted / "checkpoint.pt")
         shutil.rmtree(output)
         shutil.rmtree(self.corpus)
         self.source.unlink()
-        archive.verify_bundle(state["initial_experimental_archive"])
+        archive.verify_bundle(initial_reference)
         resumed = self.run_loop(
             self.root / "restored",
             extra=[
@@ -422,8 +428,9 @@ class AcceptanceTests(helpers.LoopHarness):
         self.assertEqual(iteration["gate"]["report"]["draws"], 10)
         self.assertEqual(iteration["decision"], "passed")
         self.assertIsNone(state["accepted"])
-        archive.verify_bundle(state["actor"]["archive"])
-        bundle = Path(state["actor"]["archive"]["directory"])
+        reference = retain.retain(output)
+        archive.verify_bundle(reference)
+        bundle = Path(reference["directory"])
         # Exact checkpoint plus relocated SGFs can feed the ordinary strict loader.
         saved = loop.load_training(bundle / "checkpoint.pt")
         corpus = data.scan_corpus(

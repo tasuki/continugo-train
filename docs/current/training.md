@@ -226,7 +226,7 @@ changing replay targets. It initializes a new run from an existing offline-train
 checkpoint; it does not weaken fixed-corpus resume checks.
 
 ```sh
-mise run train -- --data runs/bootstrap runs/neural-001 --warm-start runs/train-001/best.pt --output runs/train-002 --epochs 3 --device cuda
+mise run train -- --data runs/bootstrap scratch/neural-001 --warm-start runs/train-001/best.pt --output runs/train-002 --epochs 3 --device cuda
 # Explicitly retain the source's SGD momentum instead of resetting it:
 mise run train -- --data runs/replay-003 --warm-start runs/train-002/latest.pt --warm-start-optimizer keep --output runs/train-003 --epochs 2
 # Continue this new run with its corpus unchanged:

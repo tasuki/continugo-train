@@ -16,7 +16,7 @@ def inspect_loop(output):
     root = Path(output).resolve()
     state = torch.load(root / "loop.pt", map_location="cpu", weights_only=True)
     if state.get("version") != VERSION or state.get("root") != str(root):
-        raise ValueError("status requires an unrelocated v5 manual-approval loop")
+        raise ValueError("status requires an unrelocated v6 manual-approval loop")
     jobs = state["iterations"]
     current = jobs[-1] if jobs else None
     if current is None:
@@ -34,7 +34,7 @@ def inspect_loop(output):
     elif current["model"] is None:
         stage = "export"
     else:
-        stage = "evaluation / experimental archive"
+        stage = "evaluation / actor selection"
     training = state["training"]
     checkpoint = (
         root / training["checkpoint"]["path"]

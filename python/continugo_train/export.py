@@ -178,7 +178,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument(
-        "--output", type=Path, help="default: a model bundle inside runs/YYYYMMDD-HHMMSS-export"
+        "--output", type=Path, help="default: a model bundle inside scratch/YYYYMMDD-HHMMSS-export"
     )
     parser.add_argument(
         "--runtime-path",

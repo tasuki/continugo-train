@@ -13,7 +13,7 @@ from unittest.mock import patch
 import test_loop as helpers
 import torch
 
-from continugo_train import archive, export, loop, promote, ratings, status
+from continugo_train import archive, export, loop, promote, ratings, retain, status
 
 
 class PromotionTests(helpers.LoopHarness):
@@ -21,6 +21,10 @@ class PromotionTests(helpers.LoopHarness):
         output = self.root / "experiment"
         state = self.run_loop(output, extra=["--iterations", str(count)])
         self.store = Path(state["config"]["model_store"])
+        # Publication fixtures explicitly retain candidates; loops do not.
+        state["initial_experimental_archive"] = retain.retain(output, 0)
+        for iteration in state["iterations"]:
+            iteration["experimental_archive"] = retain.retain(output, iteration["number"])
         return output, state
 
     def approve(self, state, index=0):
@@ -50,10 +54,8 @@ class PromotionTests(helpers.LoopHarness):
 
     def test_approval_pins_one_checkpoint_without_switching_training_or_actor(self):
         output, state = self.make_candidates(2)
-        before = {
-            name: (self.store / name).read_bytes()
-            for name in ["LATEST-TRAINING", "LATEST-EXPERIMENTAL"]
-        }
+        for name in ["LATEST-TRAINING", "LATEST-EXPERIMENTAL"]:
+            self.assertFalse((self.store / name).exists())
         control = (output / "loop.pt").read_bytes()
         result = self.approve(state, 0)
         metadata = archive.verify_bundle(result)
@@ -63,7 +65,8 @@ class PromotionTests(helpers.LoopHarness):
         self.assertTrue((Path(result["directory"]) / "approval.pt").is_file())
         self.assertEqual(metadata["version"], 2)
         self.assertEqual((output / "loop.pt").read_bytes(), control)
-        self.assertEqual(before, {name: (self.store / name).read_bytes() for name in before})
+        for name in ["LATEST-TRAINING", "LATEST-EXPERIMENTAL"]:
+            self.assertFalse((self.store / name).exists())
         resumed = self.run_loop(output, resume=True)
         self.assertEqual(resumed["actor"], state["actor"])
         self.assertEqual(resumed["training"], state["training"])
@@ -238,42 +241,21 @@ class PromotionTests(helpers.LoopHarness):
 
     def test_actor_selection_checkpoint_gap_is_repaired_without_retraining(self):
         output = self.root / "actor-gap"
-        pointer = archive.latest_pointer
-        raised = False
-
-        def gap(store, kind, destination):
-            nonlocal raised
-            if kind == "experimental" and destination.name.endswith(self.last_hash) and not raised:
-                raised = True
-                raise KeyboardInterrupt
-            return pointer(store, kind, destination)
-
         save = loop.LoopRunner.save
-        self.last_hash = "not-ready"
 
-        def track(runner):
-            if runner.state["iterations"] and runner.state["iterations"][0]["completed"]:
-                self.last_hash = runner.state["iterations"][0]["checkpoint"]["sha256"][:12]
+        def gap(runner):
             save(runner)
+            if runner.state["iterations"] and runner.state["iterations"][0]["completed"]:
+                raise KeyboardInterrupt
 
-        with (
-            patch.object(loop.LoopRunner, "save", track),
-            patch.object(archive, "latest_pointer", side_effect=gap),
-            self.assertRaises(KeyboardInterrupt),
-        ):
+        with patch.object(loop.LoopRunner, "save", gap), self.assertRaises(KeyboardInterrupt):
             self.run_loop(output)
         calls = len(self.stage_calls("continugo_train.train"))
         state = self.run_loop(output, resume=True)
         self.assertEqual(len(self.stage_calls("continugo_train.train")), calls)
         self.assertTrue(state["iterations"][0]["completed"])
-        self.assertEqual(
-            (Path(state["config"]["model_store"]) / "LATEST-EXPERIMENTAL").read_text().strip(),
-            str(
-                Path(state["actor"]["archive"]["directory"]).relative_to(
-                    state["config"]["model_store"]
-                )
-            ),
-        )
+        self.assertEqual(state["actor"]["checkpoint"], state["iterations"][0]["checkpoint"])
+        self.assertFalse((Path(state["config"]["model_store"]) / "LATEST-EXPERIMENTAL").exists())
         self.assertIsNone(state["accepted"])
 
     def test_approval_for_one_hash_cannot_publish_a_different_candidate(self):

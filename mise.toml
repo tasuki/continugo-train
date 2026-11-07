@@ -66,6 +66,10 @@ run = ".venv/bin/python -m continugo_train.plot_ratings"
 description = "Read-only training, experimental actor, accepted identity and live loop progress"
 run = ".venv/bin/python -m continugo_train.status"
 
+[tasks.retain-model]
+description = "Explicitly retain one campaign model with its checkpoint, replay and inference graphs"
+run = ".venv/bin/python -m continugo_train.retain"
+
 [tasks.promote]
 description = "Explicit user-approved publication of one hash-pinned experimental checkpoint"
 run = ".venv/bin/python -m continugo_train.promote"

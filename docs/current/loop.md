@@ -1,7 +1,7 @@
 # Restartable experimental neural self-play loop
 
 `mise run loop` runs native self-play → bounded SGF replay → warm-start training →
-ONNX export, with periodic experimental/reference matches and durable recovery.
+ONNX export, with periodic experimental/reference matches and run-owned recovery.
 It follows [KataGo's synchronous training pattern](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md),
 but **never automatically promotes a network**. Accepted publication follows the
 [approval procedure](model-store.md#approval-operation).
@@ -12,18 +12,18 @@ New loops require score/ownership checkpoints and record `--score-weight` (defau
 0.5, the linear score fraction). Older loop controls are rejected, not migrated; keep historical campaigns
 and their frozen runtime untouched. See [auxiliary supervision](auxiliary.md).
 
-| Role | Behaviour | Durable pointer |
+| Role | Behaviour | Location |
 |---|---|---|
-| Training | Latest completed candidate; weights/optimizer progress survive failed or inconclusive matches | `LATEST-TRAINING` |
-| Experimental actor | Frozen model generating the next self-play batch; not accepted merely by being selected | `LATEST-EXPERIMENTAL` |
-| Accepted | User-approved publication, or an existing historical accepted model; may be absent | `LATEST-ACCEPTED` |
+| Training | Latest completed candidate; weights/optimizer progress survive failed or inconclusive matches | Campaign `loop.pt` and checkpoint |
+| Experimental actor | Frozen model generating the next self-play batch; selection is not acceptance | Campaign `loop.pt` and export |
+| Accepted | User-approved publication, or historical accepted model; may be absent | Store `LATEST-ACCEPTED` |
 
-Initialization backs up an unaccepted actor, not an accepted baseline. The loop
+Initialization snapshots an unaccepted actor inside the campaign, not an accepted baseline. The loop
 only reads the accepted head, refreshing it at startup and iteration boundaries.
 Approval changes neither training nor actor selection.
 
 `--actor-policy latest` is the default: after each candidate is trained, exported,
-verified and archived, use it as the next experimental actor regardless of match
+verified inside the campaign, use it as the next experimental actor regardless of match
 verdict. `--actor-policy gate` optionally holds the actor unless its head-to-head
 match passes; rejected/inconclusive candidates still retain training progress.
 With this optional policy, unevaluated iterations hold the actor; explicitly
@@ -69,7 +69,7 @@ separate supervised processes; export verification uses CPU.
 Resume restores frozen configuration. Explicit conflicting overrides fail; the
 total iteration target may increase, never decrease. For a clean boundary pause,
 add `--stop-after-iteration N`: it exits after that round's training, scheduled
-matches and archives, before launching round N+1, without lowering the saved total
+matches, before launching round N+1, without lowering the saved total
 target. The bound must not precede recorded work. It is invocation-only; resume
 without it to continue toward the saved total. A new executable/protocol still
 requires a fork, not an override of the frozen binaries. Keep the same absolute path
@@ -129,8 +129,8 @@ including disabled evaluation, are not silently upgraded into expensive extra wo
 Use `--adaptive-max-games 0` to explicitly disable only this precision phase; a
 smoke run with no evaluation at all must also set gate/reference games to zero.
 
-When enabled, scheduled rounds run ordinary parent/reference diagnostics, archive
-the candidate's inference bundle, then invoke adaptive matchmaking **automatically**
+When enabled, scheduled rounds run ordinary parent/reference diagnostics, register
+a hash-pinned locator to the run-owned export, then invoke adaptive matchmaking **automatically**
 before committing the round and advancing its actor. The target is the exact
 candidate checkpoint ID, not whichever network was most recently registered.
 Policy is frozen in these loop settings:
@@ -229,8 +229,11 @@ and completion statistics, strength, throughput, memory, and disk. Pause for
 nonfinite values, invalid data, behavioral collapse, or resource/recovery problems.
 Loss alone is not strength and need not decrease across changing replay windows.
 
-Store layout, backups, and recovery after losing `runs/` are in
-[model storage](model-store.md).
+Checkpoint, replay and export files stay in the campaign; loops do not copy every
+candidate into `models/`. Explicit model retention, shared ratings and recovery
+from deliberately retained bundles are in [model storage](model-store.md). Existing
+v6 storage references can be migrated without launching jobs using
+`--resume --migrate-storage`; old control files are backed up before detachment.
 
 ## Interruption semantics
 
@@ -245,8 +248,9 @@ the authoritative records. Stable iteration/attempt names and hashes let resume:
   epoch gets a new attempt. Stale trainer locks are removed only for absent PIDs.
 - Resume missing evaluation games without retraining, reexporting or rerating
   already committed evidence.
-- Reuse durable training/experimental bundles and repair an actor-pointer commit
-  gap without generating another batch. Never derive consent from these steps.
+- Restore training/actor selection directly from run-owned checkpoints and exports,
+  including interrupted state commits, without requiring global recovery copies.
+  Never derive consent from these steps.
 
 Ctrl-C interrupts the active child process group and waits/escalates for cleanup.
 An inherited OS lock prevents another supervisor racing an in-flight child. Never
@@ -254,4 +258,4 @@ unlink `.loop.lock` or a live/malformed/inaccessible `.train.lock` to bypass it.
 This is process-interruption safety, not end-to-end power-loss or bitwise GPU
 reproducibility. Completed approval intents/receipts have additional fsync-backed
 publication recovery, documented separately. Replay limits bound active selection,
-not total archive disk use or the ancestral holdout ledger.
+not total campaign disk use or the ancestral holdout ledger.

@@ -1,8 +1,8 @@
 """Write-once recovery bundles outside disposable runs/. No automatic deletion.
 
 Accepted ONNX is accompanied by the exact trainable checkpoint and replay SGFs.
-Every training candidate is backed up too, including rejected candidates. SGF
-blobs are immutable copies in this store; hardlinks only connect store-owned data.
+Training artifacts stay in their campaigns; retention is an explicit operation.
+SGF blobs are immutable copies; hardlinks only connect store-owned data.
 Experimental actors remain unaccepted. Accepted publication requires a matching
 explicit user authorization, and only committed approval receipts can move its head.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import torch
 
-from .paths import bundle_directory, utc_now
+from .paths import ROOT, bundle_directory, utc_now
 from .progress import checkpoint_progress, network_name
 from .train import atomic_checkpoint
 
@@ -62,6 +62,7 @@ def verify_bundle(reference):
     if saved.get("version") not in {1, 2} or saved.get("kind") not in {
         "training",
         "experimental",
+        "retained",
         "accepted",
     }:
         raise ValueError("incompatible recovery bundle")
@@ -129,37 +130,14 @@ def find_bundle(parent, kind, checksum):
     return matches[0] if matches else None
 
 
-def _publish(
-    store,
-    kind,
-    checkpoint,
-    *,
-    model=None,
-    context=None,
-    game_candidates=(),
-    evaluation=(),
-    approval=None,
-):
-    """Return a pinned bundle reference. Existing bundles are verified, not rewritten."""
-    store, checkpoint = Path(store).resolve(), Path(checkpoint).resolve()
-    if kind not in {"accepted", "training", "experimental"}:
-        raise ValueError("invalid archive kind")
-    if kind == "accepted" and approval is None:
-        raise ValueError("accepted publication requires explicit user approval")
-    if kind == "experimental" and model is None:
-        raise ValueError("experimental recovery requires a frozen inference model")
+def initialize_store(store):
+    """Initialize shared ratings/publication storage without creating model copies."""
+    store = Path(store).resolve()
+    if any(store.is_relative_to(ROOT / name) for name in ["runs", "scratch"]):
+        raise ValueError("model store must be outside disposable runs/ and scratch/")
     store.mkdir(parents=True, exist_ok=True)
-    checksum = digest(checkpoint)
-    approval_path = None
-    parent = store / kind
-    if parent.is_symlink():
-        raise ValueError("archive kind directory cannot be a symlink")
     with (store / ".archive.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if kind == "accepted":
-            from .promote import validate_authorization
-
-            approval_path, _ = validate_authorization(store, approval, checksum, model)
         marker = store / "STORE.pt"
         if marker.exists():
             if torch.load(marker, weights_only=True) != {
@@ -178,30 +156,51 @@ def _publish(
         if not overview.exists():
             overview.write_text(
                 "# ContinuGo durable model store\n\n"
-                "accepted/YYYYMMDD-HHMMSS-SEQ-NAME-ID/ contains accepted encoder.onnx + policy.onnx, plus a full "
-                "checkpoint.pt and replay/ snapshot for recovery. training/ uses the same UTC-dated names and preserves "
-                "every completed training candidate, even when rejected or inconclusive.\n\n"
-                "experimental/ contains unaccepted frozen actors with full recovery data. "
-                "LATEST-EXPERIMENTAL tracks the selected self-play actor independently of training. "
-                "Accepted publication requires a hash-pinned explicit user approval; "
-                "approvals/ retains immutable approval intents and publication receipts.\n\n"
-                "ratings/networks.csv lists scheduled/evaluated networks, one global rating per checkpoint (filter accepted=1); "
-                "ratings/matches.csv lists newest batches first, with full SGF hashes, "
-                "stable batch/game numbers, evidence paths, and rating history. "
-                "ratings/games/ retains dated, readable authoritative SGF evidence; "
-                "matches.csv sgf_path locates each file. "
-                "Ratings are distinct from the acceptance gate.\n\n"
-                "LATEST-ACCEPTED and LATEST-TRAINING are convenience pointers to the most "
-                "recently selected bundle in each category. They can differ intentionally.\n\n"
-                "ONNX alone is inference-only. Read each bundle's README.md for training "
-                "recovery; code/rules and a compatible environment are still required.\n\n"
-                "Bundles are write-once and read-only, with no automatic pruning. SGF blobs "
-                "use sgf-blobs/YYYY-MM-DD/ by UTC first-retention day, deduplicated across days. "
-                "They are store-owned copies, not links to disposable runs/. Back up this entire "
-                "store off-machine (for example rsync -aH); a local directory cannot protect "
-                "against disk loss. Do not chmod/delete bundles used by an active loop.\n"
+                "Training checkpoints, replay and intermediate exports belong in runs/.\n"
+                "retained/ contains explicitly retained, unaccepted recovery bundles.\n"
+                "accepted/ contains explicitly user-approved publications; approvals/ keeps their receipts.\n"
+                "ratings/ holds the shared CSV ledger, run-owned inference references and SGF evidence.\n"
+                "Deleting a run preserves rating history but removes unretained model availability.\n"
+                "sgf-blobs/ deduplicates store-owned evidence and explicitly retained replay.\n\n"
+                "ONNX alone cannot resume training. Back up campaigns and this store off-machine.\n"
+                "Legacy training/ and experimental/ bundles remain readable, but are not generated by loops.\n"
             )
             seal_file(overview)
+        sync_directory(store)
+    return store
+
+
+def _publish(
+    store,
+    kind,
+    checkpoint,
+    *,
+    model=None,
+    context=None,
+    game_candidates=(),
+    evaluation=(),
+    approval=None,
+):
+    """Return a pinned bundle reference. Existing bundles are verified, not rewritten."""
+    store, checkpoint = Path(store).resolve(), Path(checkpoint).resolve()
+    if kind not in {"accepted", "training", "experimental", "retained"}:
+        raise ValueError("invalid archive kind")
+    if kind == "accepted" and approval is None:
+        raise ValueError("accepted publication requires explicit user approval")
+    if kind in {"experimental", "retained"} and model is None:
+        raise ValueError("inference recovery requires a frozen inference model")
+    initialize_store(store)
+    checksum = digest(checkpoint)
+    approval_path = None
+    parent = store / kind
+    if parent.is_symlink():
+        raise ValueError("archive kind directory cannot be a symlink")
+    with (store / ".archive.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if kind == "accepted":
+            from .promote import validate_authorization
+
+            approval_path, _ = validate_authorization(store, approval, checksum, model)
         parent.mkdir(exist_ok=True)
         destination = find_bundle(parent, kind, checksum)
         if destination is not None:

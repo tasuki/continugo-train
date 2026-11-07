@@ -75,13 +75,13 @@ when naturally scored; model/search/seed metadata and actual visits are comments
 ## Manual matches
 
 ```sh
-mise run arena -- --candidate PATH/TO/CANDIDATE --incumbent PATH/TO/ACCEPTED --games 20 --sizes 9,13,19 --size-weights 9:2,13:2,19:1 --simulations 32 --max-moves 512 --output runs/arena-001
+mise run arena -- --candidate PATH/TO/CANDIDATE --incumbent PATH/TO/ACCEPTED --games 20 --sizes 9,13,19 --size-weights 9:2,13:2,19:1 --simulations 32 --max-moves 512 --output scratch/arena-001
 ```
 
 Use a fresh output directory, or omit `--output` in this launcher for
-`runs/YYYYMMDD-HHMMSS-arena` here automatically (UTC). Explicit paths are literal;
+`scratch/YYYYMMDD-HHMMSS-arena` here automatically (UTC). Explicit paths are literal;
 add `--device cpu` for CPU inference. Inputs can be
-plain ONNX bundles or durable experimental/accepted bundles containing both graphs.
+run-owned ONNX exports or deliberately retained/accepted bundles containing both graphs.
 `--game-offset` exists for the supervisor's missing-game recovery; even global
 ordinals put the candidate on black. Each pair advances the seed once.
 The standalone binary writes records and raw outcome totals; it does not move
@@ -94,14 +94,15 @@ consistently beat it. **Prefer adaptive near-strength matching**, not a fixed
 round-robin, when the purpose is rating precision:
 
 ```sh
-mise run rate-models -- --loop PATH/TO/LOOP --latest 3 --target-rd 25 --min-pairs 60 --min-opponents 2 --min-opponent-pairs 10 --batch-games 4 --max-games 600 --seed 9400000 --output runs/adaptive-ratings
-mise run rate-models -- --output runs/adaptive-ratings --resume
+mise run rate-models -- --loop PATH/TO/LOOP --latest 3 --target-rd 25 --min-pairs 60 --min-opponents 2 --min-opponent-pairs 10 --batch-games 4 --max-games 600 --seed 9400000 --output scratch/adaptive-ratings
+mise run rate-models -- --output scratch/adaptive-ratings --resume
 ```
 
-The newest three **registered** neural checkpoints are the precision targets;
-`--targets FULL_CHECKPOINT_ID...` instead pins exact targets independently of
-registration order. All registered neural checkpoints with compatible recovery bundles form the
-opponent pool (or restrict it with `--pool-latest N`). No random opponents are
+The newest three **available registered** neural checkpoints are the precision targets;
+`--targets FULL_CHECKPOINT_ID...` instead pins exact available targets independently of
+registration order. Run-owned exports and deliberately retained/accepted bundles
+form the opponent pool (or restrict it with `--pool-latest N`). Deleted unretained
+models remain in rating history but are not available opponents. No random opponents are
 scheduled. After every four games (two same-seed color pairs), ingest outcomes
 and reread current ratings. Choose the matchup with greatest expected reduction
 in unfinished targets' rating variance, using Glicko's per-game Fisher information.
@@ -145,15 +146,15 @@ An explicit fixed round-robin is still available for deliberate all-pairs studie
 it is **not** the precision-driven default:
 
 ```sh
-mise run round-robin -- --loop PATH/TO/LOOP --latest 4 --games 20 --seed 9200000 --output runs/rated-comparison
+mise run round-robin -- --loop PATH/TO/LOOP --latest 4 --games 20 --seed 9200000 --output scratch/rated-comparison
 # Interrupted evaluation resumes missing games, without retraining or double rating:
-mise run round-robin -- --output runs/rated-comparison --resume
+mise run round-robin -- --output scratch/rated-comparison --resume
 ```
 
 The source loop is read-only and supplies frozen binaries, board mix, search
-budget, device and neural move cap. `--latest 4` selects the four newest registered
-neural checkpoints (not the four highest ratings); `--bundles PATH...` instead
-chooses explicit experimental/accepted recovery bundles. Each unordered pair gets
+budget, device and neural move cap. `--latest 4` selects the four newest available
+registered neural checkpoints (not the four highest ratings); `--bundles PATH...`
+instead chooses explicit retained/accepted recovery bundles. Each unordered pair gets
 20 games, so four models schedule six matchups / 120 games. Both colors share each
 pair's seed. Use a fresh seed for a genuinely new comparison.
 
@@ -168,7 +169,7 @@ To retire an interrupted round-robin while preserving finished games without
 launching the rest of its schedule:
 
 ```sh
-mise run round-robin -- --output runs/rated-comparison --resume --ingest-only
+mise run round-robin -- --output scratch/rated-comparison --resume --ingest-only
 ```
 
 Stop its supervisor/child cleanly first. This validates/adopts partial-attempt
@@ -218,13 +219,15 @@ ratings/
   networks.csv   scheduled/evaluated networks, exactly one row per network
   matches.csv    one row per processed SGF, batch history and post-batch ratings
   games/*.sgf    dated, readable immutable evidence (store-owned hardlinks)
+  inference/     hash-pinned run-owned model locators and cached training-game counts
   .lock
 ```
 
 Only networks evaluated or explicitly scheduled for evaluation enter the registry.
-Recovery-only intermediate checkpoints are not registered just because they were
-archived. Interrupted/truncated evaluations retain their entries for later rating.
-Approved publications are also retained; recovery backups themselves are not deleted.
+Explicitly retaining a model alone does not register it. Interrupted/truncated
+evaluations retain their entries for later rating; approved publications also
+enter the registry. Loops do not make automatic recovery copies. Rating history,
+plot metadata and match evidence survive deletion of unretained campaign models.
 
 `networks.csv` contains readable names, full IDs, first-registration timestamps
 (`registered_at`, UTC), parent IDs, progress counters,
@@ -311,7 +314,7 @@ mise run ratings
 mise run ratings -- --accepted-only
 # Read-only plot; default output models/ratings.png:
 mise run plot-ratings
-mise run plot-ratings -- --output runs/ratings.svg --labels
+mise run plot-ratings -- --output scratch/ratings.svg --labels
 # X is cumulative unique training games from ancestral checkpoint split histories,
 # excluding validation and deduplicating replay/epochs. It is NOT arena games.
 # The x axis is linear, with the random-bot star at zero and no axis break.
@@ -322,9 +325,9 @@ mise run ratings -- --matches
 mise run ratings -- --sgf FULL_SGF_SHA
 # Ingest using the latest committed match's evaluation settings, or explicitly
 # select settings with --protocol-from EXISTING_SGF_SHA:
-mise run ratings -- --ingest runs/arena-001 --checkpoints PATH/TO/CANDIDATE/checkpoint.pt
+mise run ratings -- --ingest scratch/arena-001 --checkpoints PATH/TO/CANDIDATE/checkpoint.pt
 # Standalone neural-vs-reference matches (ingest separately to update the table):
-mise run arena -- --candidate PATH/TO/NETWORK --reference-random --games 10 --simulations 32 --max-moves 2048 --output runs/reference-001
+mise run arena -- --candidate PATH/TO/NETWORK --reference-random --games 10 --simulations 32 --max-moves 2048 --output scratch/reference-001
 ```
 
 Every newly committed arena batch automatically refreshes `models/ratings.png`.
