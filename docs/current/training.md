@@ -11,15 +11,15 @@ playing-strength measurements.
 
 ## First run
 
-New training uses **finalized schema 5** (approved 2026-11-08), with twelve coarse planes: antialiased stone
+New training uses **schema 5**, revised with explicit user approval on 2026-11-08, with twelve coarse planes: antialiased stone
 occupancy, connected group size, liberty-center unions, liberty-footprint unions
 and borders. Scalar liberty area and capturable-in-one planes/calculations are
 removed. Start a fresh checkpoint: schema-4 resume/warm-start is rejected rather
 than silently reinterpreting the same-width channels. Existing score/ownership models still use
 their original twelve inputs in inference and the viewer.
-Eleven exact fields include the local-only liberty footprint capped at three,
-immediately before borders. Future feature changes require a new schema version;
-training starts only when explicitly requested. Validated source SGFs can be
+Eleven exact fields include binary `splits_friendly_region`, immediately before
+borders. The user reopened unused schema 5 to replace the former local footprint;
+old footprint metadata is incompatible. Training starts only when explicitly requested. Validated source SGFs can be
 reused; discard incompatible derived tensor caches.
 
 Policy comments use only compact `[SGF-coordinate, visits]` pairs, sorted most

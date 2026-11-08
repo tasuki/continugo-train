@@ -1,3 +1,4 @@
+//! Historical footprint reference, compiled only for tests/benchmarks.
 //! New stone's local liberty footprint, with existing stones fixed as obstacles.
 //! Values saturate at three discs. Free disjoint probes can certify the cap;
 //! otherwise exact center spans feed a small raster that stops at the cap.
@@ -5,6 +6,9 @@
 
 use continugo_rules::{LibertySpan, PreparedPosition, Spot};
 use std::sync::{Mutex, OnceLock};
+
+#[cfg(test)]
+pub(super) mod profile;
 
 const CACHE_SLOTS: usize = 1024;
 

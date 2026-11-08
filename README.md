@@ -5,12 +5,13 @@ Rust self-play experiments using shared ContinuGo rules, plus a configurable PyT
 The [neural policy](docs/current/network.md) selects non-overlapping coarse cells
 before exact coordinate analysis, with whole-board exploration and pass.
 New training uses [twelve coarse input planes](docs/current/features.md)
-(finalized schema 5): antialiased stones, connected group size, liberty centers,
+(schema 5): antialiased stones, connected group size, liberty centers,
 liberty footprints and borders—without scalar liberty area or capturability flags. Existing schema-4 models retain their original inputs. The
-eleven exact move inputs include a local-only liberty-footprint union area for
-the new stone, with existing stones fixed as obstacles (no group traversal or
-capture removal for this feature), capped at three stone-disc units with cheap
-saturation probes. The network also learns [final score and ownership](docs/current/auxiliary.md).
+eleven exact move inputs include a binary **friendly-region splitting** bit:
+using actual captures, does the move divide one friendly-bounded available-center
+region into at least two nonempty regions? It preserves single-coordinate splits
+without footprint integration. The user explicitly reopened unused schema 5 for
+this replacement; older footprint metadata/tensors are incompatible. The network also learns [final score and ownership](docs/current/auxiliary.md).
 Fresh score/ownership training is required; old policy/value-only checkpoints,
 exports and loop controls are not migrated. Validated source SGFs remain usable.
 Search defaults to `0.5*outcome + 0.5*normalized_score`; ownership is auxiliary.

@@ -135,14 +135,14 @@ def coarse_plane_image(name, values, index, schema):
 
 
 def exact_feature_image(name, actions, values):
-    footprint = name == "local_liberty_footprint_stones_cap3"
+    splitting = name == "splits_friendly_region"
     return heatmap(
         name,
         raster(actions, values),
-        limits=(0, 3) if footprint else (0, 1),
+        limits=(0, 1),
         note=(
-            "Local union; cap 3 discs; fixed obstacles; 16/radius; mean / pixel"
-            if footprint
+            "Binary friendly-region split; actual captures; mean / display pixel"
+            if splitting
             else "Mean / display pixel"
         ),
     )

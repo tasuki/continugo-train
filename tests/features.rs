@@ -249,7 +249,7 @@ fn exact_features_distinguish_touching_connections_captures_and_suicide() {
 }
 
 #[test]
-fn local_footprint_uses_fixed_obstacles_not_resulting_groups() {
+fn friendly_region_splitting_is_binary_and_preserves_legacy_fields() {
     fn check(game: &Game, spot: Spot) -> f32 {
         let actions = [action(spot.x, spot.y), action(0, 0)];
         let current = FeatureExtractor::new(game, 4)
@@ -278,7 +278,7 @@ fn local_footprint_uses_fixed_obstacles_not_resulting_groups() {
     let empty = Game::default();
     let spot = Spot { x: 500, y: 500 };
     let open = check(&empty, spot);
-    assert!(open > 1.0);
+    assert_eq!(open, 0.0);
     let distant = empty.play(Spot { x: 100, y: 100 }).unwrap().pass().unwrap();
     assert_eq!(check(&distant, spot), open);
     let d = empty.board().diameter();
@@ -294,9 +294,20 @@ fn local_footprint_uses_fixed_obstacles_not_resulting_groups() {
         .unwrap()
         .pass()
         .unwrap();
-    // Same connected group grows remotely, but the new stone's local geometry
-    // is unchanged. The remote stone is beyond (sqrt(2)+1)*diameter.
-    assert_eq!(check(&chain, spot), check(&extended, spot));
+    // A straight chain on an otherwise open board creates no friendly split.
+    assert_eq!(check(&chain, spot), 0.0);
+    assert_eq!(check(&extended, spot), 0.0);
+    let mut dividing = Game::new(Board::new(3).unwrap());
+    for y in [498, 830] {
+        for x in [166, 498, 830] {
+            dividing = dividing.play(Spot { x, y }).unwrap().pass().unwrap();
+        }
+    }
+    assert_eq!(check(&dividing, Spot { x: 498, y: 166 }), 1.0);
+    assert_eq!(check(&dividing, Spot { x: 497, y: 166 }), 0.0);
+    let record = dividing.record();
+    let white = Game::from_record_on(dividing.board(), &record[..record.len() - 1]).unwrap();
+    assert_eq!(check(&white, Spot { x: 498, y: 166 }), 0.0);
     let mut eyes = Game::new(Board::new(3).unwrap());
     for (x, y) in [
         (498, 166),
@@ -309,8 +320,7 @@ fn local_footprint_uses_fixed_obstacles_not_resulting_groups() {
     ] {
         eyes = eyes.play(Spot { x, y }).unwrap().pass().unwrap();
     }
-    // Legal because the joined group has a distant eye, but the new stone has
-    // no LOCAL unblocked adjacent centers. Distant group liberties do not count.
+    // Filling an existing eye does not split it into two surviving regions.
     assert_eq!(check(&eyes, Spot { x: 830, y: 830 }), 0.0);
 }
 

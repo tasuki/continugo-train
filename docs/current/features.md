@@ -1,12 +1,13 @@
-# Real neural features — schema version 5 (finalized)
+# Real neural features — schema version 5
 
-**Schema 5 was finalized by explicit user approval on 2026-11-08.** The contract
-below is frozen: twelve coarse planes and eleven exact move fields, including
-the local-only liberty footprint capped at three before the four borders.
-Finalization does not depend on starting training. Changes to feature meanings,
-ordering, counts, scaling or raster definitions require a new schema version and
-compatible checkpoint/ONNX metadata. Value-preserving implementation optimizations
-may retain schema 5. Finalization itself starts no training run.
+**On 2026-11-08 the user explicitly reopened unused schema 5 and replaced the
+local-liberty-footprint scalar with binary `splits_friendly_region`.** There are
+still twelve coarse planes and eleven exact fields, with the new bit before the
+four borders. Coarse inputs and schema 4 are unchanged. No training is started.
+Checkpoint/ONNX feature names must match the revised contract; earlier schema-5
+footprint checkpoints/exports are rejected. Discard all earlier derived schema-5
+tensor packets: their header has no feature-name fingerprint, so matching version
+and width alone do not establish compatibility. Validated source SGFs remain usable.
 
 Extraction lives in `src/features.rs`; rule facts come from `continugo-rules`.
 `Position::liberty_spans` returns the exact integer liberty-center intervals used
@@ -18,12 +19,12 @@ still uses `PreparedPosition::analyze_group`, including its exact capture witnes
 and shared blocker-row cache, to preserve old model inputs. This changes no rules,
 move validation, witnesses or capture decisions.
 `PreparedPosition::analyze_move` uses the existing prepared validator for
-connections, captures and resulting group size. The separate local footprint
-input uses `PreparedPosition::visit_local_liberty_spans`: cached obstacle rows,
-no group joins or capture simulation. Its compact area raster lives in
+connections, captures and resulting group size. Binary region splitting uses the
+actual returned child survivors, with the candidate temporarily absent, and an
+exact integer scanline connectivity index in `src/features/splitting.rs`.
+The replaced scalar remains only as a test/benchmark reference in
 `src/features/footprint.rs`; continuous reference/legacy integration lives in
-`src/liberty_area.rs`. Normal move validation never pays for either. No game
-rules live in Python.
+`src/liberty_area.rs`. No game rules live in Python.
 
 ## Coarse input `[12, H, W]`
 
@@ -46,7 +47,7 @@ It includes **both** spatial liberty representations. Grid resolution, cell
 partition and labels are unchanged. Coarse extraction computes neither capture
 witnesses nor per-group scalar areas: coarse-profile `capturability.calls` and
 `liberty_area.calls` are zero. Exact candidate extraction additionally computes
-the local-only footprint scalar described below, without child-group integration.
+the binary friendly-region split described below, without footprint integration.
 
 | Channels | Contents |
 |---|---|
@@ -91,8 +92,8 @@ by four; outside that boundary they are zero. Liberty centers are physically
 unblocked, in-bounds integer points adjacent to a group, not a fully validated
 move-legality mask. There are no move-history, per-group area, or capturability
 planes. All coarse planes and exact columns are **float32**. Coarse raster
-geometry uses float64; local liberty spans and footprint bitmasks use integer
-arithmetic. Legality is separately u8 on the wire / `torch.bool` in Python; action
+geometry uses float64; region splitting uses exact integer intervals and
+connectivity. Legality is separately u8 on the wire / `torch.bool` in Python; action
 IDs are u32 on the wire / `torch.int64` in Python.
 
 ## Exact coordinate input `[N, 11]` and legality `[N]`
@@ -111,67 +112,100 @@ the separate final policy-output column, including when no placements are suppli
 | 3 | Number of enemy groups captured |
 | 4 | Number of enemy stones captured |
 | 5 | Resulting merged friendly group size, including the new stone |
-| 6 | `local_liberty_footprint_stones_cap3`: new stone's local geometric footprint union, capped at three calibrated stone-disc units |
+| 6 | `splits_friendly_region`: binary split into at least two nonempty friendly-bounded regions |
 | 7–10 | Left / right / top / bottom border distances, as above |
 
-Columns 1–5 use the logarithmic count transform. Column 6 is **local only**:
-for candidate `p`, use the in-bounds integer centers adjacent to that new stone
-(`distance² < 2 * diameter²`), excluding overlap with it or any existing stone
-(`distance² < diameter²`). Existing stones are **fixed obstacles**, regardless
-of colour or whether the real move captures them. No resulting-group traversal,
-distant group liberties or child-position reconstruction is used for this feature.
+Columns 1–5 use the logarithmic count transform. Column 6 is exactly **0 or 1**.
 The authoritative legality/capture/connection columns remain unchanged.
 
-Shared rules extract those exact spans using one lazy obstacle-row cache per
-prepared position. Their physical-radius footprint **union**, never a sum, is
-measured on a **128×128 bitset at 16 samples per stone radius**, centered on the
-candidate. All integer centers are retained by nearest-bin projection (ties up),
-so an isolated center cannot vanish between samples. Bitwise disc dilation and
-popcount yield the scalar, divided by the raster disc's pixel count: one isolated
-center is exactly one stone-disc, two disjoint raster footprints are two.
-There is no logarithmic transform; the feature is **`min(raster_area, 3)`**.
-Three in-bounds, unblocked probe centers whose projected radius-16 discs are
-pairwise disjoint certify saturation immediately, before extracting spans or
-allocating a raster. Four outer cardinal probes are tried first, followed by
-four diagonals for corners/edges. Probe positions stay strictly inside the local
-adjacency boundary; failed probes never imply zero. Otherwise the same local
-raster is used, counting newly covered pixels and stopping once three discs'
-worth is reached. The existing center-raster cache stores capped results.
-Values below three are unchanged; isolated/narrow pockets still take the exact
-center-extraction path. This is an **approximate area input**, not continuous quadrature: the uncapped raster's four-position audit found up to 0.315
-stone-disc absolute error and 4.4% error relative to `max(1, reference)`.
-These are sampled measurements, not certified error bounds.
+### Binary splitting predicate
 
-The center annulus reaches less than `sqrt(2) * diameter` from `p`; its footprint
-reaches less than `(sqrt(2) + 0.5) * diameter`. Existing obstacle centers beyond
-`(sqrt(2) + 1) * diameter` cannot affect it. Full local center bitmaps are memoized
-in a collision-checked, direct-mapped 1024-slot cache, bounded at about 2 MiB per
-extractor and shared safely by its move workers. Misses are computed normally;
-cache collisions never alter values. No fine-candidate subsampling or policy
-normalization change is introduced. This remains a learned input, not an eye
-count, reward, legality rule, or forced maximization.
+For an authoritative legal placement at `p`:
 
-**Coverage, not just area accuracy:** `src/features/footprint/coverage_tests.rs`
-checks all 708,518 radius/axis-offset phases (physical radii 1–500), full-disc
-survival at all 9,216 supported interior raster positions, and all four board
-reflections of a single touching corner center. Nine visual fixtures include
-an off-grid one-point eye from real obstacles, one-coordinate-wide slits,
-separate pockets, border clipping, and a correct local zero. Every exact center
-must keep a center bit and footprint coverage; full unions must match an
-independent pixel-by-pixel disc-stamping oracle. Real fixtures additionally
-match exhaustive fixed-obstacle predicates. Nearby centers or tiny gaps can
-**merge** at raster resolution: this does not promise preserving topology or
-coarse-policy proposal coverage. Capped-path tests additionally compare against
-`min(full_raster, 3)`, including three nearly touching discs whose union is just
-below three. The probe shortcut is only a sufficient certificate, never a guess
-from the number of neighbors. See the [visual coverage audit](../history/2026-11-08-footprint-coverage.md)
-and [cap-three costs](../history/2026-11-08-cap3-footprint.md).
+1. Start with the actual child position, including enemy captures and any removed
+   friendly stones, then temporarily remove just the newly placed stone.
+2. Available centers are all integer coordinates inside the board's permitted
+   center rectangle, not overlapping any surviving stone: squared distance must
+   be at least `diameter²`. Connect available centers by **eight-neighbour** unit
+   steps. No grid subsampling or interpolation is used.
+3. Find the available-center component containing `p`. It is **friendly-bounded**
+   iff its blocked unit neighbours touch at least one friendly stone and no
+   enemy stone. Board edges are neutral permitted boundaries. A blocked neighbour
+   overlapping both colours counts as touching both, so does not qualify.
+4. Insert the candidate's strict diameter-radius exclusion disc into that one
+   component. Return **1** iff at least two nonempty components remain; otherwise
+   return **0**. Each surviving component contains at least one exact integer
+   center, including single-coordinate pockets and passages.
 
-The former whole-group draft field `resulting_liberty_footprint_stones` and the
-uncapped local field `local_liberty_footprint_stones` are no longer accepted in
-checkpoint/export feature metadata; start fresh schema-5 training with the
-finalized contract. Earlier draft tensors must be regenerated; matching final
-feature metadata, not the old draft's width alone, determines compatibility.
+Thus this tests a split, not simply whether two pockets already exist. Filling
+an eye, open-board play without a split, and splitting enemy/mixed-boundary space
+return zero. Capturing an enemy intruder can turn the region friendly: the test
+uses the actual surviving stones, not fixed pre-move blockers. It is a geometric
+input, **not a proof of two true eyes, independent playable stones, one owning
+chain, unconditional life, or a legality rule**. Friendly boundary stones may
+belong to different groups; tactical and group inputs remain separate.
+
+### Intended signal: rare moves that divide space into two eyes
+
+**The user's motivation for this feature is helping the network learn to make
+two eyes, not merely rewarding generic open space.** A placement can divide a
+local region into two separate eye pockets. If each pocket admits only one
+stone center and their physical footprints are disjoint, their union is about
+**two stone-discs**. Other placement directions may leave only one such pocket
+and less footprint. The useful dividing placement can occupy **only one exact
+coordinate, or very few coordinates**, while nearby alternatives lose the second
+pocket. A tiny change in candidate position can therefore remove an entire disc's
+worth of signal; the feature need not be smooth across neighboring actions.
+
+This was the motivation for the original footprint proxy and is preserved here
+as design rationale. Area alone could also be large in one connected region and
+was colour-blind; the replacement tests a friendly-region split directly, rather
+than integrating area. The binary predicate above is still not a life-and-death
+solver or a replacement for authoritative legality/captures.
+
+**Optimization must preserve the rare action's contrast with its alternatives.**
+Use targeted candidate-neighborhood tests: does the one/few-coordinate dividing
+move retain a positive split bit versus nearby one-pocket moves? For the old
+area proxy, this was the roughly two-disc versus one-disc contrast; small
+average/p95 area error over random positions was not enough. Preserving zero versus nonzero, or retaining one isolated center,
+is also not enough: both alternatives may be nonzero, yet losing the second
+pocket destroys precisely the intended distinction. Interpolating between moves,
+sharing one scalar across a cell, or sparsely probing directions can smooth away
+that narrow peak even when their aggregate error looks small. Evaluate this
+failure mode explicitly before adopting any approximation or removing the input.
+
+### Implementation and regression coverage
+
+The extractor builds exact per-row exclusion unions, available runs, component
+labels and boundary colours once per position, lazily on the first legal query.
+Most candidates immediately reject a non-friendly source component. Qualifying
+queries subtract the candidate disc from that component's runs and count its
+remaining components with scanline union-find. Thread-local scratch is reused;
+there is no footprint raster, dilation, area integration or million-point flood
+fill per candidate. The source region may extend beyond the candidate's local
+annulus: this is intentionally a region property, not the replaced local scalar.
+
+Capturing moves share indices keyed by exact surviving old stones, capped at 16
+states and 4 MiB accounted index/key payload per extractor; excess entries are
+evicted and oversized entries computed without retention. The parent index and
+thread-local scratch are additional geometry-bounded memory, not included in
+that capture-cache payload budget. Parallel extraction shares immutable indices;
+ordinary move validation and search selection are unchanged.
+
+Tests compare scanline results against an independent point flood-fill oracle,
+including both colours, mixed boundaries, edge-bounded space, actual captures,
+zero/one-center remnants and diagonal connectivity. A synthetic corridor has
+exactly one dividing coordinate. A real size-3 fixture has only five neighboring
+dividing x coordinates, with immediate adjacent moves returning zero. An enemy
+intruder captured by the dividing move tests the difference from fixed blockers.
+Serial/parallel feature extraction remains bitwise identical.
+
+The old `local_liberty_footprint_stones_cap3` and earlier draft footprint names
+are no longer accepted in checkpoint/export metadata. Their implementation and
+coverage tests remain test-only historical references. See the
+[replacement benchmark](../history/2026-11-08-friendly-region-splitting.md),
+[old footprint coverage](../history/2026-11-08-footprint-coverage.md) and
+[old cap-three costs](../history/2026-11-08-cap3-footprint.md).
 
 For illegal moves, columns 0–6 are zero and only border geometry remains. Legality also has a separate boolean
 mask for the network. It includes suicide and captures, not just geometric
@@ -183,8 +217,8 @@ Finished games cannot be policy inputs. The shared rules do not enforce ko.
 These two coarse planes are absent from new schema-5 models. They remain available
 only to existing twelve-plane networks, not as zero-filled placeholder inputs.
 Exact per-candidate captures in the detailed policy are unchanged. Schema 4
-retains its original ten exact columns, with borders at 6–9; the new footprint
-scalar at column 6 is schema-5-only, moving schema-5 borders to 7–10.
+retains its original ten exact columns, with borders at 6–9; the new splitting
+bit at column 6 is schema-5-only, moving schema-5 borders to 7–10.
 
 Each group's flag is 1 iff its **opposite color** has a legal placement that
 removes the whole group on the unchanged position. It is painted on all of that
@@ -214,8 +248,8 @@ are covered. Normal self-play/search behavior is unchanged.
 Schema 5 represents the following shape spatially, unioned per colour and
 antialiased as described above. The scalar integration below is used only by
 legacy schema-4 coarse extraction and optional accuracy/preview diagnostics.
-Current coarse inputs use spatial maps; the local exact-column area uses the
-explicit compact raster described above instead of this integrator.
+Current coarse inputs use spatial maps; the exact splitting bit does not measure
+area at all.
 
 We measure the region drawn by `Coverage.elm`: each exact integer liberty-center
 row span is swept by a disk of the **physical stone radius** (a horizontal capsule,
@@ -237,8 +271,8 @@ pointwise checks of the exact center spans against the shared rule geometry.
 
 Legacy coarse area is computed once per existing group. Current schema 5 does
 not integrate child-group areas. Per-move legality, connections, captures and
-resulting group sizes remain exact; local footprint area is the explicitly
-approximate fixed-obstacle raster measurement.
+resulting group sizes remain exact; binary splitting is exact for its stated
+integer-center connectivity and boundary-colour definition.
 
 Area is **not** a moves-to-capture counter. Equal-area regions can have different
 shapes or separated pockets; attack legality and defensive extensions/connections
@@ -424,11 +458,12 @@ legality encoding and action domains before creating writable tensors.
 Schemas 4 and 5 both have twelve coarse planes, but their channel meanings
 differ. Schema 5 has eleven exact fields; schema 4 retains ten. Schema 5 uses
 spatial centers and footprints instead of coarse scalar liberty area and capture
-flags, and adds local fixed-obstacle footprint-union area to exact inputs. Schema 4 remains supported for existing
+flags, and adds binary friendly-region splitting to exact inputs. Schema 4 remains supported for existing
 score/ownership inference and visualization. Header schema and model feature names,
 not width alone, identify the semantics. Packets/checkpoints
 without `targets: final-area-v1` remain incompatible.
 Rebuild
 the extractor and discard incompatible derived packets/checkpoints; source SGFs
-remain usable. Schema 5 is finalized; further feature changes require a
-schema-version bump and compatible checkpoint/ONNX feature metadata.
+remain usable. This unused schema-5 revision was explicitly user-authorized;
+checkpoint/ONNX feature names must match, and all older schema-5 tensor packets
+must be discarded.

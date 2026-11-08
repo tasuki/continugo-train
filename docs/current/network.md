@@ -38,22 +38,20 @@ Only selected cells receive exact move analysis: every integer coordinate inside
 them, once. No overlapping windows or full-board exact scan. Within each cell,
 the coordinate scorer bilinearly samples 16-channel projected coarse context,
 adds a shared linear projection of eleven exact features, applies ReLU, and reads
-out a scalar. The finalized schema-5 field is `local_liberty_footprint_stones_cap3`:
-the new stone's local footprint union with existing stones fixed as obstacles,
-not its merged group's distant liberties. Exact local centers feed a 128×128
-bitset at 16 samples per physical radius; its approximate area is calibrated so
-one isolated center has one stone-disc. It is capped at three, not log-scaled;
-the learned scorer combines it with coarse context. It is not an
-explicit eye reward. Exact features are never interpolated. Pass is always
+out a scalar. Schema-5 column 6 is binary `splits_friendly_region`: using actual
+child survivors, does placing the new stone split one friendly-bounded
+available-center region into at least two nonempty components? Exact integer
+scanline connectivity retains narrow splitting moves; there is no per-candidate
+area integration or raster dilation. This is a learned geometric input, not an
+explicit eye reward or proof of life. Exact features are never interpolated. Pass is always
 available. Legacy schema-4 models retain ten exact features.
 
-With default widths and finalized schema-5 inputs, the network has **81,766 trainable
+With default widths and schema-5 inputs, the network has **81,766 trainable
 parameters**: trunk 77,760; policy branches including pass 1,283; outcome 1,089;
 score 1,089; ownership 545. The added exact input contributes 16 weights.
-Local geometry reuses cached obstacle rows and memoizes complete local center
-rasters (about 2 MiB maximum per extractor); no child-group area integration is
-performed. Disjoint free probes certify saturation before rasterization; fallback
-rasterization stops at the cap. See [cap-three costs](../history/2026-11-08-cap3-footprint.md).
+Region indices are shared within a position; exact captured-survivor indices use
+a bounded cache. See the [feature definition](features.md#binary-splitting-predicate)
+and [replacement costs](../history/2026-11-08-friendly-region-splitting.md).
 The synthetic benchmark below preallocates exact inputs and does not measure
 extraction cost.
 
@@ -111,12 +109,14 @@ estimating their partition function. Coverage/strength remain experimental.
 Checkpoint and ONNX metadata require policy version **`cells-v1`**. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. New training uses feature
-finalized schema 5 with twelve coarse planes: antialiased occupancy, connected group
+schema 5 with twelve coarse planes: antialiased occupancy, connected group
 size, spatial liberty centers/footprints and borders; no scalar liberty area or
 capturability flags. Schema-4 score/ownership inference and viewing explicitly preserve all
 twelve original coarse inputs and ten exact fields. Earlier draft-schema-5
 checkpoints with different planes, exact features or ordering are incompatible;
-fresh training with the finalized contract is required.
+fresh training with the current splitting contract is required. The user
+explicitly reopened unused schema 5 for this replacement; old footprint feature
+metadata is not accepted.
 See [features](features.md).
 The pass-preserving normalization correction changes native execution only, not
 weights, features, graph outputs, or the training objective. Current exports additionally require `targets: final-area-v1`; old policy/value-only

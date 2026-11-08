@@ -100,18 +100,16 @@ class RealFeatureTests(unittest.TestCase):
         hard = self.load(2, actions=[38038], feature_schema=4)
         torch.testing.assert_close(defended.coarse[6], hard.coarse[0])
 
-    def test_post_move_footprint_is_versioned_and_not_clipped(self):
+    def test_region_splitting_is_binary_and_preserves_other_fields(self):
         actions = [200200, 0, 276200]
         current = self.load(actions=actions)
         legacy = self.load(actions=actions, feature_schema=4)
-        self.assertEqual(MOVE_FEATURES[6], "local_liberty_footprint_stones_cap3")
+        self.assertEqual(MOVE_FEATURES[6], "splits_friendly_region")
         self.assertEqual(MOVE_FEATURES[7:], LEGACY_MOVE_FEATURES[6:])
         self.assertEqual(current.exact.shape, (3, 11))
-        without_footprint = torch.cat((current.exact[:, :6], current.exact[:, 7:]), dim=1)
-        torch.testing.assert_close(without_footprint, legacy.exact, rtol=0, atol=0)
-        self.assertEqual(current.exact[0, 6], 3)
-        self.assertEqual(current.exact[1, 6], 0)  # Illegal placement.
-        self.assertEqual(current.exact[2, 6], 3)
+        without_split = torch.cat((current.exact[:, :6], current.exact[:, 7:]), dim=1)
+        torch.testing.assert_close(without_split, legacy.exact, rtol=0, atol=0)
+        self.assertEqual(current.exact[:, 6].tolist(), [0, 0, 0])  # Open board; illegal row zero.
         with FeatureClient(self.binary) as client:
             empty = client.load(self.sgf, 0, cells=[])
         self.assertEqual(empty.exact.shape, (0, 11))
@@ -302,11 +300,11 @@ class RealFeatureTests(unittest.TestCase):
             255,
         )
         mutations.append(bytes(illegal_byte))
-        footprint_offset = HEADER.size + len(COARSE_PLANES) * resolution**2 * 4 + 6 * 4
-        for value in (-1.0, 3.01, float("nan"), float("inf")):
-            bad_footprint = bytearray(packet)
-            struct.pack_into("<f", bad_footprint, footprint_offset, value)
-            mutations.append(bytes(bad_footprint))
+        splitting_offset = HEADER.size + len(COARSE_PLANES) * resolution**2 * 4 + 6 * 4
+        for value in (-1.0, 0.5, 2.0, 3.0, float("nan"), float("inf")):
+            bad_split = bytearray(packet)
+            struct.pack_into("<f", bad_split, splitting_offset, value)
+            mutations.append(bytes(bad_split))
         old_width = bytearray(packet)
         struct.pack_into("<I", old_width, 16, 10)
         mutations.append(bytes(old_width))

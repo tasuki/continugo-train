@@ -64,6 +64,14 @@ class NnViewerTests(unittest.TestCase):
             self.checkpoint,
         )
 
+    def test_unused_schema5_old_footprint_metadata_is_rejected(self):
+        saved = torch.load(self.checkpoint, weights_only=False)
+        saved["feature_spec"]["moves"][6] = "local_liberty_footprint_stones_cap3"
+        stale = self.root / "old-footprint.pt"
+        torch.save(saved, stale)
+        with self.assertRaisesRegex(ValueError, "incompatible feature"):
+            load_checkpoint(stale)
+
     def test_self_contained_report_all_moves_inputs_images_and_navigation(self):
         output = self.root / "game.html"
         generate(self.sgf, self.checkpoint, output)

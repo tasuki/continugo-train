@@ -20,7 +20,8 @@ import numpy as np
 import torch
 from torch import Tensor
 
-# Schema 5 finalized by user approval on 2026-11-08. Feature changes require a new version.
+# User reopened unused schema 5 on 2026-11-08: binary friendly-region splitting.
+# Checkpoint/export feature names must match; old footprint metadata is rejected.
 SCHEMA_VERSION = 5
 POINT_SAMPLED_SCHEMA = 4
 LEGACY_COARSE_PLANES = (
@@ -73,7 +74,7 @@ LEGACY_MOVE_FEATURES = (
 )
 MOVE_FEATURES = (
     *LEGACY_MOVE_FEATURES[:6],
-    "local_liberty_footprint_stones_cap3",
+    "splits_friendly_region",
     *LEGACY_MOVE_FEATURES[6:],
 )
 
@@ -254,7 +255,7 @@ def decode_sample(
         or (raw_legal > 1).any()
         or (actions >= PASS).any()
         or not np.array_equal(exact[:, 0], raw_legal)
-        or (version == SCHEMA_VERSION and ((exact[:, 6] < 0) | (exact[:, 6] > 3)).any())
+        or (version == SCHEMA_VERSION and ((exact[:, 6] != 0) & (exact[:, 6] != 1)).any())
         or (version == SCHEMA_VERSION and (exact[raw_legal == 0, 6] != 0).any())
     ):
         raise ValueError(

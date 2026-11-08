@@ -5,14 +5,28 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
-## First: investigate parent/child feature caching
+## First: avoid repeated fine-feature work
 
-- [ ] Investigate incremental reuse of position-specific feature work between
-  parent and child search positions, rather than rebuilding every child's inputs
-  from scratch. Consider unchanged groups, liberty spans, blocker rows and raster
-  regions; handle captures and group merges correctly. Compare against full
-  extraction for bitwise parity, bounded memory and end-to-end search throughput.
-  Existing exact-state network-context caching does not provide this reuse.
+- [ ] Remove the obsolete local liberty-footprint scalar implementation and its
+  test-only cache/projection/shortcut benchmarks now that binary region splitting
+  replaces it. Keep the comparison results and eye-making rationale in history;
+  preserve schema-4 support. This cleanup concerns the replaced fine scalar, not
+  the separate coarse spatial liberty-center/footprint planes.
+- [ ] Trial a certified no-capture summary fast path in shared rules, reusing
+  prepared liberty witnesses and avoiding child construction/repeated scans on
+  proven ordinary moves. Unresolved candidates must use the authoritative
+  validator. Obtain confirmation before modifying the sibling checkout;
+  differential-check captures, suicide, joins, both colours and board sizes.
+  Compare any rules fast path in fixed seeded native searches for end-to-end
+  throughput, peak memory and moves/visits/results, with concurrency, batching,
+  model and source positions fixed. Include value-only leaves; retain only
+  measured benefits and recheck trained schema-5 proposals.
+
+The [friendly-region split replacement](history/2026-11-08-friendly-region-splitting.md)
+is implemented; the old local-footprint field, projection optimization and
+inherited scalar-cache proposal are obsolete. The prior
+[fine-feature investigation](history/2026-11-08-fine-shortcuts.md) still motivates
+avoiding discarded child construction in shared rules, with confirmation.
 
 ## Later, only if a bottleneck appears
 
@@ -25,11 +39,10 @@ as a reference, adapting it to ContinuGo.
   or waiting for features becomes a substantial cost. Use longer training runs
   to check this; recheck the six-worker setting on the trial corpus rather than
   making another worker sweep a prerequisite for learning.
-- [ ] Profile `PreparedPosition::analyze_move` internals if exact move analysis
-  becomes a significant end-to-end cost: legality, tactical summaries, discarded
-  child construction, repeated scans, and allocations. Add a shared-rules
-  summary-only path only if justified; differential-check against the validator,
-  including captures and suicide.
+- [ ] If unresolved candidates still dominate after the certified fast path,
+  profile `PreparedPosition::analyze_move` internals and trial a general shared-rules
+  summary-only path to avoid discarded children/repeated scans/allocations on
+  those candidates too; differential-check captures and suicide.
 - [ ] Tune scorer batching and cell budgets for speed if their measured cost
   becomes significant; retain tactical-coverage and strength checks.
 - [ ] Investigate CPU/GPU pipelining and GPU-resident contexts if the remaining
