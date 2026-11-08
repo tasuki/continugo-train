@@ -11,13 +11,28 @@
 //! tested numerical accuracy, not a certified worst-case integration error bound.
 
 use continugo_rules::LibertySpan;
-use std::f64::consts::PI;
+use std::{f64::consts::PI, sync::OnceLock};
 
 pub(crate) fn in_stone_discs(spans: &[LibertySpan], radius: i32) -> f64 {
     measure(spans, f64::from(radius), 1)
 }
 
+/// Same midpoint samples as legacy extraction. Cache circular extensions only
+/// when binary-exact grid spacing guarantees identical floating-point endpoints.
+#[cfg(test)]
+pub(crate) fn candidate_in_stone_discs(spans: &[LibertySpan], radius: i32) -> f64 {
+    let density = (32.0 / f64::from(radius)).ceil().max(1.0) as usize;
+    if !(1..=500).contains(&radius) || !density.is_power_of_two() {
+        return in_stone_discs(spans, radius);
+    }
+    measure_impl::<true>(spans, f64::from(radius), 1)
+}
+
 fn measure(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
+    measure_impl::<false>(spans, radius, refinement)
+}
+
+fn measure_impl<const KERNEL: bool>(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
     assert!(radius > 0.0);
     let Some(first) = spans.first() else {
         return 0.0;
@@ -35,6 +50,21 @@ fn measure(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
     let slices_per_unit = (32.0 / radius).ceil().max(1.0) as usize * refinement;
     let slices = (high - low) as usize * slices_per_unit;
     let step = 1.0 / slices_per_unit as f64;
+    static KERNELS: [OnceLock<Vec<f64>>; 501] = [const { OnceLock::new() }; 501];
+    let kernel = if KERNEL {
+        KERNELS[radius as usize]
+            .get_or_init(|| {
+                (0..2 * radius as usize * slices_per_unit)
+                    .map(|i| {
+                        let dy = -radius + (i as f64 + 0.5) * step;
+                        (radius * radius - dy * dy).max(0.0).sqrt()
+                    })
+                    .collect()
+            })
+            .as_slice()
+    } else {
+        &[]
+    };
     // Maintain the sorted disjoint union directly. Most slices have only one
     // or two components, even when hundreds of source spans overlap them. This
     // avoids materializing and sorting every capsule interval on every slice.
@@ -50,8 +80,13 @@ fn measure(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
         for span in &spans[start..end] {
             // Disjoint spans on the same source row share the same round end.
             if row != Some(span.y) {
-                let dy = y - f64::from(span.y);
-                extension = (radius * radius - dy * dy).max(0.0).sqrt();
+                extension = if KERNEL {
+                    let index = i as isize - (span.y - first.y) as isize * slices_per_unit as isize;
+                    kernel[index as usize]
+                } else {
+                    let dy = y - f64::from(span.y);
+                    (radius * radius - dy * dy).max(0.0).sqrt()
+                };
                 row = Some(span.y);
             }
             let mut left = f64::from(span.left) - extension;
@@ -154,6 +189,11 @@ mod tests {
                     });
                 }
                 spans.sort_by_key(|s| s.y);
+                assert_eq!(
+                    candidate_in_stone_discs(&spans, radius).to_bits(),
+                    in_stone_discs(&spans, radius).to_bits(),
+                    "candidate radius={radius}, trial={trial}"
+                );
                 for refinement in [1, 2] {
                     assert_eq!(
                         measure(&spans, f64::from(radius), refinement).to_bits(),

@@ -1,4 +1,4 @@
-//! Spatial group/liberty maps for draft schema 5. Rules provide membership,
+//! Spatial group/liberty maps for finalized schema 5. Rules provide membership,
 //! adjacency and exact integer liberty spans; this module only rasterizes them.
 use continugo_rules::{Board, LibertySpan, Spot, Stone};
 

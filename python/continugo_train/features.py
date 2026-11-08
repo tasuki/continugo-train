@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-# Unreleased draft: finalize schema 5 only when the next training run starts.
+# Schema 5 finalized by user approval on 2026-11-08. Feature changes require a new version.
 SCHEMA_VERSION = 5
 POINT_SAMPLED_SCHEMA = 4
 LEGACY_COARSE_PLANES = (
@@ -59,7 +59,7 @@ def coarse_planes(schema=SCHEMA_VERSION):
     return COARSE_PLANES if schema == SCHEMA_VERSION else LEGACY_COARSE_PLANES
 
 
-MOVE_FEATURES = (
+LEGACY_MOVE_FEATURES = (
     "legal",
     "connected_groups",
     "connected_stones",
@@ -71,6 +71,19 @@ MOVE_FEATURES = (
     "top_border",
     "bottom_border",
 )
+MOVE_FEATURES = (
+    *LEGACY_MOVE_FEATURES[:6],
+    "local_liberty_footprint_stones_cap3",
+    *LEGACY_MOVE_FEATURES[6:],
+)
+
+
+def move_features(schema=SCHEMA_VERSION):
+    if schema not in (POINT_SAMPLED_SCHEMA, SCHEMA_VERSION):
+        raise ValueError(f"unsupported feature schema {schema}")
+    return MOVE_FEATURES if schema == SCHEMA_VERSION else LEGACY_MOVE_FEATURES
+
+
 PASS = 1_000_000
 TARGET_VERSION = "final-area-v1"
 HEADER = struct.Struct("<8s11If2If")
@@ -178,7 +191,7 @@ def decode_sample(
         or feature_schema not in (POINT_SAMPLED_SCHEMA, SCHEMA_VERSION)
         or version != feature_schema
         or planes != len(coarse_planes(feature_schema))
-        or fields != len(MOVE_FEATURES)
+        or fields != len(move_features(feature_schema))
     ):
         raise ValueError("unsupported feature schema")
     if (
@@ -241,6 +254,8 @@ def decode_sample(
         or (raw_legal > 1).any()
         or (actions >= PASS).any()
         or not np.array_equal(exact[:, 0], raw_legal)
+        or (version == SCHEMA_VERSION and ((exact[:, 6] < 0) | (exact[:, 6] > 3)).any())
+        or (version == SCHEMA_VERSION and (exact[raw_legal == 0, 6] != 0).any())
     ):
         raise ValueError(
             "nonfinite features, invalid capture flags/actions or inconsistent legality"

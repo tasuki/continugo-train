@@ -5,6 +5,15 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
+## First: investigate parent/child feature caching
+
+- [ ] Investigate incremental reuse of position-specific feature work between
+  parent and child search positions, rather than rebuilding every child's inputs
+  from scratch. Consider unchanged groups, liberty spans, blocker rows and raster
+  regions; handle captures and group merges correctly. Compare against full
+  extraction for bitwise parity, bounded memory and end-to-end search throughput.
+  Existing exact-state network-context caching does not provide this reuse.
+
 ## Later, only if a bottleneck appears
 
 - [ ] Tune the existing search cache: test whether retaining more already-computed

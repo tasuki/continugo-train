@@ -4,7 +4,7 @@ import unittest
 import torch
 
 from continugo_train.data import TrainingSample, collate
-from continugo_train.features import COARSE_PLANES
+from continugo_train.features import COARSE_PLANES, MOVE_FEATURES
 from continugo_train.losses import hierarchical_policy_value_loss, joint_loss
 from continugo_train.model import (
     NetworkConfig,
@@ -59,7 +59,7 @@ class CellPolicyTests(unittest.TestCase):
         for parameter in model.parameters():
             parameter.data.zero_()
         actions = cell_actions([0, 39], 38)
-        exact = torch.zeros(1, actions.numel(), 10)
+        exact = torch.zeros(1, actions.numel(), len(MOVE_FEATURES))
         legal = torch.ones(1, actions.numel(), dtype=torch.bool)
         logits, _ = model(torch.zeros(1, len(COARSE_PLANES), 38, 38), exact, actions, legal)
         owners = cell_ids(actions, 38)
@@ -81,7 +81,7 @@ class CellPolicyTests(unittest.TestCase):
     def test_omitting_zero_target_cells_does_not_change_loss_or_gradients(self):
         coarse = torch.randn(1, len(COARSE_PLANES), 38, 38)
         all_actions = cell_actions([39, 40], 38)
-        all_exact = torch.randn(1, all_actions.numel(), 10)
+        all_exact = torch.randn(1, all_actions.numel(), len(MOVE_FEATURES))
         count = cell_actions([39], 38).numel()
         gradients, losses = [], []
         for n in [count, all_actions.numel()]:
@@ -109,7 +109,7 @@ class CellPolicyTests(unittest.TestCase):
         coarse = torch.randn(len(COARSE_PLANES), 38, 38)
         first = TrainingSample(
             coarse,
-            torch.randn(actions.numel(), 10),
+            torch.randn(actions.numel(), len(MOVE_FEATURES)),
             torch.ones(actions.numel(), dtype=torch.bool),
             torch.tensor([0, actions.numel()]),
             torch.tensor([7.0, 1.0]),
@@ -123,7 +123,7 @@ class CellPolicyTests(unittest.TestCase):
         )
         second = TrainingSample(
             coarse,
-            torch.zeros(0, 10),
+            torch.zeros(0, len(MOVE_FEATURES)),
             torch.zeros(0, dtype=torch.bool),
             torch.tensor([0]),
             torch.tensor([3.0]),

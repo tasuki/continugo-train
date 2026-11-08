@@ -20,12 +20,12 @@ import numpy as np
 import torch
 
 from .features import (
-    MOVE_FEATURES,
     PASS,
     SCHEMA_VERSION,
     FeatureClient,
     coarse_planes,
     inspect_game,
+    move_features,
 )
 from .model import NetworkConfig, PolicyValueNet, cell_ids, local_log_probs
 from .train import feature_spec
@@ -132,6 +132,20 @@ def coarse_plane_image(name, values, index, schema):
         )
         note = notes[index // 2] if index < 8 else ""
     return heatmap(name, values, limits=limits, note=note)
+
+
+def exact_feature_image(name, actions, values):
+    footprint = name == "local_liberty_footprint_stones_cap3"
+    return heatmap(
+        name,
+        raster(actions, values),
+        limits=(0, 3) if footprint else (0, 1),
+        note=(
+            "Local union; cap 3 discs; fixed obstacles; 16/radius; mean / pixel"
+            if footprint
+            else "Mean / display pixel"
+        ),
+    )
 
 
 def action_name(action):
@@ -294,6 +308,7 @@ def frame(client, sgf, ply, loaded, info):
         "diameter": sample.diameter,
         "resolution": resolution,
         "feature_schema": schema,
+        "features": move_features(schema),
         "view": view,
         "move": action_name(view["action"]),
         "counterfactual": counterfactual,
@@ -324,13 +339,8 @@ def frame(client, sgf, ply, loaded, info):
             )
         ],
         "exact": [
-            heatmap(
-                name,
-                raster(actions, exact[:, i]),
-                limits=(0, 1),
-                note="Mean / display pixel",
-            )
-            for i, name in enumerate(MOVE_FEATURES)
+            exact_feature_image(name, actions, exact[:, i])
+            for i, name in enumerate(move_features(schema))
         ],
         "context": [
             heatmap(f"Policy spatial channel {i}", channel.numpy(), signed=True)
@@ -380,7 +390,7 @@ function board(f){const c=$('board').getContext('2d'),scale=560/1000,xy=v=>20+v*
 function show(i){if(!frames.length)return;index=Math.max(0,Math.min(frames.length-1,i));const f=frames[index];$('slider').value=index;$('prev').disabled=!index;$('next').disabled=index===frames.length-1;$('position').textContent=`Move ${f.ply+1} / ${data.moves||frames.length} · view ${index+1}/${frames.length}`;$('turn').textContent=`${f.player?'White':'Black'} to play ${f.move}${f.counterfactual?' · counterfactual NN':''}`;
 $('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points ${fmt(f.points_pct,1)}%`,`Score ${fmt(f.score)} · ${fmt(f.score_stones,1)} stones`,`Head utility ${fmt(f.utility)} (score weight ${f.score_weight})`,`Policy training ${f.train_policy?'enabled':'absent/masked'}`,`Final outcome ${fmt(f.outcome,0)} · score ${fmt(f.score_target)}`,`P(pass) coarse ${fmt(f.coarse_pass,5)} / final ${fmt(f.pass,5)}`,`Search visits ${f.visits} · pass ${f.pass_visits}`,`${f.resolution}² raster · size ${f.board_size} · inputs v${f.feature_schema||4}`,`${f.cells} cells · ${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
 $('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,f[name]);
-const table=$('candidates');table.replaceChildren();let tr=document.createElement('tr');for(const name of ['Action','P(move)','Raw logit','P(move|cell)',...data.features]){const th=document.createElement('th');th.textContent=name;tr.append(th)}table.append(tr);for(const row of f.candidates){tr=document.createElement('tr');for(const value of [row.action,fmt(row.p,6),fmt(row.logit),fmt(row.local,6),...(row.features||data.features.map(()=>null)).map(v=>fmt(v))]){const td=document.createElement('td');td.textContent=value;tr.append(td)}table.append(tr)}}
+const features=f.features||data.features,table=$('candidates');table.replaceChildren();let tr=document.createElement('tr');for(const name of ['Action','P(move)','Raw logit','P(move|cell)',...features]){const th=document.createElement('th');th.textContent=name;tr.append(th)}table.append(tr);for(const row of f.candidates){tr=document.createElement('tr');for(const value of [row.action,fmt(row.p,6),fmt(row.logit),fmt(row.local,6),...(row.features||features.map(()=>null)).map(v=>fmt(v))]){const td=document.createElement('td');td.textContent=value;tr.append(td)}table.append(tr)}}
 const skipped=data.skipped||[];if(skipped.length){$('skipped').hidden=false;$('skippedtitle').textContent=`${skipped.length} moves skipped (random or unsupported network)`;for(const s of skipped){const li=document.createElement('li');li.textContent=`Move ${s.ply+1} · ${s.player?'White':'Black'}: ${s.reason}`;$('skiplist').append(li)}}
 if(!frames.length){document.querySelector('main').hidden=true;$('notice').hidden=false;$('notice').textContent='No moves can be visualized with the available supported checkpoints. See the skipped-move reasons below; the original game is embedded in SGF ↓.';$('position').textContent=`0 visualizable / ${data.moves||0} moves`;for(const id of ['slider','prev','next'])$(id).disabled=true}
 $('slider').max=Math.max(0,frames.length-1);$('slider').oninput=e=>show(+e.target.value);$('prev').onclick=()=>show(index-1);$('next').onclick=()=>show(index+1);$('close').onclick=()=>$('zoom').close();$('sgf').href=data.sgf;
@@ -400,8 +410,16 @@ def _write_report(sgf, output, info, players, reasons, *, binary=None, rated=Fal
         try:
             stream.write(PAGE)
             stream.write('<script id="data" type="application/json">')
+            schema = next(
+                (
+                    getattr(player[0], "feature_schema", SCHEMA_VERSION)
+                    for player in players
+                    if player
+                ),
+                SCHEMA_VERSION,
+            )
             metadata = {
-                "features": MOVE_FEATURES,
+                "features": move_features(schema),
                 "sgf_sha256": info["file_sha256"],
                 "moves": info["moves"],
                 "mode": RATED_MODE if rated else "checkpoint-replay",

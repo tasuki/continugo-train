@@ -31,6 +31,7 @@ from .features import (
     FeatureProfile,
     coarse_planes,
     feature_binary,
+    move_features,
     ownership_weights,
 )
 from .losses import joint_loss
@@ -102,7 +103,7 @@ def feature_spec(density, *, schema=SCHEMA_VERSION):
         "policy": POLICY_VERSION,
         "targets": TARGET_VERSION,
         "coarse": list(planes),
-        "moves": list(MOVE_FEATURES),
+        "moves": list(move_features(schema)),
         "samples_per_diameter": density,
     }
 

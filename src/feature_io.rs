@@ -1,7 +1,7 @@
 //! CGFEAT02 tensor packet, including validated final score/ownership targets.
 
 use crate::{
-    features::{FeatureExtractor, MOVE_FEATURES, SCHEMA_VERSION, coarse_planes},
+    features::{FeatureExtractor, SCHEMA_VERSION, coarse_planes, move_features},
     replay::{ReplayPosition, player_index},
 };
 use continugo_rules::{Action, COORDINATE_ACTIONS};
@@ -112,7 +112,7 @@ fn encode<const PROFILE: bool>(
     for number in [
         schema,
         coarse_planes(schema)?.len() as u32,
-        MOVE_FEATURES.len() as u32,
+        move_features(schema)?.len() as u32,
         sample.game.board().size() as u32,
         sample.game.board().diameter() as u32,
         extractor.resolution as u32,

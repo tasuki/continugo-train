@@ -67,7 +67,7 @@ Each page is a **pre-move position**, relative to the player about to move:
 
 - Authoritatively replayed physical board, with a cross at the move played.
 - Every coarse input plane, named and scaled: twelve in either schema, with
-  different meanings. Draft schema 5 shows antialiased occupancy, connected group
+  different meanings. Finalized schema 5 shows antialiased occupancy, connected group
   size, both liberty-center and liberty-footprint unions, and borders. It has no
   scalar liberty-area or capturable-in-one planes. Legacy schema 4 keeps its actual
   point-sampled inputs and flags; its uncapped scalar liberty area is shown in raw
@@ -75,8 +75,14 @@ Each page is a **pre-move position**, relative to the player about to move:
 - Coarse cell logits and global softmax probabilities, plus separate pass mass.
 - Diagnostic selected-cell coverage, exact legal raw logits, conditional
   `P(move | cell)`, and redistributed final placement probabilities.
-- All 10 exact coordinate input features, including legality, connections,
-  captures, resulting group size and border geometry.
+- All 11 finalized-schema-5 exact coordinate input features, including legality,
+  connections, captures, resulting group size, local fixed-obstacle footprint
+  union area, then border geometry. The local area uses a calibrated 128×128
+  raster at 16 samples per radius, ignoring group merges and capture removal.
+  It is capped at three stone-disc units and displayed on a fixed [0,3] scale.
+  Legacy schema-4
+  models retain their original 10 fields. Action-table columns follow each
+  frame's schema, including reports containing different actors.
 - Outcome value, expected points percentage, normalized score and stone-unit
   score, their score-weighted head utility, final labels when available, and
   policy-training eligibility.

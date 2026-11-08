@@ -87,13 +87,14 @@ fn parallel_move_features_match_serial_bits_and_action_order() {
         .num_threads(4)
         .build()
         .unwrap();
-    for size in [9, 13, 19] {
+    for (size, schema) in [(9, 4), (13, 4), (19, 4), (9, 5), (13, 5), (19, 5)] {
         let board = Board::new(size).unwrap();
         let r = board.stone_radius();
         let game = Game::new(board).play(Spot { x: r, y: r }).unwrap();
-        let features = FeatureExtractor::new(&game, 4).unwrap();
-        // Full domain once; noncanonical order, duplicates and uneven chunks too.
-        let step = if size == 9 { 1 } else { 127 };
+        let features = FeatureExtractor::with_schema(&game, 4, schema).unwrap();
+        // Full domain for the legacy cheap facts; >4096 rows exercise multiple
+        // chunks of the post-move integration too, with duplicates and reordering.
+        let step = if size == 9 && schema == 4 { 1 } else { 127 };
         let mut actions: Vec<_> = (0..1_000_000)
             .step_by(step)
             .map(|id| Action::from_index(id).unwrap())
@@ -248,6 +249,72 @@ fn exact_features_distinguish_touching_connections_captures_and_suicide() {
 }
 
 #[test]
+fn local_footprint_uses_fixed_obstacles_not_resulting_groups() {
+    fn check(game: &Game, spot: Spot) -> f32 {
+        let actions = [action(spot.x, spot.y), action(0, 0)];
+        let current = FeatureExtractor::new(game, 4)
+            .unwrap()
+            .moves(&actions)
+            .unwrap();
+        let legacy = FeatureExtractor::with_schema(game, 4, 4)
+            .unwrap()
+            .moves(&actions)
+            .unwrap();
+        assert_eq!(current.legal, legacy.legal);
+        assert_eq!(current.legal, [1, 0]);
+        for (row, old) in current
+            .exact
+            .as_chunks::<11>()
+            .0
+            .iter()
+            .zip(legacy.exact.as_chunks::<10>().0)
+        {
+            assert_eq!(&row[..6], &old[..6]);
+            assert_eq!(&row[7..], &old[6..]);
+        }
+        assert_eq!(current.exact[17], 0.0);
+        current.exact[6]
+    }
+    let empty = Game::default();
+    let spot = Spot { x: 500, y: 500 };
+    let open = check(&empty, spot);
+    assert!(open > 1.0);
+    let distant = empty.play(Spot { x: 100, y: 100 }).unwrap().pass().unwrap();
+    assert_eq!(check(&distant, spot), open);
+    let d = empty.board().diameter();
+    let mut chain = empty.clone();
+    for x in [500 + d, 500 + 2 * d] {
+        chain = chain.play(Spot { x, y: 500 }).unwrap().pass().unwrap();
+    }
+    let extended = chain
+        .play(Spot {
+            x: 500 + 3 * d,
+            y: 500,
+        })
+        .unwrap()
+        .pass()
+        .unwrap();
+    // Same connected group grows remotely, but the new stone's local geometry
+    // is unchanged. The remote stone is beyond (sqrt(2)+1)*diameter.
+    assert_eq!(check(&chain, spot), check(&extended, spot));
+    let mut eyes = Game::new(Board::new(3).unwrap());
+    for (x, y) in [
+        (498, 166),
+        (830, 166),
+        (166, 498),
+        (498, 498),
+        (830, 498),
+        (166, 830),
+        (498, 830),
+    ] {
+        eyes = eyes.play(Spot { x, y }).unwrap().pass().unwrap();
+    }
+    // Legal because the joined group has a distant eye, but the new stone has
+    // no LOCAL unblocked adjacent centers. Distant group liberties do not count.
+    assert_eq!(check(&eyes, Spot { x: 830, y: 830 }), 0.0);
+}
+
+#[test]
 fn the_bootstrap_eye_filter_is_not_a_neural_legality_rule() {
     let mut game = Game::new(Board::new(3).unwrap());
     for (x, y) in [
@@ -326,7 +393,20 @@ fn antialiased_occupancy_preserves_disc_area_and_other_features() {
             let a = aa.moves(&actions).unwrap();
             let b = hard.moves(&actions).unwrap();
             assert_eq!(a.legal, b.legal);
-            assert_eq!(a.exact, b.exact);
+            for (new, old) in a
+                .exact
+                .as_chunks::<11>()
+                .0
+                .iter()
+                .zip(b.exact.as_chunks::<10>().0)
+            {
+                assert_eq!(&new[..6], &old[..6]);
+                assert_eq!(&new[7..], &old[6..]);
+                assert!(new[6] >= 0.0 && new[6].is_finite());
+                if new[0] == 0.0 {
+                    assert_eq!(new[6], 0.0);
+                }
+            }
         }
     }
     assert!(FeatureExtractor::with_schema(&Game::default(), 4, 999).is_err());

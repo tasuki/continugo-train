@@ -1,11 +1,13 @@
-//! Draft version-5 inputs: antialiased stones, connected group size, spatial
-//! liberty-center and liberty-footprint unions, and borders. Legacy version 4
-//! retains scalar group liberty area and capturability for existing models.
+//! Finalized version-5 inputs: antialiased stones, connected group size, spatial
+//! liberty-center and liberty-footprint unions, and borders. Exact move rows
+//! also carry the new stone's local geometric footprint area in stone discs.
+//! Legacy version 4 retains its original coarse inputs and ten exact fields.
 
 use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
 };
 
+mod footprint;
 mod raster;
 mod spatial;
 
@@ -47,7 +49,7 @@ impl CoarseProfile {
     }
 }
 
-// Unreleased draft: finalize schema 5 only when the next training run starts.
+// Schema 5 finalized by user approval on 2026-11-08. Feature changes require a new version.
 pub const SCHEMA_VERSION: u32 = 5;
 pub const POINT_SAMPLED_SCHEMA: u32 = 4;
 
@@ -95,7 +97,7 @@ pub const LEGACY_COARSE_PLANES: [&str; 12] = [
     "top_border",
     "bottom_border",
 ];
-pub const MOVE_FEATURES: [&str; 10] = [
+pub const LEGACY_MOVE_FEATURES: [&str; 10] = [
     "legal",
     "connected_groups",
     "connected_stones",
@@ -107,6 +109,29 @@ pub const MOVE_FEATURES: [&str; 10] = [
     "top_border",
     "bottom_border",
 ];
+
+pub const MOVE_FEATURES: [&str; 11] = [
+    "legal",
+    "connected_groups",
+    "connected_stones",
+    "captured_groups",
+    "captured_stones",
+    "resulting_group_size",
+    "local_liberty_footprint_stones_cap3",
+    "left_border",
+    "right_border",
+    "top_border",
+    "bottom_border",
+];
+
+pub fn move_features(schema: u32) -> Result<&'static [&'static str], String> {
+    validate_schema(schema)?;
+    Ok(if schema == SCHEMA_VERSION {
+        &MOVE_FEATURES
+    } else {
+        &LEGACY_MOVE_FEATURES
+    })
+}
 
 /// Coarse grid endpoints match the model's align_corners sampling at 0 and 999.
 pub fn resolution(diameter: i32, samples_per_diameter: usize) -> Result<usize, String> {
@@ -132,7 +157,8 @@ pub fn count_feature(count: usize) -> f32 {
 }
 
 pub struct MoveFeatures {
-    /// Candidate-major [N, 10]; illegal tactical columns are zero.
+    /// Candidate-major [N, fields]; schema 5 has 11, schema 4 has 10 fields.
+    /// Illegal tactical/footprint columns are zero.
     pub exact: Vec<f32>,
     pub legal: Vec<u8>,
 }
@@ -140,6 +166,8 @@ pub struct MoveFeatures {
 pub struct FeatureExtractor<'a> {
     game: &'a Game,
     prepared: PreparedPosition<'a>,
+    move_fields: usize,
+    footprints: footprint::Cache,
     pub resolution: usize,
     /// Plane-major [12, H, W]; schema determines channel meanings.
     pub coarse: Vec<f32>,
@@ -180,7 +208,7 @@ impl<'a> FeatureExtractor<'a> {
         validate_schema(schema)?;
         let mut profile = CoarseProfile::default();
         let tick = PROFILE.then(Instant::now);
-        let mut this = Self::for_moves(game)?;
+        let mut this = Self::for_moves(game, schema)?;
         if let Some(tick) = tick {
             profile.preparation.record(tick);
             profile.positions = 1;
@@ -327,13 +355,15 @@ impl<'a> FeatureExtractor<'a> {
 
     /// Move facts only: inference already has a cached coarse-network context.
     /// Keep this crate-private so an empty raster cannot escape as a full input.
-    pub(crate) fn for_moves(game: &'a Game) -> Result<Self, String> {
+    pub(crate) fn for_moves(game: &'a Game, schema: u32) -> Result<Self, String> {
         if game.is_finished() {
             return Err("cannot extract a policy input from a finished game".into());
         }
         Ok(Self {
             game,
             prepared: game.position().prepare(),
+            move_fields: move_features(schema)?.len(),
+            footprints: footprint::Cache::default(),
             resolution: 0,
             coarse: Vec::new(),
         })
@@ -389,7 +419,7 @@ impl<'a> FeatureExtractor<'a> {
     /// 0..1,000,000; pass has a separate pooled head and is never a feature row.
     pub fn moves(&self, actions: &[Action]) -> Result<MoveFeatures, String> {
         let mut result = MoveFeatures {
-            exact: vec![0.0; actions.len() * MOVE_FEATURES.len()],
+            exact: vec![0.0; actions.len() * self.move_fields],
             legal: vec![0; actions.len()],
         };
         self.fill_moves(actions, &mut result.exact, &mut result.legal)?;
@@ -405,13 +435,13 @@ impl<'a> FeatureExtractor<'a> {
     ) -> Result<MoveFeatures, String> {
         const CHUNK: usize = 4096;
         let mut result = MoveFeatures {
-            exact: vec![0.0; actions.len() * MOVE_FEATURES.len()],
+            exact: vec![0.0; actions.len() * self.move_fields],
             legal: vec![0; actions.len()],
         };
         pool.install(|| {
             result
                 .exact
-                .par_chunks_mut(CHUNK * MOVE_FEATURES.len())
+                .par_chunks_mut(CHUNK * self.move_fields)
                 .zip(result.legal.par_chunks_mut(CHUNK))
                 .zip(actions.par_chunks(CHUNK))
                 .try_for_each(|((exact, legal), actions)| self.fill_moves(actions, exact, legal))
@@ -427,19 +457,19 @@ impl<'a> FeatureExtractor<'a> {
     ) -> Result<(), String> {
         for ((&action, row), legal) in actions
             .iter()
-            .zip(exact.chunks_mut(MOVE_FEATURES.len()))
+            .zip(exact.chunks_mut(self.move_fields))
             .zip(legal.iter_mut())
         {
             let spot = action
                 .spot()
                 .ok_or("pass must not appear in coordinate features")?;
-            row[6..10].copy_from_slice(&self.borders(spot));
+            row[self.move_fields - 4..].copy_from_slice(&self.borders(spot));
             let Some(analysis) = self.prepared.analyze_move(
                 Stone {
                     color: self.game.on_move(),
                     spot,
                 },
-                0, // No per-candidate area integration or unused liberty-count search.
+                0, // Local footprint geometry is separate from resulting-group liberties.
             ) else {
                 continue;
             };
@@ -452,6 +482,16 @@ impl<'a> FeatureExtractor<'a> {
                 count_feature(analysis.captured_stones),
                 count_feature(analysis.group_size),
             ]);
+            if self.move_fields == MOVE_FEATURES.len() {
+                // Existing stones remain fixed for this local-only input:
+                // no capture removal, friendly-group traversal or child spans.
+                row[6] = footprint::area(
+                    &self.prepared,
+                    spot,
+                    self.game.board().stone_radius(),
+                    &self.footprints,
+                );
+            }
         }
         Ok(())
     }

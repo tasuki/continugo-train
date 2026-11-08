@@ -241,7 +241,9 @@ class NnViewerTests(unittest.TestCase):
             generate_rated(self.sgf, self.root / "bad-rated.html", info, {identity: unsupported})
 
     def test_legacy_viewers_keep_all_original_inputs(self):
-        old_model = PolicyValueNet(replace(self.model.config, input_planes=12)).eval()
+        old_model = PolicyValueNet(
+            replace(self.model.config, input_planes=12, move_features=10)
+        ).eval()
         for schema in (4,):
             saved = {
                 "config": asdict(old_model.config),
@@ -258,10 +260,18 @@ class NnViewerTests(unittest.TestCase):
                 expected = old_model.encode_search(sample.coarse[None])[2].item()
             self.assertEqual(f["feature_schema"], schema)
             self.assertEqual(len(f["coarse"]), 12)
+            self.assertEqual(len(f["exact"]), 10)
+            self.assertEqual(len(f["features"]), 10)
             self.assertGreater(f["coarse"][5]["high"], 1)  # Legacy scalar is not clipped.
             self.assertEqual(f["coarse"][6]["name"], "friendly_capturable_in_one")
             self.assertEqual(f["coarse"][1]["note"], "Point-sampled")
             self.assertAlmostEqual(f["value"], expected)
+            mixed = self.root / "mixed-schemas.html"
+            generate(self.sgf, old, mixed, white_checkpoint=self.checkpoint)
+            _, report = report_data(mixed)
+            self.assertEqual(len(report["features"]), 10)
+            self.assertEqual([len(f["features"]) for f in report["frames"]], [10, 11, 10])
+            self.assertEqual([len(f["exact"]) for f in report["frames"]], [10, 11, 10])
 
     def test_png_rgba_transparency_binning_and_safe_json(self):
         image = heatmap("test", np.array([[0.0, np.nan], [1.0, 0.5]]), limits=(0, 1))

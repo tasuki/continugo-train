@@ -14,6 +14,7 @@ from continugo_train.diagnose import diagnose
 from continugo_train.features import (
     COARSE_PLANES,
     HEADER,
+    MOVE_FEATURES,
     FeatureClient,
     decode_sample,
     ownership_weights,
@@ -74,7 +75,7 @@ class AuxiliaryTests(unittest.TestCase):
         n = 8
         model = self.model().train()
         coarse = torch.randn(2, len(COARSE_PLANES), n, n)
-        exact = torch.empty(2, 0, 10)
+        exact = torch.empty(2, 0, len(MOVE_FEATURES))
         actions = torch.empty(2, 0, dtype=torch.int64)
         legal = torch.empty(2, 0, dtype=torch.bool)
         outputs = model.forward_all(coarse, exact, actions, legal)

@@ -10,7 +10,7 @@ mod proposals;
 pub use batch::InferenceOutput;
 use cache::ContextCache;
 
-use crate::features::{MOVE_FEATURES, coarse_planes};
+use crate::features::{coarse_planes, move_features};
 use continugo_rules::Game;
 use ort::{
     execution_providers::{
@@ -291,7 +291,7 @@ impl OnnxEvaluator {
         let planes = coarse_planes(spec.schema)?;
         if spec.policy != "cells-v1"
             || spec.coarse != planes
-            || spec.moves != MOVE_FEATURES
+            || spec.moves != move_features(spec.schema)?
             || spec.samples_per_diameter == 0
             || spec.targets != crate::targets::TARGET_VERSION
             || metadata.config.chunk_size == 0

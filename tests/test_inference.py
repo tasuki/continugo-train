@@ -15,8 +15,8 @@ import torch
 from test_features import SGF
 
 from continugo_train.export import export_checkpoint, runtime_path
-from continugo_train.features import load_position
-from continugo_train.model import NetworkConfig, PolicyValueNet, cell_actions, cell_ids
+from continugo_train.features import FeatureClient, load_position
+from continugo_train.model import NetworkConfig, PolicyValueNet, cell_ids
 from continugo_train.runtime import gpu_library, gpu_root, inference_environment
 from continugo_train.train import feature_spec
 
@@ -269,8 +269,7 @@ class NativeInferenceTests(unittest.TestCase):
         for size in [9, 13, 19]:
             source = self.root / f"size-{size}.sgf"
             source.write_text(SGF.replace("SZ[13]", f"SZ[{size}]").replace("RE[B+220.4]", ""))
-            # Dense extraction is a diagnostic oracle only; production selects cells.
-            sample = load_position(source, 1, full_domain=True)
+            geometry = load_position(source, 1, actions=[500500])
             preview = self.infer(source, [1000000])
             self.assertEqual(preview.returncode, 0, preview.stderr)
             selected = json.loads(preview.stdout)["cells"]
@@ -279,8 +278,8 @@ class NativeInferenceTests(unittest.TestCase):
                 0,
                 999999,
                 200200,
-                200200 + sample.diameter,
-                200200 + sample.diameter - 1,
+                200200 + geometry.diameter,
+                200200 + geometry.diameter - 1,
                 500500,
                 500501,
                 65535,
@@ -288,9 +287,18 @@ class NativeInferenceTests(unittest.TestCase):
                 900900,
                 1000000,
             ]
+            # Complete cells give the same exact local denominators as a
+            # full-domain oracle, without a million post-move area integrations.
+            # Include probe cells too, so unavailable coordinates are checked.
+            cells = set(selected) | set(
+                cell_ids(torch.tensor(actions[:-1]), geometry.resolution).tolist()
+            )
+            with FeatureClient() as client:
+                sample = client.load(source, 1, cells=sorted(cells))
+            owners = cell_ids(sample.actions, sample.resolution)
+            columns = {int(action): i for i, action in enumerate(sample.actions)}
             for cell in selected:
-                coordinates = cell_actions([cell], sample.resolution)
-                legal = coordinates[sample.legal[coordinates]]
+                legal = sample.actions[(owners == cell) & sample.legal]
                 self.assertGreater(legal.numel(), 0)
                 actions += legal[[0, legal.numel() // 2, -1]].tolist()
             with torch.inference_mode():
@@ -322,7 +330,8 @@ class NativeInferenceTests(unittest.TestCase):
             )
             self.assertIn("calls: 0, value_calls: 1", value_only.stderr)
             for action, actual in zip(actions, result["logits"], strict=True):
-                expected = logits[0, action].item()
+                column = len(sample.actions) if action == 1000000 else columns[action]
+                expected = logits[0, column].item()
                 if action < 1000000:
                     expected += placement_shift.item()
                 cell = (
@@ -340,7 +349,7 @@ class NativeInferenceTests(unittest.TestCase):
     def test_legacy_exports_keep_original_twelve_plane_inputs(self):
         source = self.root / "legacy-schema.sgf"
         source.write_text(SGF)
-        model = PolicyValueNet(replace(self.model.config, input_planes=12)).eval()
+        model = PolicyValueNet(replace(self.model.config, input_planes=12, move_features=10)).eval()
         for schema in (4,):
             checkpoint = self.root / f"schema{schema}.pt"
             torch.save(
@@ -358,7 +367,7 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertEqual(sample.coarse.shape[0], 12)
             with torch.inference_mode():
                 _, _, value, score = model.encode_search(sample.coarse[None])
-            native = self.infer(source, [1000000], model=bundle, value_only=True)
+            native = self.infer(source, [500500, 1000000], model=bundle)
             self.assertEqual(native.returncode, 0, native.stderr)
             result = json.loads(native.stdout)
             self.assertAlmostEqual(result["value"], value.item(), places=6)

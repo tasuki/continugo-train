@@ -14,7 +14,7 @@ from test_features import SGF
 
 from continugo_train import data
 from continugo_train import train as trainer
-from continugo_train.features import COARSE_PLANES, FeatureClient, inspect_game
+from continugo_train.features import COARSE_PLANES, MOVE_FEATURES, FeatureClient, inspect_game
 from continugo_train.train import atomic_checkpoint, parse_args, train
 
 
@@ -154,7 +154,7 @@ class OfflineDataTests(unittest.TestCase):
         def sample(resolution, indices, visits, count=3):
             return data.TrainingSample(
                 torch.zeros(len(COARSE_PLANES), resolution, resolution),
-                torch.zeros(count, 10),
+                torch.zeros(count, len(MOVE_FEATURES)),
                 torch.ones(count, dtype=torch.bool),
                 torch.tensor(indices),
                 torch.tensor(visits),
@@ -171,7 +171,7 @@ class OfflineDataTests(unittest.TestCase):
         second = sample(4, [1], [3.0], count=1)
         batch = data.collate([first, second])
         self.assertEqual(batch.coarse.shape, (2, len(COARSE_PLANES), 4, 4))
-        self.assertEqual(batch.exact.shape, (2, 3, 10))
+        self.assertEqual(batch.exact.shape, (2, 3, len(MOVE_FEATURES)))
         self.assertEqual(batch.indices.tolist(), [[0, 3], [3, 3]])
         self.assertEqual(batch.legal.tolist(), [[True, True, True], [True, False, False]])
         self.assertEqual(batch.actions.tolist(), [[0, 1, 2], [0, 0, 0]])
@@ -217,7 +217,7 @@ class OfflineDataTests(unittest.TestCase):
             for i, resolution in enumerate([4, 7, 4, 7, 4]):
                 yield data.TrainingSample(
                     torch.full((len(COARSE_PLANES), resolution, resolution), float(i)),
-                    torch.zeros(0, 10),
+                    torch.zeros(0, len(MOVE_FEATURES)),
                     torch.ones(0, dtype=torch.bool),
                     torch.tensor([0]),
                     torch.ones(1),

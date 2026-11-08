@@ -1,6 +1,6 @@
 //! Resolution-bucketed encoding and selective, complete-cell exact scoring.
 use super::{Evaluation, LeafEstimate, OnnxEvaluator, cache::Context};
-use crate::features::{FeatureExtractor, MOVE_FEATURES, resolution};
+use crate::features::{FeatureExtractor, resolution};
 use continugo_rules::{COORDINATE_ACTIONS, Game};
 use ort::value::Tensor;
 use rayon::prelude::*;
@@ -196,7 +196,9 @@ impl OnnxEvaluator {
             let tick = Instant::now();
             let extractors: Vec<_> = indices
                 .iter()
-                .map(|&i| FeatureExtractor::for_moves(queries[i].0))
+                .map(|&i| {
+                    FeatureExtractor::for_moves(queries[i].0, self.metadata.feature_spec.schema)
+                })
                 .collect::<Result<_, _>>()?;
             let seconds = tick.elapsed().as_secs_f64();
             self.stats.feature_seconds += seconds;
@@ -261,10 +263,11 @@ impl OnnxEvaluator {
                     }),
                     None => (0..batch).map(extract).collect(),
                 }?;
-                let mut exact = vec![0.0; batch * width * MOVE_FEATURES.len()];
+                let fields = self.metadata.feature_spec.moves.len();
+                let mut exact = vec![0.0; batch * width * fields];
                 let mut ids = vec![0i64; batch * width];
                 for (row, moves) in moves.iter().enumerate() {
-                    let offset = row * width * MOVE_FEATURES.len();
+                    let offset = row * width * fields;
                     exact[offset..offset + moves.exact.len()].copy_from_slice(&moves.exact);
                     for j in 0..moves.legal.len() {
                         ids[row * width + j] = actions[row][start + j].index() as i64;
@@ -276,7 +279,7 @@ impl OnnxEvaluator {
                 let tick = Instant::now();
                 let output = self.scorer.run(ort::inputs![
                     "spatial" => Tensor::from_array(([batch, self.metadata.config.policy_hidden, size, size], spatial.as_slice()))?,
-                    "exact" => Tensor::from_array(([batch, width, MOVE_FEATURES.len()], exact))?,
+                    "exact" => Tensor::from_array(([batch, width, fields], exact))?,
                     "actions" => Tensor::from_array(([batch, width], ids))?
                 ]?)?;
                 let (shape, scores) = output["logits"].try_extract_raw_tensor::<f32>()?;
