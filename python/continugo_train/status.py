@@ -20,7 +20,7 @@ def inspect_loop(output):
     jobs = state["iterations"]
     current = jobs[-1] if jobs else None
     if current is None:
-        stage = "initial reference / initialization"
+        stage = "initialization"
     elif current["completed"]:
         stage = (
             "complete" if current["number"] == state["target_iterations"] else "between iterations"
@@ -34,7 +34,7 @@ def inspect_loop(output):
     elif current["model"] is None:
         stage = "export"
     else:
-        stage = "evaluation / actor selection"
+        stage = "actor update / completion"
     training = state["training"]
     checkpoint = (
         root / training["checkpoint"]["path"]
@@ -62,7 +62,7 @@ def inspect_loop(output):
         "progress": progress,
         "metrics": metrics,
         "actor": state["actor"],
-        "actor_policy": state["config"]["actor_policy"],
+        "actor_policy": "latest",
         "accepted": promote.accepted_head(state["config"]["model_store"]),
         "current_iteration": current["number"] if current else None,
         "committed_games": sum(record is not None for record in current["games"]) if current else 0,

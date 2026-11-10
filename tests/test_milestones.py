@@ -5,10 +5,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_loop as helpers
-import torch
 from test_acceptance import ArenaJobs
 
-from continugo_train import archive, loop, rate_saved, ratings, saved_models
+from continugo_train import loop, rate_saved, ratings, saved_models
+from continugo_train.evaluation import EvaluationConfig
 
 
 class MilestoneTests(helpers.LoopHarness):
@@ -16,19 +16,19 @@ class MilestoneTests(helpers.LoopHarness):
         output = self.root / "campaign"
         state = self.run_loop(output, extra=["--iterations", "5", "--save-model-every", "2"])
         store = Path(state["config"]["model_store"])
-        snapshots = sorted(store.glob("campaign-r*"))
-        self.assertEqual([p.name for p in snapshots], ["campaign-r0002", "campaign-r0004"])
+        snapshots = sorted((store / "models/test1").glob("r*"))
+        self.assertEqual([p.name for p in snapshots], ["r0002", "r0004"])
         for directory in snapshots:
             metadata = saved_models.verify(directory)
-            self.assertEqual(metadata["campaign"], "campaign")
-            self.assertFalse(metadata["accepted"])
+            self.assertEqual(metadata["source"]["run"], "campaign")
+            self.assertEqual(metadata["family"], "test1")
             self.assertEqual(
                 {p.name for p in directory.iterdir()}, {*saved_models.FILES, "metadata.json"}
             )
             self.assertTrue(all(p.stat().st_nlink == 1 for p in directory.iterdir()))
             source = output / state["iterations"][metadata["round"] - 1]["checkpoint"]["path"]
             self.assertNotEqual(source.stat().st_ino, (directory / "checkpoint.pt").stat().st_ino)
-            self.assertEqual(archive.digest(source), metadata["checkpoint_sha256"])
+            self.assertEqual(source.read_bytes(), (directory / "checkpoint.pt").read_bytes())
         before = {p: p.read_bytes() for d in snapshots for p in d.iterdir()}
         calls = len(self.jobs.calls)
         self.run_loop(output, resume=True)
@@ -50,7 +50,7 @@ class MilestoneTests(helpers.LoopHarness):
         graph = first[0] / "encoder.onnx"
         graph.chmod(0o644)
         graph.write_text("changed")
-        with self.assertRaisesRegex(ValueError, "missing or changed"):
+        with self.assertRaisesRegex(ValueError, "changed data"):
             saved_models.save_campaign(output, every=2)
 
     def test_corrupt_sources_and_name_conflicts_are_not_overwritten(self):
@@ -61,7 +61,7 @@ class MilestoneTests(helpers.LoopHarness):
         original = metadata.read_bytes()
         metadata.chmod(0o644)
         value = json.loads(original)
-        value["campaign"] = "different"
+        value["source"]["run"] = "different"
         metadata.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, "conflicts"):
             saved_models.save_campaign(output, iteration=1)
@@ -71,33 +71,21 @@ class MilestoneTests(helpers.LoopHarness):
         with self.assertRaisesRegex(ValueError, "missing or changed"):
             saved_models.save_campaign(output, iteration=1)
 
-    def test_milestone_evaluation_is_automatic_even_with_a_different_interval(self):
-        self.jobs = ArenaJobs()
+    def test_milestones_only_save_models_without_evaluation(self):
         output = self.root / "automatic"
-        state = self.run_loop(
-            output,
-            extra=[
-                "--iterations",
-                "2",
-                "--save-model-every",
-                "2",
-                "--evaluation-interval",
-                "99",
-                "--reference-games",
-                "2",
-            ],
-        )
-        self.assertIsNone(state["iterations"][0]["reference"])
-        self.assertEqual(state["iterations"][1]["reference"]["report"]["games"], 2)
+        state = self.run_loop(output, extra=["--iterations", "10"])
         store = Path(state["config"]["model_store"])
-        self.assertTrue((store / "automatic-r0002/metadata.json").is_file())
-        self.assertTrue((store / "ratings.png").is_file())
+        self.assertTrue((store / "models/test1/r0010/metadata.json").is_file())
+        self.assertFalse((store / "ratings/ratings.png").exists())
+        self.assertFalse(any("--candidate" in c for c in self.jobs.calls))
+        for name in ["gate", "reference", "adaptive-ratings"]:
+            self.assertFalse(list(output.rglob(name)))
+        self.assertNotIn("rating_protocol", state)
+        self.assertTrue(all("gate" not in job for job in state["iterations"]))
 
     def test_defaults_and_legacy_protocol_round_trip(self):
-        config = loop.LoopConfig()
-        self.assertEqual((config.save_model_every, config.evaluation_interval), (10, 10))
-        self.assertEqual((config.adaptive_target_rd, config.adaptive_min_pairs), (75, 20))
-        settings = ratings.protocol(config, legacy=True)
+        self.assertEqual(loop.LoopConfig().save_model_every, 10)
+        settings = ratings.protocol(EvaluationConfig(), legacy=True)
         self.assertEqual(settings["version"], 1)
         self.assertNotIn("score_weight", settings["search"])
         self.assertEqual(ratings._protocol_from_row(ratings._protocol_columns(settings)), settings)
@@ -116,48 +104,33 @@ class MilestoneTests(helpers.LoopHarness):
         self.assertEqual(len(self.jobs.calls), calls)
         self.assertTrue(state["iterations"][0]["completed"])
         self.assertTrue(
-            (Path(state["config"]["model_store"]) / "save-gap-r0001/metadata.json").is_file()
+            (Path(state["config"]["model_store"]) / "models/test1/r0001/metadata.json").is_file()
         )
 
-    def test_fresh_background_schedule_is_adaptive_not_all_pairs_and_resumes(self):
+    def test_saved_models_are_evaluated_separately_starting_against_random(self):
         self.jobs = ArenaJobs()
-        campaign = self.root / "adaptive-campaign"
+        campaign = self.root / "champion-campaign"
         state = self.run_loop(campaign, extra=["--iterations", "2", "--save-model-every", "1"])
-        output = self.root / "fresh-ratings"
-        args = rate_saved.parse_args(
-            [
-                "--output",
-                str(output),
-                "--model-store",
-                state["config"]["model_store"],
-                "--reference-games",
-                "2",
-                "--target-rd",
-                "350",
-                "--min-pairs",
-                "1",
-                "--min-opponents",
-                "1",
-                "--min-opponent-pairs",
-                "1",
-                "--max-games",
-                "2",
-                "--batch-games",
-                "2",
-            ]
-        )
+        before = (campaign / "loop.pt").read_bytes()
+        store = Path(state["config"]["model_store"])
         with patch.object(loop, "run_process", self.jobs), redirect_stdout(io.StringIO()):
-            manifest = rate_saved.run(args)
-        self.assertEqual(manifest["models"], 2)
-        cohort = output / manifest["cohorts"][0]
-        calibration = torch.load(cohort / "loop.pt", weights_only=True)
-        self.assertTrue(
-            all("reference" in job and "gate" not in job for job in calibration["jobs"])
-        )
-        adaptive = torch.load(cohort / "adaptive/loop.pt", weights_only=True)
-        self.assertEqual(adaptive["stop_reason"], "confidence-target-met")
-        self.assertEqual(len(adaptive["jobs"]), 1)
-        calls = len(self.jobs.calls)
-        with patch.object(loop, "run_process", self.jobs), redirect_stdout(io.StringIO()):
-            rate_saved.run(rate_saved.parse_args(["--output", str(output), "--resume"]))
+            manifest = rate_saved.run(
+                rate_saved.parse_args(
+                    [
+                        "--family",
+                        "test1",
+                        "--model-store",
+                        str(store),
+                    ]
+                )
+            )
+            self.assertEqual(manifest["status"], "complete")
+            calls = len(self.jobs.calls)
+            rate_saved.run(rate_saved.parse_args(["--model-store", str(store), "--resume"]))
         self.assertEqual(len(self.jobs.calls), calls)
+        self.assertEqual((campaign / "loop.pt").read_bytes(), before)
+        entry = rate_saved.load_champions(store)
+        self.assertEqual(entry["champion"], "random")
+        candidate = "test1-r0002"
+        self.assertEqual(entry["evaluated"][candidate]["decision"], "screen-failed")
+        self.assertFalse((store / "LATEST-ACCEPTED").exists())

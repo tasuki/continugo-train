@@ -1,204 +1,349 @@
-"""Fresh adaptive rating of saved milestones; never a round-robin schedule.
-
-A small reference calibration is followed by near-strength matchmaking. Incompatible
-feature schemas use separate frozen native runtimes and never play each other.
-"""
+"""One shared evaluator, one model copy, date-grouped SGFs as the game records."""
 
 import argparse
+import fcntl
 import json
+import os
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
 
-from . import adaptive_ratings, archive, gate, ratings
-from .loop import LoopConfig, LoopRunner, loop_lock
-from .paths import ROOT
-from .round_robin import snapshot_models
+from . import archive, gate, plot_ratings, rating_store, ratings
+from .evaluation import EvaluationConfig, EvaluationRunner
+from .loop import atomic_bytes
+from .paths import ROOT, utc_now
 from .saved_models import saved_sources
 from .train import atomic_checkpoint
 
-VERSION = "saved-model-adaptive-ratings-v1"
+POLICY = {
+    "screen_games": 10,
+    "screen_wins": 7,
+    "extension_games": 30,
+    "total_wins": 28,
+    "reference_games": 10,
+    "history_opponents": 2,
+    "history_games": 10,
+}
 
 
-def initialize(root, args):
-    if args.max_games <= 0:
-        raise ValueError("--max-games must be positive")
-    store = args.model_store.resolve()
-    sources = saved_sources(store)
-    if not sources:
-        raise ValueError("save campaign models before scheduling ratings")
-    groups = {}
-    for source in sources.values():
-        saved = torch.load(source["checkpoint"]["path"], map_location="cpu", weights_only=True)
-        schema = ratings.canonical(saved["feature_spec"])
-        groups.setdefault(schema, []).append(source)
-    states = []
-    for index, (schema, pool) in enumerate(sorted(groups.items()), 1):
-        pool.sort(key=lambda s: (s["campaign"], s["round"]))
-        newest = max(pool, key=lambda s: s["campaign"])
-        source = newest.get("source_context")
-        if source is None:  # Early snapshots recorded only the original loop path.
-            source = torch.load(
-                Path(newest["source_loop"]) / "loop.pt", map_location="cpu", weights_only=True
-            )
-        config = replace(
-            LoopConfig(**source["config"]),
-            model_store=str(store),
-            gate_games=args.batch_games,
-            reference_games=args.reference_games,
-            gate_simulations=32,
-            gate_max_moves=1024,
-            reference_max_moves=2048,
-            seed=args.seed + index * 1_000_000,
-            device=args.device,
-            adaptive_max_games=args.max_games,
-            adaptive_target_rd=args.target_rd,
-            adaptive_min_pairs=args.min_pairs,
-            adaptive_min_opponents=args.min_opponents,
-            adaptive_min_opponent_pairs=args.min_opponent_pairs,
-            adaptive_batch_games=args.batch_games,
-        )
-        config.validate()
-        settings = ratings.protocol(config, legacy=source["version"] == 5)
-        directory = root / f"cohort-{index:02d}"
-        directory.mkdir()
-        models, checkpoints = snapshot_models(directory, source, pool)
-        jobs = [
-            {
-                "number": i + 1,
-                "model": model,
-                "checkpoint": checkpoint,
-                "initial": False,
-                "reference": None,
-            }
-            for i, (model, checkpoint) in enumerate(zip(models, checkpoints))
-        ]
-        state = {
-            "version": VERSION,
-            "root": str(directory),
-            "config": asdict(config),
-            "feature_spec": json.loads(schema),
-            "rating_protocol": settings,
-            "runtime_fingerprints": source["runtime_fingerprints"],
-            "jobs": jobs,
-            "targets": [m["checkpoint_sha256"] for m in models],
-        }
-        atomic_checkpoint(directory / "loop.pt", state)
-        states.append(state)
-    manifest = {
-        "version": VERSION,
-        "root": str(root),
-        "model_store": str(store),
-        "cohorts": [str(Path(s["root"]).relative_to(root)) for s in states],
-        "models": len(sources),
-        "policy": {
-            key: getattr(args, key)
-            for key in [
-                "target_rd",
-                "min_pairs",
-                "min_opponents",
-                "min_opponent_pairs",
-                "max_games",
-                "batch_games",
-            ]
-        },
-        "reference_games": args.reference_games,
-        "maximum_games": len(sources) * args.reference_games + len(states) * args.max_games,
+def challenge_decision(screen, extension=None):
+    if screen["games"] != 10:
+        raise ValueError("screen must contain ten games")
+    if screen["wins"] < 7:
+        return "screen-failed"
+    if extension is None:
+        return "continue"
+    if extension["games"] != 30:
+        raise ValueError("extension must contain thirty games")
+    return "promoted" if screen["wins"] + extension["wins"] >= 28 else "challenge-failed"
+
+
+@contextmanager
+def champion_lock(store):
+    directory = store / "ratings"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / ".evaluator.lock").open("a+") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("another evaluator is running") from error
+        yield stream.fileno()
+
+
+def load_champions(store):
+    path = store / "ratings/champions.json"
+    if path.is_symlink():
+        raise ValueError("champion registry cannot be a symlink")
+    if path.exists():
+        value = json.loads(path.read_text())
+        if value.get("policy") != POLICY or "champion" not in value:
+            raise ValueError("incompatible champion policy")
+        return value
+    return {
+        "policy": dict(POLICY),
+        "champion": "random",
+        "history": [{"model": "random"}],
+        "evaluated": {},
+        "pending": None,
+        "next_seed": 97000000,
     }
-    atomic_checkpoint(root / "schedule.pt", manifest)
-    return manifest
+
+
+def save_champions(store, registry):
+    path = store / "ratings/champions.json"
+    atomic_bytes(path, (json.dumps(registry, indent=2) + "\n").encode())
+    with path.open("rb") as stream:
+        os.fsync(stream.fileno())
+    archive.sync_directory(path.parent)
+
+
+class ArtifactRunner(EvaluationRunner):
+    def save(self):
+        atomic_checkpoint(self.root / "ratings/evaluator.pt", self.state)
+
+    def log(self, text):
+        print(text, flush=True)
+        with (self.root / "ratings/evaluator.log").open("a") as stream:
+            stream.write(text + "\n")
+
+
+def model_references(store, sources):
+    models, checkpoints = {}, {}
+    for source in sources.values():
+        name = source["id"]
+
+        def record(key, source=source):
+            path = Path(source[key]["path"])
+            if path.is_symlink() or not path.resolve().is_relative_to(store):
+                raise ValueError("saved models must live directly inside the artifact store")
+            return {"path": str(path.relative_to(store)), "sha256": source[key]["sha256"]}
+
+        checkpoints[name] = record("checkpoint")
+        models[name] = {
+            "directory": str(Path(source["checkpoint"]["path"]).parent.relative_to(store)),
+            "checkpoint_sha256": source["checkpoint_sha256"],
+            "network_name": source["network_name"],
+            "encoder": record("encoder"),
+            "policy": record("policy"),
+        }
+    return models, checkpoints
+
+
+def initialize(store, args):
+    sources = {
+        key: value
+        for key, value in saved_sources(store).items()
+        if value["family"] == (args.family or "cg5")
+    }
+    if not sources:
+        raise ValueError("no saved models for this family")
+    pool = sorted(sources.values(), key=lambda value: value["round"])
+    source = pool[-1]["source_context"]
+    if source is None:
+        raise ValueError(
+            "training runtime not found; keep the source run when creating an evaluator"
+        )
+    base = EvaluationConfig.from_config(source["config"])
+    native = Path(base.selfplay_binary).parent
+    config = replace(
+        base,
+        model_store=str(store),
+        gate_games=10,
+        reference_games=10,
+        gate_simulations=args.simulations if args.simulations is not None else 128,
+        gate_max_moves=1024,
+        reference_max_moves=2048,
+        device=args.device or "cuda",
+        seed=args.seed if args.seed is not None else 97000000,
+        arena_binary=source["config"].get("arena_binary", str(native / "arena")),
+        rating_binary=source["config"].get("rating_binary", str(native / "rating")),
+    )
+    config.validate()
+    models, checkpoints = model_references(store, sources)
+    state = {
+        "root": str(store),
+        "family": args.family or "cg5",
+        "policy": dict(POLICY),
+        "config": asdict(config),
+        "feature_spec": source["feature_spec"],
+        "rating_protocol": ratings.protocol(config),
+        "runtime_fingerprints": source["runtime_fingerprints"],
+        "models": models,
+        "checkpoints": checkpoints,
+        "candidates": [value["id"] for value in pool],
+        "matches": {},
+        "trials": {},
+        "rating_cache": {},
+    }
+    atomic_checkpoint(store / "ratings/evaluator.pt", state)
+    return state
+
+
+def play_match(runner, registry, candidate, opponent, kind, games):
+    state = runner.state
+    key = f"{candidate}:{kind}:{opponent}"
+    neural = opponent != "random"
+    if key not in state["matches"]:
+        seed = registry["next_seed"]
+        if seed + games // 2 > 2**64:
+            raise ValueError("evaluation seeds overflow u64")
+        registry["next_seed"] += games // 2
+        save_champions(runner.root, registry)
+        state["matches"][key] = {
+            "number": 1,
+            "output_directory": f"sgfs/{utc_now().date().isoformat()}",
+            "shared_output": True,
+            "candidate_name": candidate,
+            "opponent_name": opponent,
+            "model": state["models"][candidate],
+            "checkpoint": state["checkpoints"][candidate],
+            "seed": seed,
+            "games": games,
+            "kind": kind,
+            "opponent": opponent,
+            "gate": None,
+            "reference": None,
+        }
+        if neural:
+            state["matches"][key].update(
+                parent_model=state["models"][opponent],
+                parent_actor_checkpoint=state["checkpoints"][opponent],
+            )
+        runner.save()
+    job = state["matches"][key]
+    match_key = "gate" if neural else "reference"
+    runner.check(job["checkpoint"])
+    runner.check_model(job["model"])
+    if neural:
+        runner.check(job["parent_actor_checkpoint"])
+        runner.check_model(job["parent_model"])
+    for record in (job[match_key] or {}).get("games", []):
+        if record:
+            runner.check(record)
+    original = runner.config
+    runner.config = replace(original, seed=job["seed"], gate_games=games, reference_games=games)
+    try:
+        gate.evaluate(runner, job, reference=not neural)
+        match = job[match_key]
+        if not match.get("rated"):
+            state["rating_cache"], _summary = rating_store.refresh(
+                runner.root, runner.config, state.get("rating_cache")
+            )
+            match["rated"] = True
+            runner.save()
+        return match["report"]
+    finally:
+        runner.config = original
+
+
+def evaluate(runner, registry):
+    state = runner.state
+    if registry["champion"] != "random" and registry["champion"] not in state["models"]:
+        raise ValueError("current champion model unavailable")
+    for number, candidate in enumerate(state["candidates"], 1):
+        if registry["evaluated"].get(candidate, {}).get("complete"):
+            continue
+        if registry["pending"] not in {None, candidate}:
+            raise ValueError("resume the pending candidate before changing the queue")
+        registry["pending"] = candidate
+        save_champions(runner.root, registry)
+        if candidate not in state["trials"]:
+            state["trials"][candidate] = {
+                "opponent": registry["champion"],
+                "decision": None,
+                "history_opponents": None,
+            }
+            runner.save()
+        trial = state["trials"][candidate]
+        opponent = trial["opponent"]
+        runner.log(
+            f"Candidate {number}/{len(state['candidates'])}: {candidate} vs champion {opponent}"
+        )
+        reference = play_match(runner, registry, candidate, "random", "reference", 10)
+        if trial["decision"] is None:
+            screen = (
+                reference
+                if opponent == "random"
+                else play_match(runner, registry, candidate, opponent, "champion-screen", 10)
+            )
+            trial["screen"] = screen
+            decision = challenge_decision(screen)
+            if decision == "continue":
+                extension = play_match(
+                    runner, registry, candidate, opponent, "champion-extension", 30
+                )
+                trial["extension"] = extension
+                decision = challenge_decision(screen, extension)
+            trial["decision"] = decision
+            runner.save()
+        if candidate not in registry["evaluated"]:
+            if registry["champion"] != opponent:
+                raise ValueError("champion changed during the frozen challenge")
+            receipt = {
+                "decision": trial["decision"],
+                "opponent": opponent,
+                "screen_wins": trial["screen"]["wins"],
+                "total_wins": trial["screen"]["wins"]
+                + (trial.get("extension") or {}).get("wins", 0),
+                "complete": False,
+                "recorded_at": utc_now().isoformat(),
+            }
+            registry["evaluated"][candidate] = receipt
+            if trial["decision"] == "promoted":
+                registry["champion"] = candidate
+                registry["history"].append(
+                    {
+                        "model": candidate,
+                        "opponent": opponent,
+                        "recorded_at": receipt["recorded_at"],
+                    }
+                )
+            save_champions(runner.root, registry)
+            plot_ratings.update(runner.root)
+        if trial["history_opponents"] is None:
+            opponents = []
+            if trial["decision"] == "promoted":
+                states = state["rating_cache"]["states"]
+                target = states[candidate]["rating"]
+                opponents = sorted(
+                    [
+                        name
+                        for name in registry["evaluated"]
+                        if name in state["models"] and name not in {candidate, opponent}
+                    ],
+                    key=lambda name: (abs(states[name]["rating"] - target), name),
+                )[:2]
+            trial["history_opponents"] = opponents
+            runner.save()
+        for historical in trial["history_opponents"]:
+            play_match(runner, registry, candidate, historical, "history", 10)
+        registry["evaluated"][candidate]["complete"] = True
+        registry["pending"] = None
+        save_champions(runner.root, registry)
+        plot_ratings.update(runner.root)
+        runner.log(f"Finished {candidate}: {trial['decision']}; champion={registry['champion']}")
 
 
 def run(args):
-    root = args.output.resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    with loop_lock(root) as lock_fd:
+    store = (args.model_store or ROOT / "artifacts").resolve()
+    archive.initialize_store(store)
+    with champion_lock(store) as lock:
+        path = store / "ratings/evaluator.pt"
         if args.resume:
-            manifest = torch.load(root / "schedule.pt", map_location="cpu", weights_only=True)
-            if manifest.get("version") != VERSION or manifest.get("root") != str(root):
-                raise ValueError("incompatible or relocated rating schedule")
+            if any(
+                getattr(args, name) is not None
+                for name in ["family", "simulations", "seed", "device"]
+            ):
+                raise ValueError("resume restores frozen settings")
+            state = torch.load(path, map_location="cpu", weights_only=True)
+            if state.get("root") != str(store) or state.get("policy") != POLICY:
+                raise ValueError("incompatible or relocated evaluator checkpoint")
         else:
-            if any(p.name != ".loop.lock" for p in root.iterdir()):
-                raise ValueError("output is not empty; use --resume")
-            archive.initialize_store(args.model_store)
-            manifest = initialize(root, args)
-        print(
-            f"Adaptive rating of {manifest['models']} models in {len(manifest['cohorts'])} compatible cohorts; at most {manifest['maximum_games']} games, not a round robin",
-            flush=True,
-        )
-        for cohort in manifest["cohorts"]:
-            directory = root / cohort
-            state = torch.load(directory / "loop.pt", map_location="cpu", weights_only=True)
-            with loop_lock(directory) as cohort_lock:
-                runner = LoopRunner(directory, state, (lock_fd, cohort_lock))
-                runner.verify_runtime()
-                for job in state["jobs"]:
-                    ratings.register_checkpoint(
-                        runner.config.model_store,
-                        runner.check(job["checkpoint"]),
-                        model=runner.check_model(job["model"]),
-                    )
-                    runner.log(
-                        f"CALIBRATION {job['number']}/{len(state['jobs'])}: {job['model']['network_name']}"
-                    )
-                    for record in (job.get("reference") or {}).get("games", []):
-                        if record:
-                            runner.check(record)
-                    gate.evaluate(runner, job, reference=True)
-                    runner.rate_evaluation(job, "reference", [job["checkpoint"]])
-        # Calibrate every campaign before refining any cohort, so all run curves
-        # become visible promptly. The next opponents are chosen adaptively.
-        for cohort in manifest["cohorts"]:
-            directory = root / cohort
-            state = torch.load(directory / "loop.pt", map_location="cpu", weights_only=True)
-            with loop_lock(directory) as cohort_lock:
-                runner = LoopRunner(directory, state, (lock_fd, cohort_lock))
-                runner.verify_runtime()
-                if len(state["targets"]) <= manifest["policy"]["min_opponents"]:
-                    runner.log("insufficient compatible opponents; confidence target NOT met")
-                    continue
-                output = directory / "adaptive"
-                command = ["--output", str(output)]
-                if (output / "loop.pt").exists():
-                    command += ["--resume"]
-                else:
-                    command += [
-                        "--loop",
-                        str(directory),
-                        "--targets",
-                        *state["targets"],
-                        "--latest",
-                        str(len(state["targets"])),
-                        "--seed",
-                        str(runner.config.seed + 500_000),
-                    ]
-                    for key, value in manifest["policy"].items():
-                        command += ["--" + key.replace("_", "-"), str(value)]
-                result = adaptive_ratings.run(
-                    adaptive_ratings.parse_args(command), parent_lock_fd=(lock_fd, cohort_lock)
-                )
-                print(f"{cohort}: {result['stop_reason']}\n{result['progress']}", flush=True)
-        print("Fresh adaptive ratings finished; no training or model approval", flush=True)
-        return manifest
+            if path.exists():
+                raise ValueError("the shared evaluator exists; use --resume")
+            state = initialize(store, args)
+        runner = ArtifactRunner(store, state, lock)
+        runner.verify_runtime()
+        registry = load_champions(store)
+        if not registry["evaluated"] and not state["matches"]:
+            registry["next_seed"] = state["config"]["seed"]
+        evaluate(runner, registry)
+        runner.log("Evaluation complete; training and publication unchanged")
+        return {"models": len(state["candidates"]), "status": "complete"}
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--model-store", type=Path, default=ROOT / "models")
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--reference-games", type=int, default=10)
-    parser.add_argument("--target-rd", type=float, default=75)
-    parser.add_argument("--min-pairs", type=int, default=20)
-    parser.add_argument("--min-opponents", type=int, default=2)
-    parser.add_argument("--min-opponent-pairs", type=int, default=4)
+    parser.add_argument("--model-store", type=Path, help="artifact root (default artifacts/)")
+    parser.add_argument("--family", help="model family to evaluate (default cg5)")
     parser.add_argument(
-        "--max-games", type=int, default=360, help="additional cap per compatible cohort"
+        "--simulations", type=int, help="fixed simulations per neural move (default 128)"
     )
-    parser.add_argument("--batch-games", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=97000000)
-    parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--device", choices=["cpu", "cuda"])
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -206,7 +351,7 @@ def main(argv=None):
     try:
         run(parse_args(argv))
     except KeyboardInterrupt:
-        raise SystemExit("Interrupted; resume this schedule with --resume") from None
+        raise SystemExit("Interrupted; resume with --resume") from None
     except (ValueError, OSError, RuntimeError) as error:
         raise SystemExit(f"rate-saved error: {error}") from error
 

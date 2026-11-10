@@ -4,13 +4,13 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-import test_loop as helpers
+from rating_helpers import EvaluationHarness
 from test_acceptance import ArenaJobs
 
 from continugo_train import archive, loop, plot_ratings, promote, ratings, retain, round_robin
 
 
-class RunOwnedStorageTests(helpers.LoopHarness):
+class RunOwnedStorageTests(EvaluationHarness):
     def test_no_automatic_model_copies_and_resume_without_external_inputs(self):
         output = self.root / "campaign"
         with patch.object(archive, "publish", side_effect=AssertionError("automatic backup")):

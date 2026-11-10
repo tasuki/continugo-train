@@ -11,8 +11,9 @@ from pathlib import Path
 import torch
 
 from . import gate, ratings
+from .evaluation import EvaluationConfig, EvaluationRunner, source_protocol, validate_output
 from .features import inspect_game
-from .loop import LoopConfig, LoopRunner, atomic_bytes, loop_lock
+from .loop import atomic_bytes, loop_lock
 from .round_robin import available_models, snapshot_models
 from .train import atomic_checkpoint
 
@@ -198,16 +199,15 @@ def initialize(root, source, args):
         )
     if args.latest <= 0 or args.pool_latest is not None and args.pool_latest < args.latest:
         raise ValueError("positive --latest, and --pool-latest must include all targets")
-    config = replace(LoopConfig(**source["config"]), gate_games=args.batch_games, seed=args.seed)
+    config = replace(
+        EvaluationConfig.from_config(source["config"]), gate_games=args.batch_games, seed=args.seed
+    )
     config.validate()
     if args.seed + args.max_games // 2 > 2**64:
         raise ValueError("evaluation seeds overflow u64")
     store = Path(config.model_store).resolve()
-    if root.is_relative_to(store) or store.is_relative_to(root):
-        raise ValueError("evaluation output must be separate from model store")
-    settings = ratings.protocol(config, legacy=source["rating_protocol"]["version"] == 1)
-    if settings != source["rating_protocol"]:
-        raise ValueError("source loop evaluation binaries/settings changed")
+    validate_output(root, store)
+    settings = source_protocol(source, config)
     available = available_models(store, feature_spec=source["feature_spec"])
     rows = [row for row, _ in available]
     count = args.pool_latest if args.pool_latest is not None else len(rows)
@@ -270,7 +270,7 @@ def run(args, *, parent_lock_fd=None):
             (parent_lock_fd,) if isinstance(parent_lock_fd, int) else tuple(parent_lock_fd or ())
         )
         locks = (*parent_locks, lock_fd) if parent_locks else lock_fd
-        runner = LoopRunner(root, state, locks)
+        runner = EvaluationRunner(root, state, locks)
         runner.verify_runtime()
         for model in state["models"].values():
             runner.check_model(model)

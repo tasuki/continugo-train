@@ -558,7 +558,11 @@ def _merge_legacy_ratings(directory, tables, chronological):
 @contextmanager
 def transaction(store):
     store = Path(store).resolve()
-    marker = store / "STORE.pt"
+    if (store / "ratings/evaluator.pt").is_file():
+        raise ValueError(
+            "the shared artifact evaluator uses SGFs, not a match ledger; use rating_store"
+        )
+    marker = archive.store_marker(store)
     if not marker.is_file() or torch.load(marker, weights_only=True) != {
         "format": "continugo-recovery-store",
         "version": 1,
@@ -683,6 +687,8 @@ def inference_source(store, checksum):
 
 
 def register_accepted(store, reference):
+    if (Path(store) / "ratings/evaluator.pt").is_file():
+        return  # Publication is recorded by its approval receipt, independently of ratings.
     with transaction(store) as (tables, _):
         _accept(tables, store, reference)
 
@@ -879,7 +885,7 @@ def refresh(store):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-store", type=Path, default=ROOT / "models")
+    parser.add_argument("--model-store", type=Path, default=ROOT / "artifacts")
     parser.add_argument("--ingest", nargs="+", type=Path, help="manual arena SGFs/directories")
     parser.add_argument(
         "--protocol-from",
@@ -896,11 +902,17 @@ def main(argv=None):
         "--sgf", metavar="SHA256", help="print verified evidence paths for a full SGF hash"
     )
     args = parser.parse_args(argv)
+    if (args.model_store / "ratings/evaluator.pt").is_file():
+        from .rating_store import main as rebuild
+
+        if args.matches or args.sgf or args.ingest or args.accepted_only:
+            parser.error("this artifact store uses SGFs directly; no separate match ledger exists")
+        return rebuild(["--model-store", str(args.model_store)])
     if args.accepted_only and (args.matches or args.sgf):
         parser.error("--accepted-only applies only to the network view")
     if args.sgf and (args.ingest or not re.fullmatch(r"[0-9a-f]{64}", args.sgf)):
         parser.error("--sgf requires a full SGF hash and cannot be combined with --ingest")
-    if not (args.model_store / "STORE.pt").is_file():
+    if not archive.store_marker(args.model_store).is_file():
         print("No durable model store yet.")
         return
     refresh(args.model_store)

@@ -3,8 +3,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-import test_loop as helpers
-import torch
+from rating_helpers import EvaluationHarness
 from test_acceptance import ArenaJobs
 
 from continugo_train import adaptive_ratings as adaptive
@@ -95,7 +94,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual((gain, p), (0.0, 1.0))
 
 
-class AdaptiveTests(helpers.LoopHarness):
+class AdaptiveTests(EvaluationHarness):
     def setUp(self):
         super().setUp()
         self.jobs = ArenaJobs()
@@ -150,146 +149,6 @@ class AdaptiveTests(helpers.LoopHarness):
         state = self.evaluate(extra=["--targets", target, "--latest", "1"])
         self.assertEqual(state["targets"], [target])
         self.assertTrue(state["progress"][target]["done"])
-
-    def test_future_loop_candidates_are_adaptively_rated_automatically(self):
-        before = (self.source_loop / "loop.pt").read_bytes()
-        calls = len(self.jobs.calls)
-        state = self.run_loop(
-            self.source_loop,
-            resume=True,
-            extra=["--enable-adaptive-ratings", "4", "--stop-after-iteration", "2"],
-        )
-        self.assertEqual(len(self.jobs.calls), calls)
-        self.assertEqual((self.source_loop / "before-adaptive-ratings.pt").read_bytes(), before)
-        self.assertEqual(state["config"]["adaptive_max_games"], 4)
-        self.assertEqual(len(state["iterations"]), 2)
-        state = self.run_loop(self.source_loop, resume=True, extra=["--iterations", "3"])
-        iteration = state["iterations"][-1]
-        report = iteration["adaptive_rating"]
-        self.assertEqual(report["games"], 4)
-        self.assertIn("NOT met", report["stop_reason"])
-        self.assertEqual(set(report["progress"]), {iteration["checkpoint"]["sha256"]})
-        self.assertEqual(state["actor"]["model"], iteration["model"])
-        calls = len(self.jobs.calls)
-        self.run_loop(self.source_loop, resume=True)
-        self.assertEqual(len(self.jobs.calls), calls)
-
-    def test_automatic_evaluation_interrupt_resumes_without_retraining(self):
-        self.run_loop(
-            self.source_loop,
-            resume=True,
-            extra=["--enable-adaptive-ratings", "4", "--stop-after-iteration", "2"],
-        )
-        self.jobs.arena_mode = "partial"
-        with self.assertRaises(KeyboardInterrupt):
-            self.run_loop(self.source_loop, resume=True, extra=["--iterations", "3"])
-        training_calls = len(self.stage_calls("continugo_train.train"))
-        path = next(
-            self.source_loop.glob(
-                "iteration-0003/adaptive-ratings/iteration-0001/gate/*/game-000001-*.sgf"
-            )
-        )
-        before = path.read_bytes()
-        seen_locks = []
-
-        def execute(command, logfile, locks, environment=None):
-            if isinstance(locks, tuple):
-                seen_locks.append(locks)
-            return self.jobs(command, logfile, locks, environment)
-
-        with patch.object(loop, "run_process", execute), redirect_stdout(io.StringIO()):
-            state = loop.run_loop(self.args(self.source_loop, resume=True))
-        self.assertEqual(len(self.stage_calls("continugo_train.train")), training_calls)
-        self.assertEqual(path.read_bytes(), before)
-        self.assertTrue(seen_locks)
-        self.assertTrue(all(len(locks) == 2 and locks[0] != locks[1] for locks in seen_locks))
-        self.assertEqual(state["iterations"][-1]["adaptive_rating"]["games"], 4)
-
-    def test_enable_automatic_ratings_rejects_mid_iteration_and_invalid_budget(self):
-        self.jobs.fault = "epoch_gap"
-        with self.assertRaises(KeyboardInterrupt):
-            self.run_loop(self.source_loop, resume=True, extra=["--iterations", "3"])
-        before = (self.source_loop / "loop.pt").read_bytes()
-        for budget in ["4", "0", "3"]:
-            with self.assertRaises(ValueError):
-                self.run_loop(
-                    self.source_loop, resume=True, extra=["--enable-adaptive-ratings", budget]
-                )
-            self.assertEqual((self.source_loop / "loop.pt").read_bytes(), before)
-
-    def test_new_campaigns_enable_adaptive_ratings_without_an_opt_in(self):
-        defaults = loop.LoopConfig()
-        self.assertEqual(defaults.adaptive_max_games, 360)
-        self.assertEqual(defaults.adaptive_target_rd, 75)
-        self.assertEqual(defaults.adaptive_min_pairs, 20)
-        self.assertEqual(defaults.adaptive_min_opponents, 2)
-        self.assertEqual(defaults.adaptive_min_opponent_pairs, 4)
-        self.assertEqual(defaults.adaptive_batch_games, 4)
-        self.assertIsNone(loop.parse_args([]).adaptive_max_games)
-        self.assertEqual(loop.parse_args(["--adaptive-max-games", "0"]).adaptive_max_games, 0)
-        output = self.root / "default-adaptive-loop"
-        args = self.args(
-            output,
-            extra=[
-                "--reference-games",
-                "2",
-                "--adaptive-target-rd",
-                "350",
-                "--adaptive-min-pairs",
-                "1",
-                "--adaptive-min-opponents",
-                "1",
-                "--adaptive-min-opponent-pairs",
-                "1",
-            ],
-        )
-        # Remove the harness's explicit smoke-test opt-out. No enabling flag:
-        # a genuinely omitted CLI setting must activate the production default.
-        args.adaptive_max_games = None
-        with (
-            patch.object(loop, "run_process", self.jobs),
-            patch.object(loop, "verify_export", self.jobs.bundle),
-            redirect_stdout(io.StringIO()),
-        ):
-            state = loop.run_loop(args)
-        self.assertEqual(state["config"]["adaptive_max_games"], 360)
-        report = state["iterations"][0]["adaptive_rating"]
-        self.assertGreater(report["games"], 0)
-        self.assertEqual(report["stop_reason"], "confidence-target-met")
-        saved = torch.load(output / report["path"] / "loop.pt", weights_only=True)
-        self.assertEqual(saved["policy"]["max_games"], 360)
-
-    def test_older_v5_loop_defaults_to_disabled_until_explicitly_enabled(self):
-        state = torch.load(self.source_loop / "loop.pt", weights_only=True)
-        for key in list(state["config"]):
-            if key.startswith("adaptive_"):
-                del state["config"][key]
-        helpers.atomic_checkpoint(self.source_loop / "loop.pt", state)
-        calls = len(self.jobs.calls)
-        state = self.run_loop(self.source_loop, resume=True)
-        self.assertEqual(state["config"]["adaptive_max_games"], 0)
-        self.assertEqual(len(self.jobs.calls), calls)
-        before = (self.source_loop / "loop.pt").read_bytes()
-        with self.assertRaisesRegex(ValueError, "invalid adaptive"):
-            self.run_loop(self.source_loop, resume=True, extra=["--enable-adaptive-ratings", "3"])
-        self.assertEqual((self.source_loop / "loop.pt").read_bytes(), before)
-
-    def test_too_few_opponents_reports_unmet_goal_without_blocking_latest_actor(self):
-        state = self.run_loop(
-            self.root / "small-loop",
-            extra=[
-                "--model-store",
-                str(self.root / "small-store"),
-                "--reference-games",
-                "2",
-                "--adaptive-max-games",
-                "4",
-            ],
-        )
-        iteration = state["iterations"][0]
-        self.assertEqual(iteration["adaptive_rating"]["games"], 0)
-        self.assertIn("insufficient-opponents", iteration["adaptive_rating"]["stop_reason"])
-        self.assertEqual(state["actor"]["model"], iteration["model"])
 
     def test_budget_is_a_hard_cap_not_a_claim_of_confidence(self):
         state = self.evaluate(extra=["--target-rd", "1", "--max-games", "4"])

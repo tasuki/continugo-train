@@ -93,7 +93,18 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
                 ordinal, size, seed, candidate_black = plan(
                     config, iteration["number"], index, count
                 )
-                path = runner.path(attempt["path"]) / filename(ordinal, size, seed, candidate_black)
+                directory = runner.path(attempt["path"])
+                path = directory / filename(ordinal, size, seed, candidate_black)
+                preferred = None
+                if iteration.get("shared_output"):
+                    black, white = (
+                        (iteration["candidate_name"], iteration["opponent_name"])
+                        if candidate_black
+                        else (iteration["opponent_name"], iteration["candidate_name"])
+                    )
+                    preferred = directory / f"{black}-vs-{white}-seed{seed}.sgf"
+                    if preferred.exists():
+                        path = preferred
                 if not path.exists():
                     if attempt["status"] == "succeeded":
                         raise ValueError(f"successful arena omitted {path}")
@@ -104,6 +115,9 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
                     if attempt["status"] == "succeeded":
                         raise
                     runner.log(f"WARNING: retaining invalid partial arena SGF: {path}")
+                    if iteration.get("shared_output"):
+                        partial = path.with_suffix(f".incomplete-{len(gate['attempts'])}")
+                        path.rename(partial)
                     continue
                 black = candidate if candidate_black else incumbent
                 white = incumbent if candidate_black else candidate
@@ -143,6 +157,11 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
                     raise ValueError(
                         f"arena record does not match its frozen two-model job: {path}"
                     )
+                if preferred is not None and path != preferred:
+                    if preferred.exists():
+                        raise ValueError(f"refusing to overwrite a rated game: {preferred}")
+                    path.rename(preferred)
+                    path = preferred
                 record = {
                     **runner.record(path),
                     "board_size": size,
@@ -170,14 +189,19 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
             groups.append([])
         groups[-1].append(index)
     for indices in groups:
-        base = (
+        base = iteration.get("output_directory") or (
             "initial-reference"
             if iteration.get("initial")
             else f"iteration-{iteration['number']:04d}/{key}"
         )
-        relative = f"{base}/attempt-{len(gate['attempts']) + 1:04d}"
+        separator = "-" if iteration.get("flat_attempts") else "/"
+        relative = (
+            base
+            if iteration.get("shared_output")
+            else f"{base}{separator}attempt-{len(gate['attempts']) + 1:04d}"
+        )
         directory = runner.path(relative)
-        directory.mkdir(parents=True, exist_ok=False)
+        directory.mkdir(parents=True, exist_ok=bool(iteration.get("shared_output")))
         attempt = {"path": relative, "indices": indices, "status": "running", "adopted": False}
         gate["attempts"].append(attempt)
         runner.save()
@@ -228,10 +252,17 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
             f"iteration {iteration['number']}: {label.lower()} match, {len(indices)} missing games"
         )
         try:
-            runner.execute(command, directory / "arena.log", environment)
+            logfile = (
+                runner.root / "ratings/evaluator.log"
+                if iteration.get("shared_output")
+                else directory / "arena.log"
+            )
+            runner.execute(command, logfile, environment)
         except BaseException:
             attempt["status"] = "interrupted"
             runner.save()
+            if iteration.get("shared_output"):
+                adopt()
             raise
         attempt["status"] = "succeeded"
         runner.save()

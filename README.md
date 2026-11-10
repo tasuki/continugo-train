@@ -24,10 +24,14 @@ Experimental actors may advance independently, but accepted networks require
 and convincing strength against the reference. The [loop](docs/current/loop.md)
 never promotes automatically.
 
-New campaigns automatically use [adaptive rated matchmaking](docs/current/loop.md#automatic-adaptive-rating-precision)
-for each tenth-round model, targeting RD ≤ 75 plus 20 colour-swapped seed pairs across two opponents,
-without gating the latest actor. `--adaptive-max-games 0` explicitly opts out for
-smoke tests; existing saved loops retain their frozen settings.
+Training saves each tenth-round model but runs **no rating matches**. Evaluate saved
+models separately with `mise run rate-saved -- --family cg5`, or resume with
+`mise run rate-saved -- --resume`. [Ratings](docs/current/evaluation.md) belong under
+`artifacts/ratings/`, and games under `artifacts/sgfs/YYYY-MM-DD/`,
+not inside training iterations; the latest actor always advances. The evaluator
+uses a 7/10 → 28/40-win challenge and automatically advances champions, starting
+from the random bot. Each net gets ten random games; neural rating moves use 128
+simulations. **Publication** remains a separate explicit user decision.
 
 ## Next work
 
@@ -40,19 +44,15 @@ the todo or this README.
 - [mise](https://mise.jdx.dev/)
 - The base `continugo` repository checked out alongside this one at `../continugo`.
 
-All generated artifacts stay here: training campaigns in **`runs/`**, ad hoc tests,
-audits, benchmarks and debugging in **`scratch/`**, tenth-round model snapshots in
-**`models/<campaign>-rNNNN/`**, optional full recovery packs in **`models/retained/`**,
-approved publications in **`models/accepted/`**, and shared
-ratings/evidence in **`models/ratings/`**. Campaigns own their recovery files; no
-per-round recovery copies are made in the shared store. Snapshot files and SGF evidence
-are ordinary independent copies, never hardlinks. Names start with UTC
-`YYYYMMDD-HHMMSS`; counters handle
-collisions. New-format campaigns should share one store and rating ledger, not
-create a store per run. If the existing ledger predates score/ownership, use a
-fresh `--model-store` for the new format; historical artifacts stay untouched. Only scheduled/evaluated networks enter
-the rating registry. ONNX alone cannot resume training. `models/` is Git-ignored: keep an
-off-machine backup and exclude it from destructive Git-clean commands.
+Training campaigns live in **`runs/`**; experiments/debugging in **`scratch/`**.
+The durable store is **`artifacts/`**, containing only **`models/`**, **`ratings/`**
+and date-grouped **`sgfs/`** (plus hidden control/lock files). Models are saved as
+`artifacts/models/cg5/r0001/` through `r0100/`; the evaluator references them directly.
+There are no model copies under ratings, per-run evaluator trees or duplicate match
+CSV ledger. SGFs are authoritative; `networks.csv` is their rebuildable summary.
+The shared `evaluator.log` is retained and gitignored. Dated PNGs are preserved.
+Currently only cg5 is included. Keep an off-machine backup of campaigns and
+artifacts; ONNX alone cannot resume training.
 
 ## Setup
 
@@ -91,7 +91,7 @@ To see what the network sees, use the [neural game microscope](docs/current/nn-v
 `mise run nn-view` for existing training/rated SGFs, or add
 `--nn-html --nn-checkpoint FILE` to neural self-play/arena. Each `.nn.html` is a
 standalone desktop dashboard with embedded images and ←/→ move navigation.
-Rated games always get these sidecars in `models/ratings/games/`, from each
+Rated games get these sidecars beside the SGFs in `artifacts/sgfs/YYYY-MM-DD/`, from each
 mover's own network; random or unsupported turns are skipped.
 
 Use timestamped names in both `runs/` and `scratch/`. A short training sanity check

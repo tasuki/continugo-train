@@ -2,13 +2,13 @@ import io
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-import test_loop as helpers
+from rating_helpers import EvaluationHarness
 from test_acceptance import ArenaJobs
 
 from continugo_train import loop, ratings, round_robin
 
 
-class RoundRobinTests(helpers.LoopHarness):
+class RoundRobinTests(EvaluationHarness):
     def setUp(self):
         super().setUp()
         self.jobs = ArenaJobs()

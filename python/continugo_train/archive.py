@@ -129,6 +129,12 @@ def find_bundle(parent, kind, checksum):
     return matches[0] if matches else None
 
 
+def store_marker(store):
+    store = Path(store)
+    legacy = store / "STORE.pt"
+    return legacy if legacy.exists() else store / ".store.pt"
+
+
 def initialize_store(store):
     """Initialize shared ratings/publication storage without creating model copies."""
     store = Path(store).resolve()
@@ -137,7 +143,7 @@ def initialize_store(store):
     store.mkdir(parents=True, exist_ok=True)
     with (store / ".archive.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        marker = store / "STORE.pt"
+        marker = store_marker(store)
         if marker.exists():
             if torch.load(marker, weights_only=True) != {
                 "format": "continugo-recovery-store",
@@ -151,16 +157,16 @@ def initialize_store(store):
                 )
             atomic_checkpoint(marker, {"format": "continugo-recovery-store", "version": 1})
             seal_file(marker)
-        overview = store / "README.md"
+        overview = store / ".README.md"
         if not overview.exists():
             overview.write_text(
                 "# ContinuGo durable model store\n\n"
                 "Training checkpoints, replay and intermediate exports belong in runs/.\n"
-                "<campaign>-rNNNN/ contains independently copied tenth-round checkpoints, ONNX and JSON provenance.\n"
-                "Milestones are rated adaptively; ratings.png uses one colour per campaign and connected rounds.\n"
+                "models/<family>/rNNNN/ contains independently saved checkpoint/ONNX files and small JSON provenance.\n"
+                "ratings/ holds the shared evaluator state, log, champion lineage, summary CSV and plots.\n"
+                "sgfs/YYYY-MM-DD/ contains each rated game and its neural report exactly once.\n"
                 "retained/ contains explicitly retained, unaccepted full-recovery bundles.\n"
                 "accepted/ contains explicitly user-approved publications; approvals/ keeps their receipts.\n"
-                "ratings/ holds the shared CSV ledger, run-owned inference references and SGF evidence.\n"
                 "Deleting a run preserves rating history but removes unretained model availability.\n"
                 "SGFs are independent copies; there is no shared blob pool or hardlink storage.\n\n"
                 "ONNX alone cannot resume training. Back up campaigns and this store off-machine.\n"
@@ -358,7 +364,7 @@ def copy_sgf(source, expected, target):
 def retain_evidence(store, records, destination, *, filenames=None):
     """Write-once SGFs as ordinary independent files, never hardlinks."""
     store, destination = Path(store), Path(destination)
-    if not (store / "STORE.pt").is_file():
+    if not store_marker(store).is_file():
         raise ValueError("rating evidence needs an initialized model store")
     with (store / ".archive.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

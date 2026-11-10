@@ -7,6 +7,7 @@ on the same linear training-game axis as the networks.
 
 import argparse
 import csv
+import json
 import math
 import re
 import sys
@@ -18,7 +19,7 @@ import torch
 
 from . import archive
 from .plot_metrics import pyplot, save_figure
-from .ratings import REFERENCE_ID
+from .ratings import REFERENCE_ID, transaction
 from .train import checkpoint_splits
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +35,8 @@ class Point:
     campaign: str = "Unknown campaign"
     round: int | None = None
     color: int | None = None
+    champion: bool | None = None
+    estimated: bool = False
 
 
 def training_games(store, network_id):
@@ -46,12 +49,10 @@ def training_games(store, network_id):
         count = source.get("training_games")
         if isinstance(count, int) and count >= 0:
             return count
-    for path in Path(store).glob("*-r*/metadata.json"):
-        import json
-
+    for path in Path(store).glob("models/*/r*/metadata.json"):
         source = json.loads(path.read_text())
         if source.get("checkpoint_sha256") == network_id:
-            return source["training_games"]
+            return source["progress"]["training_games"]
     for kind in ("retained", "accepted", "training", "experimental"):
         bundle = archive.find_bundle(Path(store) / kind, kind, network_id)
         if bundle is None:
@@ -64,9 +65,46 @@ def training_games(store, network_id):
     raise ValueError(f"no archived checkpoint for network {network_id} in {store}")
 
 
+def collect_artifact_points(model_store):
+    from .saved_models import saved_sources
+
+    sources = {source["id"]: source for source in saved_sources(model_store).values()}
+    champion_file = Path(model_store) / "ratings/champions.json"
+    lineage = (
+        {item["model"] for item in json.loads(champion_file.read_text())["history"]}
+        if champion_file.exists()
+        else {"random"}
+    )
+    points = []
+    with (Path(model_store) / "ratings/networks.csv").open(newline="") as stream:
+        for row in csv.DictReader(stream):
+            reference = row["network"] == "random"
+            source = {} if reference else sources[row["network"]]
+            rating, deviation = float(row["rating"]), float(row["deviation"])
+            if deviation < 0 or not all(math.isfinite(value) for value in [rating, deviation]):
+                raise ValueError("invalid rating summary")
+            points.append(
+                Point(
+                    row["network"],
+                    0 if reference else source["training_games"],
+                    rating,
+                    deviation,
+                    reference,
+                    source.get("family", "random"),
+                    source.get("round"),
+                    champion=row["network"] in lineage,
+                    estimated=not reference and int(row["games"]) == 0,
+                )
+            )
+    return points
+
+
 def collect_points(model_store):
     model_store = Path(model_store)
     path = model_store / "ratings" / "networks.csv"
+    with path.open(newline="") as stream:
+        if "network_id" not in (csv.DictReader(stream).fieldnames or []):
+            return collect_artifact_points(model_store)
     from .saved_models import saved_sources
 
     sources = {
@@ -78,6 +116,18 @@ def collect_points(model_store):
         {source["campaign"] for source in sources.values() if source.get("campaign")}
     )
     colors = {name: index for index, name in enumerate(campaigns)}
+    lineage = {}
+    champion_file = model_store / "ratings/champions.json"
+    if champion_file.exists():
+        for cohort in json.loads(champion_file.read_text())["cohorts"].values():
+            promoted = {item["checkpoint"] for item in cohort["history"]}
+            lineage.update(
+                {
+                    network: network in promoted
+                    for network in cohort.get("candidates", cohort["evaluated"])
+                }
+            )
+    estimates = None
     points = []
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -91,12 +141,25 @@ def collect_points(model_store):
             if row["network_id"] in seen:
                 raise ValueError(f"{path}:{number}: duplicate network")
             seen.add(row["network_id"])
-            if row["status"] not in {"rated", "fixed"}:
+            estimated = row["status"] == "unrated" and row["network_id"] in lineage
+            if row["status"] not in {"rated", "fixed"} and not estimated:
                 continue
             reference = row["network_id"] == REFERENCE_ID
+            if estimated and estimates is None:
+                # Show an explicitly uncertain prior, never invent game outcomes.
+                with transaction(model_store) as (tables, _):
+                    estimates = {
+                        network: dict(tables.state(network)) for network in tables.networks
+                    }
             try:
-                rating = float(row["rating"])
-                deviation = float(row["deviation"])
+                rating = (
+                    estimates[row["network_id"]]["rating"] if estimated else float(row["rating"])
+                )
+                deviation = (
+                    estimates[row["network_id"]]["deviation"]
+                    if estimated
+                    else float(row["deviation"])
+                )
                 if deviation < 0 or not all(math.isfinite(v) for v in (rating, deviation)):
                     raise ValueError("invalid rating")
             except (TypeError, ValueError) as error:
@@ -119,6 +182,8 @@ def collect_points(model_store):
                     source.get("campaign", "Unknown campaign"),
                     source.get("round"),
                     colors.get(source.get("campaign")),
+                    lineage.get(row["network_id"]),
+                    estimated,
                 )
             )
     if not any(not point.reference for point in points):
@@ -130,7 +195,7 @@ def campaign_label(campaign, points):
     """Include the family prefixes used in network names and rated-game files."""
     families = {match[0] for point in points if (match := re.match(r"cg\d+(?=-|$)", point.network))}
     prefix = "/".join(sorted(families, key=lambda family: int(family[2:])))
-    return f"{prefix} · {campaign}" if prefix else campaign
+    return f"{prefix} · {campaign}" if prefix and prefix != campaign else campaign
 
 
 def plot(points, output, title="Network ratings", labels=False):
@@ -152,12 +217,26 @@ def plot(points, output, title="Network ratings", labels=False):
             [p.games for p in series],
             [p.rating for p in series],
             yerr=[p.deviation for p in series],
-            fmt="o-",
+            fmt="-",
             capsize=3,
             alpha=0.85,
             color=colors(color_index),
             label=campaign_label(campaign, series),
         )
+        full = [point for point in series if point.champion is not False]
+        muted = [point for point in series if point.champion is False]
+        hue = colors(color_index)
+        gray = tuple(0.7 * 0.6 + 0.3 * component for component in hue[:3])
+        for group, color, alpha in [(full, hue, 1.0), (muted, gray, 0.8)]:
+            if group:
+                axis.scatter(
+                    [p.games for p in group],
+                    [p.rating for p in group],
+                    s=32,
+                    color=color,
+                    alpha=alpha,
+                    zorder=4,
+                )
     if labels:
         for point in networks:
             axis.annotate(
@@ -172,13 +251,29 @@ def plot(points, output, title="Network ratings", labels=False):
         axis.scatter(0, rating, marker="*", s=150, color="black", zorder=5)
     axis.set_ylabel("Rating")
     # Leave room around zero so the random-reference star remains fully visible.
-    maximum = max(1, max(p.games for p in networks))
+    maximum = max(1, max((p.games for p in networks), default=1))
     axis.set_xlim(-0.03 * maximum, 1.1 * maximum)
     axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
     axis.grid(True, which="major", alpha=0.25)
     from matplotlib.lines import Line2D
 
     handles, _ = axis.get_legend_handles_labels()
+    if any(point.champion is not None for point in networks):
+        handles.extend(
+            [
+                Line2D(
+                    [], [], marker="o", linestyle="none", color="tab:blue", label="Champion lineage"
+                ),
+                Line2D(
+                    [],
+                    [],
+                    marker="o",
+                    linestyle="none",
+                    color="0.6",
+                    label="Non-champion / provisional estimate",
+                ),
+            ]
+        )
     axis.legend(
         handles=[
             *handles,
@@ -202,7 +297,7 @@ def plot(points, output, title="Network ratings", labels=False):
         0.5,
         0.02,
         "Error bars: ± rating deviation (not a 95% confidence interval). "
-        "Validation excluded; replay counted once. Lines connect rounds within each campaign.\n"
+        "Validation excluded; replay counted once. Lines connect every evaluated round; muted dots are non-champions.\n"
         "Different model schemas use separate compatible evaluation runtimes; compare across protocols cautiously.",
         ha="center",
         fontsize=8,
@@ -215,21 +310,23 @@ def update(model_store):
     """Best-effort refresh after a committed arena batch; never abort training."""
     try:
         points = collect_points(model_store)
-        plot(points, Path(model_store) / "ratings.png")
+        plot(points, Path(model_store) / "ratings/ratings.png")
     except Exception as error:  # noqa: BLE001 — diagnostics must never abort training
         print(f"WARNING: ratings plot not updated: {error}", file=sys.stderr)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-store", type=Path, default=ROOT / "models")
-    parser.add_argument("--output", type=Path, help="PNG/SVG/PDF; default MODEL_STORE/ratings.png")
+    parser.add_argument("--model-store", type=Path, default=ROOT / "artifacts")
+    parser.add_argument(
+        "--output", type=Path, help="PNG/SVG/PDF; default ARTIFACT_STORE/ratings/ratings.png"
+    )
     parser.add_argument("--title", default="Network ratings")
     parser.add_argument("--labels", action="store_true", help="label points with network names")
     args = parser.parse_args(argv)
     try:
         points = collect_points(args.model_store)
-        output = args.output or args.model_store / "ratings.png"
+        output = args.output or args.model_store / "ratings/ratings.png"
         plot(points, output, args.title, args.labels)
     except (OSError, ValueError, ImportError) as error:
         print(f"plot error: {error}", file=sys.stderr)

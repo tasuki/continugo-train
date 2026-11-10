@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import test_acceptance as arena_helpers
-import test_loop as helpers
 
 from continugo_train import archive, export, loop, ratings
 from continugo_train.features import inspect_game
@@ -86,7 +85,12 @@ class NetworkOrderTests(unittest.TestCase):
         self.assertTrue(all("pool" not in row for row in rows))
 
 
-class RatingsTests(helpers.LoopHarness):
+from rating_helpers import EvaluationHarness, FixtureRunner
+
+from continugo_train.evaluation import EvaluationConfig
+
+
+class RatingsTests(EvaluationHarness):
     def setUp(self):
         super().setUp()
         self.jobs = arena_helpers.ArenaJobs()
@@ -139,7 +143,7 @@ class RatingsTests(helpers.LoopHarness):
         rows, matches = self.rows(), self.matches()
         self.assertEqual(
             {p.name for p in self.directory.iterdir()},
-            {".lock", "networks.csv", "matches.csv", "games", "inference"},
+            {".lock", "networks.csv", "matches.csv", "games", "inference", "ratings.png"},
         )
         self.assertEqual(
             len(matches), 6
@@ -505,10 +509,10 @@ class RatingsTests(helpers.LoopHarness):
             update.assert_not_called()
 
     def test_unscheduled_intermediates_not_registered(self):
-        state = self.run_loop(
-            self.root / "sparse",
-            extra=["--iterations", "3", "--reference-games", "2", "--evaluation-interval", "3"],
-        )
+        output = self.root / "sparse"
+        state = self.run_loop(output, extra=["--iterations", "3"])
+        for record in [state["initial_actor_checkpoint"], state["iterations"][2]["checkpoint"]]:
+            ratings.register_checkpoint(self.store, output / record["path"])
         ids = {row["network_id"] for row in self.rows()}
         self.assertIn(state["initial_actor_checkpoint"]["sha256"], ids)
         self.assertIn(state["iterations"][2]["checkpoint"]["sha256"], ids)
@@ -579,7 +583,7 @@ class RatingsTests(helpers.LoopHarness):
         self.assertTrue(all(row["games"] == "4" for row in self.rows()))
 
     def test_crash_after_match_commit_reimport_does_not_rate_again(self):
-        save = loop.LoopRunner.save
+        save = FixtureRunner.save
         failed = False
 
         def gap(runner):
@@ -591,7 +595,7 @@ class RatingsTests(helpers.LoopHarness):
             return save(runner)
 
         output = self.root / "after-commit"
-        with patch.object(loop.LoopRunner, "save", gap), self.assertRaises(KeyboardInterrupt):
+        with patch.object(FixtureRunner, "save", gap), self.assertRaises(KeyboardInterrupt):
             self.rated_loop(output)
         committed = self.matches()
         self.assertEqual(len(committed), 2)
@@ -624,9 +628,7 @@ class RatingsTests(helpers.LoopHarness):
         exports = len(self.stage_calls("continugo_train.export"))
         state = self.run_loop(output, resume=True)
         self.assertEqual(first.read_bytes(), before)
-        self.assertEqual(
-            len(self.stage_calls("continugo_train.export")), exports + 1
-        )  # Candidate only.
+        self.assertEqual(len(self.stage_calls("continugo_train.export")), exports)
         self.assertEqual(state["initial_reference"]["reference"]["attempts"][1]["indices"], [1])
         self.assertEqual(len(self.matches()), 6)
 
@@ -673,7 +675,7 @@ class RatingsTests(helpers.LoopHarness):
         self.assertIn("truncated=2", result.stdout)
         settings = ratings.protocol(
             replace(
-                loop.LoopConfig(),
+                EvaluationConfig(),
                 sizes=(9,),
                 size_weights="uniform",
                 gate_simulations=1,

@@ -1,8 +1,9 @@
-"""Save selected campaign rounds as independent, hash-verified model copies."""
+"""One independent model per family/round, with small portable metadata."""
 
 import argparse
-import fcntl
+import filecmp
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 import torch
 
 from . import archive
-from .paths import ROOT, utc_now
+from .paths import ROOT
 from .progress import checkpoint_progress, network_name
 from .train import checkpoint_splits
 
@@ -39,100 +40,76 @@ def verify(directory):
     if directory.is_symlink():
         raise ValueError("saved model cannot be a symlink")
     metadata = json.loads((directory / "metadata.json").read_text())
-    if metadata.get("version") != 1 or set(metadata.get("files", {})) != set(FILES):
-        raise ValueError("incompatible saved model metadata")
-    if {p.name for p in directory.iterdir()} != {*FILES, "metadata.json"}:
+    if set(metadata) != {"family", "round", "network_name", "progress", "source"}:
+        raise ValueError("unexpected saved model metadata")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", metadata["family"]) or metadata["round"] < 1:
+        raise ValueError("invalid model family/round")
+    if directory.parent.name != metadata["family"] or directory.name != f"r{metadata['round']:04d}":
+        raise ValueError("model directory disagrees with metadata")
+    if {path.name for path in directory.iterdir()} != {*FILES, "metadata.json"}:
         raise ValueError("unexpected saved model files")
     for name in FILES:
         path = directory / name
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or archive.digest(path) != metadata["files"][name]
-        ):
-            raise ValueError(f"saved model artifact missing or changed: {path}")
+        if path.is_symlink() or not path.is_file() or not path.stat().st_size:
+            raise ValueError(f"saved model artifact missing: {path}")
         if path.stat().st_nlink != 1:
             raise ValueError(f"saved model must be an independent file: {path}")
-    if metadata["files"]["checkpoint.pt"] != metadata["checkpoint_sha256"]:
-        raise ValueError("saved checkpoint identity mismatch")
     return metadata
 
 
 def save_round(root, state, job, store=None):
     root = Path(root).resolve()
-    if not job.get("completed") or job.get("model") is None or job.get("checkpoint") is None:
+    if not job.get("completed") or not job.get("model") or not job.get("checkpoint"):
         raise ValueError("only completed, exported rounds can be saved")
     if state.get("version") not in {5, 6} or state.get("root") != str(root):
         raise ValueError("saving requires an unrelocated v5/v6 campaign")
-    checkpoint = checked(root, job["checkpoint"])
-    inputs = {"checkpoint.pt": checkpoint}
+    inputs = {"checkpoint.pt": checked(root, job["checkpoint"])}
     inputs.update(
         {f"{name}.onnx": checked(root, job["model"][name]) for name in ["encoder", "policy"]}
     )
-    checksum = job["checkpoint"]["sha256"]
-    if job["model"]["checkpoint_sha256"] != checksum:
-        raise ValueError("export belongs to a different checkpoint")
-    name = campaign_name(root)
-    destination_name = f"{name}-r{job['number']:04d}"
+    saved = torch.load(inputs["checkpoint.pt"], map_location="cpu", weights_only=True)
+    progress = checkpoint_progress(saved)
+    metadata = {
+        "family": progress["family"],
+        "round": job["number"],
+        "network_name": network_name(saved),
+        "progress": {
+            "training_games": sum(split == "train" for split in checkpoint_splits(saved).values()),
+            "samples_seen": progress["samples_seen"],
+            "data_positions": progress["data_positions"],
+        },
+        "source": {"run": campaign_name(root), "iteration": job["number"]},
+    }
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", metadata["family"]):
+        raise ValueError("invalid model family")
     store = archive.initialize_store(store or state["config"]["model_store"])
-    destination = store / destination_name
-    expected = {file: archive.digest(path) for file, path in inputs.items()}
+    parent = store / "models" / metadata["family"]
+    parent.mkdir(parents=True, exist_ok=True)
+    destination = parent / f"r{job['number']:04d}"
+    import fcntl
+
     with (store / ".archive.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if destination.exists() or destination.is_symlink():
-            metadata = verify(destination)
-            if (
-                metadata["campaign"] != name
-                or metadata["round"] != job["number"]
-                or metadata["source_loop"] != str(root)
-                or metadata["files"] != expected
+        if destination.exists():
+            if verify(destination) != metadata or any(
+                not filecmp.cmp(source, destination / name, shallow=False)
+                for name, source in inputs.items()
             ):
                 raise ValueError(
-                    f"saved-model name conflicts with different provenance: {destination}"
+                    f"saved-model name conflicts with different or changed data: {destination}"
                 )
             return destination
-        checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        metadata = {
-            "version": 1,
-            "campaign": name,
-            "round": job["number"],
-            "source_loop": str(root),
-            "source_context": {
-                key: state[key]
-                for key in [
-                    "version",
-                    "config",
-                    "feature_spec",
-                    "runtime_fingerprints",
-                    "rating_protocol",
-                ]
-            },
-            "checkpoint_sha256": checksum,
-            "network_name": network_name(checkpoint_data),
-            "saved_at": utc_now().isoformat(),
-            "progress": checkpoint_progress(checkpoint_data),
-            "training_games": sum(
-                split == "train" for split in checkpoint_splits(checkpoint_data).values()
-            ),
-            "accepted": False,
-            "files": expected,
-        }
-        with tempfile.TemporaryDirectory(prefix=".saving-", dir=store) as temporary:
+        with tempfile.TemporaryDirectory(prefix=".saving-", dir=parent) as temporary:
             stage = Path(temporary)
-            for file, source in inputs.items():
-                shutil.copyfile(source, stage / file)
-                if archive.digest(stage / file) != expected[file]:
-                    raise ValueError("model changed while saving")
-                archive.seal_file(stage / file)
-            (stage / "metadata.json").write_text(
-                json.dumps(metadata, indent=2, sort_keys=True) + "\n"
-            )
+            for name, source in inputs.items():
+                shutil.copyfile(source, stage / name)
+                archive.seal_file(stage / name)
+            (stage / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
             archive.seal_file(stage / "metadata.json")
-            verify(stage)
             archive.sync_directory(stage)
             stage.rename(destination)
         destination.chmod(0o555)
-        archive.sync_directory(store)
+        archive.sync_directory(parent)
     return destination
 
 
@@ -152,53 +129,66 @@ def save_campaign(root, every=10, *, store=None, iteration=None):
     return [save_round(root, state, job, store) for job in jobs]
 
 
+def source_loop(store, run):
+    """Locate training provenance without putting machine-specific paths in metadata."""
+    for path in [
+        ROOT / "runs" / run / "loop",
+        Path(store).parent / run,
+        Path(store).parent / run / "loop",
+    ]:
+        if (path / "loop.pt").is_file():
+            return path.resolve()
+    return None
+
+
 def saved_sources(store):
-    result = {}
-    for path in sorted(Path(store).glob("*-r*/metadata.json")):
+    result, contexts = {}, {}
+    for path in sorted(Path(store).glob("models/*/r*/metadata.json")):
         metadata = verify(path.parent)
-        result[metadata["checkpoint_sha256"]] = {
+        records = {
+            name: {
+                "path": str((path.parent / file).resolve()),
+                "sha256": archive.digest(path.parent / file),
+            }
+            for name, file in [
+                ("checkpoint", "checkpoint.pt"),
+                ("encoder", "encoder.onnx"),
+                ("policy", "policy.onnx"),
+            ]
+        }
+        checksum = records["checkpoint"]["sha256"]
+        run = metadata["source"]["run"]
+        loop = source_loop(store, run)
+        if loop is not None and run not in contexts:
+            contexts[run] = torch.load(loop / "loop.pt", map_location="cpu", weights_only=True)
+        # Runtime identities are computed in memory for native ONNX validation;
+        # metadata.json and filenames contain no content hashes.
+        result[checksum] = {
             **metadata,
-            **{
-                name: {
-                    "path": str((path.parent / file).resolve()),
-                    "sha256": metadata["files"][file],
-                }
-                for name, file in [
-                    ("checkpoint", "checkpoint.pt"),
-                    ("encoder", "encoder.onnx"),
-                    ("policy", "policy.onnx"),
-                ]
-            },
+            **records,
+            "id": f"{metadata['family']}-r{metadata['round']:04d}",
+            "checkpoint_sha256": checksum,
+            "campaign": run,
+            "training_games": metadata["progress"]["training_games"],
+            "source_loop": str(loop) if loop else None,
+            "source_context": contexts.get(run),
         }
     return result
 
 
 def campaign_index(runs):
-    """Attribute checkpoint identities to their producing campaign, not a child fork."""
     result = {}
-    states = []
     for file in sorted(Path(runs).glob("*/loop/loop.pt")):
         state = torch.load(file, map_location="cpu", weights_only=True)
-        if state.get("version") in {5, 6} and state.get("root") == str(file.parent.resolve()):
-            states.append((file.parent.resolve(), state))
-    for completed in [False, True]:
-        for root, state in states:
-            records = (
-                [(0, state.get("initial_actor_checkpoint"))]
-                if not completed
-                else [
-                    (job["number"], job.get("checkpoint"))
-                    for job in state["iterations"]
-                    if job["completed"]
-                ]
-            )
-            for number, record in records:
-                if record:
-                    result[record["sha256"]] = {
-                        "campaign": campaign_name(root),
-                        "round": number,
-                        "checkpoint": root / record["path"],
-                    }
+        if state.get("version") not in {5, 6}:
+            continue
+        for job in state["iterations"]:
+            if job["completed"]:
+                result[job["checkpoint"]["sha256"]] = {
+                    "campaign": campaign_name(file.parent),
+                    "round": job["number"],
+                    "checkpoint": file.parent / job["checkpoint"]["path"],
+                }
     return result
 
 
@@ -206,12 +196,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--loop", type=Path)
-    source.add_argument(
-        "--runs", type=Path, help="backfill every campaign directly under this directory"
-    )
+    source.add_argument("--runs", type=Path)
     parser.add_argument("--every", type=int, default=10)
     parser.add_argument("--iteration", type=int)
-    parser.add_argument("--model-store", type=Path, default=ROOT / "models")
+    parser.add_argument("--model-store", type=Path, default=ROOT / "artifacts")
     args = parser.parse_args(argv)
     if args.iteration is not None and args.loop is None:
         parser.error("--iteration requires --loop")

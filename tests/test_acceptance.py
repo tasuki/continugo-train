@@ -9,11 +9,12 @@ from pathlib import Path
 
 import test_loop as helpers
 import torch
+from rating_helpers import EvaluationHarness
 from test_features import SGF
 
 from continugo_train import archive, data, gate, loop, ratings, retain
 from continugo_train import train as trainer
-from continugo_train.features import inspect_game
+from continugo_train.evaluation import EvaluationConfig
 from continugo_train.sampling import DEFAULT_SIZE_WEIGHTS, position_quotas, weighted_sizes
 
 
@@ -142,7 +143,7 @@ class SamplingTests(unittest.TestCase):
     def test_default_schedule_and_evaluation_pairs_are_40_40_20(self):
         self.assertEqual(weighted_sizes((9, 13, 19)), [9, 13, 19, 9, 13])
         self.assertEqual(Counter(weighted_sizes((9, 13, 19))), {9: 2, 13: 2, 19: 1})
-        config = loop.LoopConfig(gate_games=20)
+        config = EvaluationConfig(gate_games=20)
         self.assertEqual(
             Counter(gate.plan(config, 1, i)[1] for i in range(20)), {9: 8, 13: 8, 19: 4}
         )
@@ -191,7 +192,7 @@ class SamplingTests(unittest.TestCase):
                 weighted_sizes((9, 13, 19), text)
 
 
-class AcceptanceTests(helpers.LoopHarness):
+class AcceptanceTests(EvaluationHarness):
     def setUp(self):
         super().setUp()
         self.jobs = ArenaJobs()
@@ -220,75 +221,6 @@ class AcceptanceTests(helpers.LoopHarness):
         with self.assertRaisesRegex(ValueError, "separate from the loop output"):
             self.run_loop(output, extra=["--model-store", str(output / "models")])
 
-    def test_rejection_keeps_latest_training_progress_and_incumbent_selfplay(self):
-        output = self.root / "rejected"
-        state = self.run_loop(
-            output,
-            extra=[
-                "--iterations",
-                "2",
-                "--gate-games",
-                "10",
-                "--acceptance-rate",
-                "0.6",
-                "--actor-policy",
-                "gate",
-            ],
-        )
-        first, second = state["iterations"]
-        self.assertEqual(first["decision"], "failed")
-        self.assertEqual(second["decision"], "failed")
-        self.assertEqual(second["parent_checkpoint"], first["checkpoint"])
-        self.assertEqual(second["parent_model"], state["initial_model"])
-        self.assertEqual(state["actor"]["model"], state["initial_model"])
-        self.assertIsNone(state["accepted"])
-        store = Path(state["config"]["model_store"])
-        for name in [
-            "training",
-            "experimental",
-            "LATEST-TRAINING",
-            "LATEST-EXPERIMENTAL",
-            "LATEST-ACCEPTED",
-        ]:
-            self.assertFalse((store / name).exists())
-        self.assertNotIn("training_archive", second)
-        self.assertNotIn("archive", state["actor"])
-        for record in second["games"]:
-            self.assertEqual(
-                inspect_game(output / record["path"])["root_comment"]["model"],
-                state["initial_checkpoint"]["sha256"],
-            )
-
-    def test_enable_head_to_head_at_boundary_keeps_latest_actor_and_old_evidence(self):
-        output = self.root / "enable-matches"
-        before_state = self.run_loop(output, extra=["--reference-games", "2"])
-        before = (output / "loop.pt").read_bytes()
-        calls = len(self.jobs.calls)
-        state = self.run_loop(
-            output, resume=True, extra=["--enable-head-to-head", "2", "--stop-after-iteration", "1"]
-        )
-        self.assertEqual(len(self.jobs.calls), calls)
-        self.assertEqual((output / "before-head-to-head.pt").read_bytes(), before)
-        self.assertEqual(state["iterations"], before_state["iterations"])
-        self.assertEqual(state["actor"], before_state["actor"])
-        self.assertEqual(state["config"]["actor_policy"], "latest")
-        self.assertEqual(state["config"]["gate_games"], 2)
-        self.assertEqual(state["config_changes"][0]["after_iteration"], 1)
-        state = self.run_loop(output, resume=True, extra=["--iterations", "2"])
-        self.assertEqual(state["iterations"][1]["gate"]["report"]["games"], 2)
-        self.assertEqual(state["actor"]["model"], state["iterations"][1]["model"])
-
-    def test_enable_head_to_head_refuses_mid_iteration_and_invalid_counts(self):
-        output = self.root / "enable-mid-round"
-        self.jobs.fault = "epoch_gap"
-        with self.assertRaises(KeyboardInterrupt):
-            self.run_loop(output, extra=["--reference-games", "2"])
-        before = (output / "loop.pt").read_bytes()
-        for count in ["2", "0", "3"]:
-            with self.assertRaises(ValueError):
-                self.run_loop(output, resume=True, extra=["--enable-head-to-head", count])
-            self.assertEqual((output / "loop.pt").read_bytes(), before)
-
     def test_unexpected_draws_are_visible_and_explicit_retention_is_complete(self):
         output = self.root / "draws"
         self.jobs.arena_mode = "draw"
@@ -312,7 +244,7 @@ class AcceptanceTests(helpers.LoopHarness):
         self.assertTrue((bundle / "policy.onnx").is_file())
         saved = loop.load_training(bundle / "checkpoint.pt")
         self.assertEqual(len(list((bundle / "replay").glob("*.sgf"))), len(saved["manifest"]))
-        self.assertEqual(len(list((bundle / "evaluation").glob("*.sgf"))), 10)
+        self.assertEqual(len(list((bundle / "evaluation").glob("*.sgf"))), 0)
         self.assertEqual(bundle.stat().st_mode & 0o222, 0)
         before = {path: path.read_bytes() for path in bundle.rglob("*") if path.is_file()}
         calls = len(self.jobs.calls)
@@ -400,16 +332,10 @@ class AcceptanceTests(helpers.LoopHarness):
                 "9,13,19",
                 "--games-per-iteration",
                 "5",
-                "--gate-games",
-                "10",
                 "--simulations",
-                "4",
-                "--gate-simulations",
                 "4",
                 "--widening",
                 "0.01",
-                "--gate-max-moves",
-                "8",
                 # Bounded plumbing fixture: this seed includes natural opening
                 # draws. Losing passes are no longer used to finish short games.
                 "--seed",
@@ -422,11 +348,6 @@ class AcceptanceTests(helpers.LoopHarness):
             state = loop.run_loop(arguments)
         iteration = state["iterations"][0]
         self.assertEqual(Counter(r["board_size"] for r in iteration["games"]), {9: 2, 13: 2, 19: 1})
-        self.assertEqual(
-            Counter(r["board_size"] for r in iteration["gate"]["games"]), {9: 4, 13: 4, 19: 2}
-        )
-        self.assertEqual(iteration["gate"]["report"]["draws"], 10)
-        self.assertEqual(iteration["decision"], "passed")
         self.assertIsNone(state["accepted"])
         reference = retain.retain(output)
         archive.verify_bundle(reference)

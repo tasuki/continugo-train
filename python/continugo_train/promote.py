@@ -36,7 +36,7 @@ def publication_lock(store):
     store = Path(store).resolve()
     if any(store.is_relative_to(ROOT / name) for name in ["runs", "scratch"]):
         raise ValueError("approval store must be outside disposable runs/ and scratch/")
-    marker = store / "STORE.pt"
+    marker = archive.store_marker(store)
     if not marker.is_file() or torch.load(marker, weights_only=True) != {
         "format": "continugo-recovery-store",
         "version": 1,

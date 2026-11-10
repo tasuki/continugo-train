@@ -3,6 +3,8 @@
 /runs/
 /scratch/
 /models/
+/artifacts/
+/artifacts/ratings/evaluator.log
 /models_*/
 __pycache__/
 *.egg-info/

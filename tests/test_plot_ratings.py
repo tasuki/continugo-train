@@ -1,7 +1,9 @@
 import csv
 import importlib.util
+import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -73,6 +75,78 @@ class PlotRatingsTests(unittest.TestCase):
         self.assertEqual(sorted(p.games for p in points), [0, 120])
         self.assertEqual(before, path.read_bytes())
 
+    def test_champion_lineage_and_unrated_ladder_estimates_are_preserved(self):
+        self.table()
+        checksum = next((self.root / "training").iterdir()).name
+        uncertain = "c" * 64
+        (self.root / "ratings/champions.json").write_text(
+            json.dumps(
+                {
+                    "cohorts": {
+                        "test": {
+                            "history": [{"checkpoint": REFERENCE_ID}, {"checkpoint": checksum}],
+                            "candidates": [checksum, uncertain],
+                            "evaluated": {},
+                        }
+                    }
+                }
+            )
+        )
+        directory = self.root / "ratings/inference"
+        directory.mkdir()
+        torch.save(
+            {"checkpoint_sha256": uncertain, "training_games": 140}, directory / f"{uncertain}.pt"
+        )
+
+        class Prior:
+            def __init__(self):
+                self.networks = {uncertain: {}}
+
+            def state(self, _network):
+                return {"rating": 100.0, "deviation": 350.0}
+
+        @contextmanager
+        def transaction(_store):
+            yield Prior(), None
+
+        with patch.object(plot_ratings, "transaction", transaction):
+            points = collect_points(self.root)
+        champion = next(
+            point for point in points if point.network == "test-net" and point.games == 120
+        )
+        estimate = next(point for point in points if point.games == 140)
+        self.assertTrue(champion.champion)
+        self.assertFalse(estimate.champion)
+        self.assertTrue(estimate.estimated)
+        self.assertEqual((estimate.rating, estimate.deviation), (100, 350))
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
+    def test_100_connected_points_with_muted_rejections_and_full_champions(self):
+        from matplotlib.collections import PathCollection
+
+        points = [
+            plot_ratings.Point(
+                str(i), i * 20, 100 + i, 100 / i, False, "campaign", i, champion=i % 10 == 0
+            )
+            for i in range(1, 101)
+        ]
+        points.append(plot_ratings.Point("random", 0, 100, 0, True))
+        save = plot_ratings.save_figure
+
+        def inspect(plt, figure, target):
+            axis = figure.axes[0]
+            dots = [item for item in axis.collections if isinstance(item, PathCollection)]
+            self.assertEqual([len(item.get_offsets()) for item in dots], [10, 90, 1])
+            self.assertNotEqual(
+                list(dots[0].get_facecolors()[0]), list(dots[1].get_facecolors()[0])
+            )
+            self.assertEqual(len(axis.containers[0].lines[0].get_xdata()), 100)
+            self.assertEqual(axis.get_xscale(), "linear")
+            save(plt, figure, target)
+
+        with patch.object(plot_ratings, "save_figure", inspect):
+            plot(points, self.root / "hundred.png")
+
     def test_missing_and_invalid_inputs(self):
         with self.assertRaises(OSError):
             collect_points(self.root)
@@ -116,7 +190,7 @@ class PlotRatingsTests(unittest.TestCase):
         self.assertEqual(main(["--model-store", str(self.root), "--output", str(output)]), 0)
         self.assertEqual(main(["--model-store", str(self.root / "missing")]), 1)
         plot_ratings.update(self.root)
-        self.assertTrue((self.root / "ratings.png").is_file())
+        self.assertTrue((self.root / "ratings/ratings.png").is_file())
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
     def test_plot_accepts_networks_below_100_games(self):

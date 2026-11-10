@@ -9,7 +9,8 @@ from pathlib import Path
 import torch
 
 from . import archive, gate, ratings
-from .loop import LoopConfig, LoopRunner, digest, loop_lock
+from .evaluation import EvaluationConfig, EvaluationRunner, source_protocol, validate_output
+from .loop import digest, loop_lock
 from .train import atomic_checkpoint
 
 VERSION = "rated-round-robin-v1"
@@ -63,7 +64,7 @@ def latest_bundles(store, count):
 def initialize(root, source, bundles, games, seed):
     if len(bundles) < 2:
         raise ValueError("at least two bundles are required")
-    config = replace(LoopConfig(**source["config"]), gate_games=games, seed=seed)
+    config = replace(EvaluationConfig.from_config(source["config"]), gate_games=games, seed=seed)
     config.validate()
     if not games:
         raise ValueError("--games must be positive")
@@ -71,11 +72,8 @@ def initialize(root, source, bundles, games, seed):
     if seed + pairs * (games // 2) > 2**64:
         raise ValueError("evaluation game seeds overflow u64")
     store = Path(config.model_store).resolve()
-    if root.is_relative_to(store) or store.is_relative_to(root):
-        raise ValueError("evaluation output must be separate from the model store")
-    settings = ratings.protocol(config, legacy=source["rating_protocol"]["version"] == 1)
-    if settings != source["rating_protocol"]:
-        raise ValueError("source loop evaluation binaries/settings changed")
+    validate_output(root, store)
+    settings = source_protocol(source, config)
     models, checkpoints = snapshot_models(root, source, bundles)
     jobs = [
         {
@@ -188,7 +186,7 @@ def run(args):
                 args.seed if args.seed is not None else 9100000,
             )
             atomic_checkpoint(root / "loop.pt", state)
-        runner = LoopRunner(root, state, lock_fd)
+        runner = EvaluationRunner(root, state, lock_fd)
         runner.verify_runtime()
         for job in state["jobs"]:
             if args.ingest_only and not job.get("gate"):

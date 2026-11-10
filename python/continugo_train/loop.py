@@ -2,7 +2,7 @@
 
 SGFs remain the game records. loop.pt is an atomic orchestration checkpoint, not
 an alternate game format. Training, experimental actors and accepted networks
-are independent. Matches never promote: publication needs explicit user approval.
+are independent. Ratings run separately; publication needs explicit user approval.
 """
 
 import argparse
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from . import archive, gate, plot_metrics, promote, ratings
+from . import archive, plot_metrics, promote
 from .data import inspect_corpus, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
@@ -76,56 +76,11 @@ class LoopConfig:
     selfplay_binary: str = str(ROOT / "target/release/continugo-train")
     feature_binary: str = str(ROOT / "target/release/features")
     ort_library: str | None = None
-    arena_binary: str = str(ROOT / "target/release/arena")
-    rating_binary: str = str(ROOT / "target/release/rating")
-    reference_games: int = 10
-    reference_max_moves: int = 2048
-    gate_games: int = 20
-    gate_simulations: int = 32
-    gate_max_moves: int = 512
-    acceptance_rate: float = 0.5
-    actor_policy: str = "latest"
-    evaluation_interval: int = 10
     save_model_every: int = 10
-    model_store: str = str(ROOT / "models")
-    adaptive_max_games: int = 360
-    adaptive_target_rd: float = 75.0
-    adaptive_min_pairs: int = 20
-    adaptive_min_opponents: int = 2
-    adaptive_min_opponent_pairs: int = 4
-    adaptive_batch_games: int = 4
+    model_store: str = str(ROOT / "artifacts")
 
     def validate(self):
         weighted_sizes(self.sizes, self.size_weights)
-        if any(
-            not 0 <= count < 2**32 or count % 2 for count in [self.gate_games, self.reference_games]
-        ):
-            raise ValueError(
-                "gate-games/reference-games must be even nonnegative native u32 counts (0 disables)"
-            )
-        if self.reference_max_moves <= 0:
-            raise ValueError("reference-max-moves must be positive")
-        if (
-            self.adaptive_max_games < 0
-            or not 0 < self.adaptive_batch_games < 2**32
-            or self.adaptive_batch_games % 2
-            or self.adaptive_max_games % self.adaptive_batch_games
-            or not math.isfinite(self.adaptive_target_rd)
-            or self.adaptive_target_rd <= 0
-            or min(
-                self.adaptive_min_pairs,
-                self.adaptive_min_opponents,
-                self.adaptive_min_opponent_pairs,
-            )
-            <= 0
-        ):
-            raise ValueError("invalid adaptive rating precision/evidence limits or game budget")
-        if (
-            not 0 < self.gate_simulations < 2**32
-            or self.gate_max_moves <= 0
-            or not 0.5 <= self.acceptance_rate <= 1
-        ):
-            raise ValueError("positive gate budgets and acceptance-rate in 0.5..1 required")
         if not self.sizes or any(size not in range(9, 20) for size in self.sizes):
             raise ValueError("sizes must be nonempty and in 9..19")
         if not 1 <= self.games_per_iteration < 2**32 or not 1 <= self.simulations < 2**32:
@@ -152,7 +107,6 @@ class LoopConfig:
             "train_epochs",
             "batch_size",
             "threads",
-            "evaluation_interval",
         ]
         if any(getattr(self, name) <= 0 for name in positive) or self.replay_games < 2:
             raise ValueError(
@@ -188,8 +142,6 @@ class LoopConfig:
             and (not math.isfinite(self.lr) or self.lr <= 0)
         ):
             raise ValueError("invalid search, validation fraction or learning rate")
-        if self.actor_policy not in {"latest", "gate"}:
-            raise ValueError("actor-policy must be latest or gate")
         if self.device not in {"cpu", "cuda"} or self.warm_start_optimizer not in {"keep", "reset"}:
             raise ValueError("invalid device or warm-start optimizer policy")
 
@@ -255,6 +207,22 @@ class LoopConfig:
         result = Options(**options)
         result.validate()
         return result
+
+
+def training_config(config):
+    """Read legacy campaign settings without the removed evaluation controls."""
+    names = {field.name for field in fields(LoopConfig)}
+    return {name: value for name, value in config.items() if name in names}
+
+
+def detach_evaluation(state):
+    """Detach old rating jobs; their durable evidence belongs to models/ratings/."""
+    state["config"] = training_config(state["config"])
+    state.pop("rating_protocol", None)
+    state.pop("initial_reference", None)
+    for iteration in state["iterations"]:
+        for key in ["gate", "reference", "adaptive_rating", "decision"]:
+            iteration.pop(key, None)
 
 
 def digest(path):
@@ -414,7 +382,7 @@ def select_replay(records, limit, size_weights=DEFAULT_SIZE_WEIGHTS):
 class LoopRunner:
     def __init__(self, root, state, lock_fd):
         self.root, self.state, self.lock_fd = root, state, lock_fd
-        self.config = LoopConfig(**state["config"])
+        self.config = LoopConfig(**training_config(state["config"]))
 
     def save(self):
         atomic_checkpoint(self.root / "loop.pt", self.state)
@@ -428,14 +396,6 @@ class LoopRunner:
         if current != expected:
             raise ValueError(
                 "generation/feature executable changed; fork a new loop instead of mixing protocols"
-            )
-        if (
-            self.state["rating_protocol"] is not None
-            and ratings.protocol(self.config, legacy=self.state["rating_protocol"]["version"] == 1)
-            != self.state["rating_protocol"]
-        ):
-            raise ValueError(
-                "evaluation/rating executable changed; fork a new loop instead of mixing protocols"
             )
 
     def execute(self, command, logfile, environment=None):
@@ -503,16 +463,6 @@ class LoopRunner:
                 self.check(iteration["checkpoint"])
             if iteration["model"]:
                 self.check_model(iteration["model"])
-            for key in ["gate", "reference"]:
-                if iteration.get(key):
-                    for record in iteration[key]["games"]:
-                        if record:
-                            self.check(record)
-        initial_reference = self.state.get("initial_reference")
-        if initial_reference and initial_reference.get("reference"):
-            for record in initial_reference["reference"]["games"]:
-                if record:
-                    self.check(record)
         for role in ["training", "actor"]:
             if self.state[role]:
                 self.check(self.state[role]["checkpoint"])
@@ -525,32 +475,18 @@ class LoopRunner:
         # Recovery packs can be used even after their original corpus paths vanish.
         source = Path(checkpoint.get("source", self.check(checkpoint)))
         candidates += [str(path) for path in (source.parent / "replay").glob("*.sgf")]
-        evaluation = []
-        if iteration:
-            evaluation = [
-                str(self.check(r))
-                for key in ["gate", "reference"]
-                for r in (iteration.get(key) or {}).get("games", [])
-                if r
-            ]
         reference = archive.publish(
             self.config.model_store,
             kind,
             self.check(checkpoint),
             model=self.check_model(model) if model else None,
             game_candidates=candidates,
-            evaluation=evaluation,
             context={
                 "loop": str(self.root),
                 "iteration": iteration["number"] if iteration else 0,
                 "config": asdict(self.config),
                 "next_seed": self.config.seed
                 + (iteration["number"] if iteration else 0) * self.config.games_per_iteration,
-                "gate": iteration["gate"]["report"] if iteration and iteration["gate"] else None,
-                "reference": (iteration.get("reference") or {}).get("report")
-                if iteration
-                else None,
-                "rating_protocol": self.state["rating_protocol"],
             },
         )
         self.log(f"RECOVERY {kind}: {reference['directory']}")
@@ -934,137 +870,12 @@ class LoopRunner:
         iteration["checkpoint"] = self.record(snapshots[-1])
         self.save()
 
-    def rate_evaluation(self, job, key, checkpoints):
-        match = job[key]
-        if not match["games"] or match.get("rating_event"):
-            return
-        result = ratings.ingest(
-            self.config.model_store,
-            self.state["rating_protocol"],
-            [self.check(record) for record in match["games"]],
-            checkpoints=[self.check(record) for record in checkpoints],
-            kind=key,
-            decision=match["report"].get("decision"),
-            rating_binary=self.config.rating_binary,
-            feature_binary=self.config.feature_binary,
-        )
-        match["rating_event"] = result
-        self.save()
-        self.log(f"RATINGS {key}: {result}")
-
-    def adaptive_evaluation(self, iteration):
-        """Precision-targeted evaluation of this exact candidate, never actor selection."""
-        if iteration.get("adaptive_rating") is not None:
-            return iteration["adaptive_rating"]
-        from . import adaptive_ratings
-        from .round_robin import available_models
-
-        count = len(
-            available_models(self.config.model_store, feature_spec=self.state["feature_spec"])
-        )
-        if count <= self.config.adaptive_min_opponents:
-            report = {
-                "stop_reason": "insufficient-opponents; confidence target NOT met",
-                "games": 0,
-            }
-        else:
-            relative = f"iteration-{iteration['number']:04d}/adaptive-ratings"
-            output = self.path(relative)
-            args = ["--output", str(output)]
-            if (output / "loop.pt").exists():
-                args += ["--resume"]
-            else:
-                # A separate high-bit stream keeps these games distinct from both
-                # generation/gate seeds and the one-off backfill evaluator.
-                seed = (
-                    (1 << 63)
-                    + self.config.seed
-                    + (iteration["number"] - 1) * (self.config.adaptive_max_games // 2)
-                )
-                args += [
-                    "--loop",
-                    str(self.root),
-                    "--targets",
-                    iteration["checkpoint"]["sha256"],
-                    "--latest",
-                    "1",
-                    "--seed",
-                    str(seed),
-                ]
-                for option, value in {
-                    "max-games": self.config.adaptive_max_games,
-                    "target-rd": self.config.adaptive_target_rd,
-                    "min-pairs": self.config.adaptive_min_pairs,
-                    "min-opponents": self.config.adaptive_min_opponents,
-                    "min-opponent-pairs": self.config.adaptive_min_opponent_pairs,
-                    "batch-games": self.config.adaptive_batch_games,
-                }.items():
-                    args += ["--" + option, str(value)]
-            self.verify_runtime()
-            result = adaptive_ratings.run(
-                adaptive_ratings.parse_args(args), parent_lock_fd=self.lock_fd
-            )
-            self.verify_runtime()
-            if result["targets"] != [iteration["checkpoint"]["sha256"]]:
-                raise ValueError("adaptive evaluator targeted the wrong candidate")
-            report = {
-                "path": relative,
-                "stop_reason": result["stop_reason"],
-                "progress": result["progress"],
-                "games": len(result["jobs"]) * result["config"]["gate_games"],
-            }
-        iteration["adaptive_rating"] = report
-        self.save()
-        self.log(f"ADAPTIVE RATINGS iteration={iteration['number']}: {report}")
-        return report
-
-    def register_inference_sources(self):
-        """Locate already-evaluated run-owned models without making model copies."""
-        with ratings.transaction(self.config.model_store) as (tables, _):
-            registered = set(tables.networks)
-        if (
-            self.config.reference_games
-            and self.state["initial_model"]
-            and self.state["initial_actor_checkpoint"]["sha256"] in registered
-        ):
-            ratings.register_checkpoint(
-                self.config.model_store,
-                self.check(self.state["initial_actor_checkpoint"]),
-                model=self.check_model(self.state["initial_model"]),
-            )
-        for item in self.state["iterations"]:
-            if (
-                item.get("model")
-                and item["checkpoint"]["sha256"] in registered
-                and any(item.get(key) for key in ["gate", "reference", "adaptive_rating"])
-            ):
-                ratings.register_checkpoint(
-                    self.config.model_store,
-                    self.check(item["checkpoint"]),
-                    model=self.check_model(item["model"]),
-                )
-                if item.get("gate") and item["parent_actor_checkpoint"]["sha256"] in registered:
-                    ratings.register_checkpoint(
-                        self.config.model_store,
-                        self.check(item["parent_actor_checkpoint"]),
-                        model=self.check_model(item["parent_model"]),
-                    )
-
     def save_milestone(self, iteration):
         if self.config.save_model_every and iteration["number"] % self.config.save_model_every == 0:
             from .saved_models import save_round
 
             destination = save_round(self.root, self.state, iteration)
             self.log(f"SAVED MODEL: {destination}")
-            if self.state.get("rating_protocol") is not None:
-                from .plot_ratings import update
-
-                update(self.config.model_store)
-
-    def evaluation_due(self, number):
-        return number % self.config.evaluation_interval == 0 or (
-            self.config.save_model_every and number % self.config.save_model_every == 0
-        )
 
     def run(self, stop_after_iteration=None):
         self.verify_committed()
@@ -1087,25 +898,6 @@ class LoopRunner:
             }
         self.state["accepted"] = promote.accepted_head(self.config.model_store)
         self.save()
-        ratings.refresh(self.config.model_store)
-        self.register_inference_sources()
-        if self.state.get("initial_reference") is None:
-            self.state["initial_reference"] = {
-                "number": 1,
-                "initial": True,
-                "model": self.state["initial_model"],
-                "reference": None,
-            }
-            self.save()
-        initial = self.state["initial_reference"]
-        if self.config.reference_games:
-            ratings.register_checkpoint(
-                self.config.model_store,
-                self.check(self.state["initial_actor_checkpoint"]),
-                model=self.check_model(self.state["initial_model"]),
-            )
-        gate.evaluate(self, initial, reference=True)
-        self.rate_evaluation(initial, "reference", [self.state["initial_actor_checkpoint"]])
         stop = min(
             stop_after_iteration or self.state["target_iterations"], self.state["target_iterations"]
         )
@@ -1124,9 +916,6 @@ class LoopRunner:
                         "train_attempts": [],
                         "checkpoint": None,
                         "model": None,
-                        "gate": None,
-                        "reference": None,
-                        "decision": None,
                         "actor_updated": None,
                         "completed": False,
                     }
@@ -1149,56 +938,18 @@ class LoopRunner:
                     iteration["checkpoint"], f"iteration-{number:04d}/model"
                 )
                 self.save()
-            if self.evaluation_due(number):
-                if (
-                    self.config.gate_games
-                    or self.config.reference_games
-                    or self.config.adaptive_max_games
-                ):
-                    ratings.register_checkpoint(
-                        self.config.model_store,
-                        self.check(iteration["checkpoint"]),
-                        model=self.check_model(iteration["model"]),
-                    )
-                if self.config.gate_games:
-                    ratings.register_checkpoint(
-                        self.config.model_store,
-                        self.check(iteration["parent_actor_checkpoint"]),
-                        model=self.check_model(iteration["parent_model"]),
-                    )
-                report = gate.evaluate(self, iteration)
-                self.rate_evaluation(
-                    iteration,
-                    "gate",
-                    [iteration["checkpoint"], iteration["parent_actor_checkpoint"]],
-                )
-                gate.evaluate(self, iteration, reference=True)
-                self.rate_evaluation(iteration, "reference", [iteration["checkpoint"]])
-                decision = report["decision"]
-            else:
-                decision = "not-evaluated"
-            if self.config.adaptive_max_games and self.evaluation_due(number):
-                # Evaluated candidates point to hash-pinned run-owned exports.
-                # The rating ledger retains evidence independently of training.
-                self.adaptive_evaluation(iteration)
-            update_actor = self.config.actor_policy == "latest" or decision in {
-                "passed",
-                "disabled",
+            self.state["actor"] = {
+                "checkpoint": iteration["checkpoint"],
+                "model": iteration["model"],
             }
-            if update_actor:
-                self.state["actor"] = {
-                    "checkpoint": iteration["checkpoint"],
-                    "model": iteration["model"],
-                }
-            iteration["actor_updated"] = update_actor
-            iteration["decision"] = decision
+            iteration["actor_updated"] = True
             iteration["completed"] = True
             # Reading an approved publication never switches training or actors.
             self.state["accepted"] = promote.accepted_head(self.config.model_store)
             self.save()
             self.save_milestone(iteration)
             self.log(
-                f"iteration {number} complete: match={decision}; experimental actor {'advanced' if update_actor else 'held'}; "
+                f"iteration {number} complete: experimental actor advanced; "
                 f"training progress retained at {iteration['checkpoint']['path']}; no automatic promotion"
             )
         if stop < self.state["target_iterations"]:
@@ -1245,21 +996,9 @@ def parse_args(argv=None):
         "--iterations", type=int, help="total target; default 1, or saved target on resume"
     )
     parser.add_argument(
-        "--enable-head-to-head",
-        type=int,
-        metavar="GAMES",
-        help="on resume at a completed round boundary, enable rated actor matches without changing latest-actor selection",
-    )
-    parser.add_argument(
-        "--enable-adaptive-ratings",
-        type=int,
-        metavar="MAX_GAMES",
-        help="on resume at a completed round boundary, enable automatic adaptive evaluation for future scheduled candidates",
-    )
-    parser.add_argument(
         "--stop-after-iteration",
         type=int,
-        help="exit cleanly after this iteration (including evaluation); does not lower the saved total target",
+        help="exit cleanly after this iteration; does not lower the saved total target",
     )
     for field in fields(LoopConfig):
         name = "--" + field.name.replace("_", "-")
@@ -1291,12 +1030,7 @@ def run_loop(args):
         root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True)
     with loop_lock(root) as lock_fd:
-        head_to_head_backup = None
-        adaptive_backup = None
-        if (
-            args.enable_head_to_head is not None or args.enable_adaptive_ratings is not None
-        ) and not args.resume:
-            raise ValueError("--enable-head-to-head/--enable-adaptive-ratings require --resume")
+        evaluation_backup = None
         if args.resume:
             if (
                 args.checkpoint is not None
@@ -1315,9 +1049,11 @@ def run_loop(args):
                 raise ValueError(
                     "incompatible/relocated loop checkpoint; start a new v6 loop with a score/ownership checkpoint"
                 )
+            if training_config(state["config"]) != state["config"] or "rating_protocol" in state:
+                evaluation_backup = (root / "loop.pt").read_bytes()
+                detach_evaluation(state)
             for field in fields(LoopConfig):
-                # Preserve frozen old-loop behavior; the enabled default applies
-                # to new campaigns, not implicit upgrades of saved loops.
+                # Preserve frozen generation settings of older campaigns.
                 if field.name == "save_model_every":
                     state["config"].setdefault(field.name, 10)
                 if field.name in {"policy_simulations", "policy_search_probability"}:
@@ -1325,63 +1061,11 @@ def run_loop(args):
                         field.name,
                         0.0 if field.name == "policy_search_probability" else field.default,
                     )
-                if field.name.startswith("adaptive_"):
-                    state["config"].setdefault(
-                        field.name, 0 if field.name == "adaptive_max_games" else field.default
-                    )
                 value = getattr(args, field.name)
                 if value is not None and value != state["config"][field.name]:
                     raise ValueError(
                         f"resume restores --{field.name.replace('_', '-')}; conflicting override"
                     )
-            if args.enable_head_to_head is not None:
-                count = args.enable_head_to_head
-                if not 0 < count < 2**32 or count % 2:
-                    raise ValueError("--enable-head-to-head needs a positive even game count")
-                if state["config"]["actor_policy"] != "latest":
-                    raise ValueError("--enable-head-to-head preserves latest-actor selection only")
-                if any(not item["completed"] for item in state["iterations"]):
-                    raise ValueError("enable head-to-head only at a completed round boundary")
-                previous = state["config"]["gate_games"]
-                if previous not in {0, count}:
-                    raise ValueError("head-to-head matches are already enabled with another count")
-                if previous == 0:
-                    head_to_head_backup = (root / "loop.pt").read_bytes()
-                    state.setdefault("config_changes", []).append(
-                        {
-                            "after_iteration": len(state["iterations"]),
-                            "setting": "gate_games",
-                            "before": 0,
-                            "after": count,
-                            "reason": "enable rated head-to-head evaluation; keep latest actor",
-                        }
-                    )
-                    state["config"]["gate_games"] = count
-            if args.enable_adaptive_ratings is not None:
-                budget = args.enable_adaptive_ratings
-                if budget <= 0:
-                    raise ValueError("--enable-adaptive-ratings needs a positive game budget")
-                if state["config"]["actor_policy"] != "latest":
-                    raise ValueError(
-                        "enable adaptive ratings without changing latest-actor selection only"
-                    )
-                if any(not item["completed"] for item in state["iterations"]):
-                    raise ValueError("enable adaptive ratings only at a completed round boundary")
-                previous = state["config"]["adaptive_max_games"]
-                if previous not in {0, budget}:
-                    raise ValueError("adaptive ratings already enabled with another budget")
-                if previous == 0:
-                    adaptive_backup = (root / "loop.pt").read_bytes()
-                    state.setdefault("config_changes", []).append(
-                        {
-                            "after_iteration": len(state["iterations"]),
-                            "setting": "adaptive_max_games",
-                            "before": 0,
-                            "after": budget,
-                            "reason": "automatically adaptively rate future scheduled candidates; keep latest actor",
-                        }
-                    )
-                    state["config"]["adaptive_max_games"] = budget
             target = args.iterations if args.iterations is not None else state["target_iterations"]
             if target < state["target_iterations"]:
                 raise ValueError("iteration target may only stay unchanged or increase")
@@ -1400,8 +1084,6 @@ def run_loop(args):
                 "selfplay_binary",
                 "feature_binary",
                 "ort_library",
-                "arena_binary",
-                "rating_binary",
                 "model_store",
             ]:
                 if name in supplied:
@@ -1482,10 +1164,10 @@ def run_loop(args):
         config = LoopConfig(**state["config"])
         config.validate()
         store = Path(config.model_store).resolve()
-        shared = (ROOT / "models").resolve()
+        shared = (ROOT / "artifacts").resolve()
         if store != shared and store.is_relative_to(shared):
             raise ValueError(
-                "all campaigns share models/; per-training model-store subdirectories are not supported"
+                "all campaigns share artifacts/; per-training artifact-store subdirectories are not supported"
             )
         if (
             store.is_relative_to(root)
@@ -1496,18 +1178,8 @@ def run_loop(args):
                 "model-store must be separate from the loop output and outside disposable runs/ and scratch/"
             )
         target = state["target_iterations"]
-        if (
-            target <= 0
-            or config.seed
-            + target
-            * max(config.games_per_iteration, config.gate_games // 2, config.reference_games // 2)
-            > 2**64
-        ):
+        if target <= 0 or config.seed + target * config.games_per_iteration > 2**64:
             raise ValueError("positive iteration target and nonoverflowing u64 game seeds required")
-        if config.adaptive_max_games and (
-            config.seed + target * (config.adaptive_max_games // 2) >= 2**63
-        ):
-            raise ValueError("automatic adaptive rating seeds overflow their reserved u64 stream")
         if args.stop_after_iteration is not None and (
             args.stop_after_iteration <= 0
             or args.stop_after_iteration > target
@@ -1518,17 +1190,6 @@ def run_loop(args):
             )
         if not Path(config.selfplay_binary).is_file():
             raise ValueError("self-play binary missing; build release binaries first")
-        if config.gate_games or config.reference_games or config.adaptive_max_games:
-            if not Path(config.arena_binary).is_file() or not Path(config.rating_binary).is_file():
-                raise ValueError("arena/rating binary missing; build release binaries first")
-            current_protocol = ratings.protocol(config)
-        else:
-            current_protocol = None
-        if args.resume and state.get("rating_protocol") != current_protocol:
-            raise ValueError(
-                "evaluation/rating executable changed; fork a new loop instead of mixing protocols"
-            )
-        state["rating_protocol"] = current_protocol
         feature_binary(config.feature_binary)
         fingerprints = {
             "selfplay": digest(config.selfplay_binary),
@@ -1541,16 +1202,10 @@ def run_loop(args):
         state["runtime_fingerprints"] = fingerprints
         torch.set_num_threads(config.threads)
         runner = LoopRunner(root, state, lock_fd)
-        if head_to_head_backup is not None:
-            backup = root / "before-head-to-head.pt"
-            if backup.exists():
-                raise ValueError(f"refusing to overwrite previous configuration backup: {backup}")
-            atomic_bytes(backup, head_to_head_backup)
-        if adaptive_backup is not None:
-            backup = root / "before-adaptive-ratings.pt"
-            if backup.exists():
-                raise ValueError(f"refusing to overwrite previous configuration backup: {backup}")
-            atomic_bytes(backup, adaptive_backup)
+        if evaluation_backup is not None:
+            backup = root / "before-standalone-ratings.pt"
+            if not backup.exists():
+                atomic_bytes(backup, evaluation_backup)
         if state.get("storage_version", 1) < 2:
             runner.verify_committed()
             # Storage-only migration: retain the old control file for provenance,
@@ -1575,7 +1230,6 @@ def run_loop(args):
         if args.migrate_storage:
             runner.verify_committed()
             archive.initialize_store(config.model_store)
-            runner.register_inference_sources()
             return state
         return runner.run(args.stop_after_iteration)
 

@@ -195,48 +195,21 @@ class PromotionTests(helpers.LoopHarness):
             promote.recover(self.store)
         self.assertFalse((self.store / "LATEST-ACCEPTED").exists())
 
-    def test_default_actor_advances_after_failed_matches_but_accepted_never_does(self):
-        import test_acceptance
-
-        self.jobs = test_acceptance.ArenaJobs()
-        output = self.root / "failed-matches"
-        state = self.run_loop(
-            output, extra=["--iterations", "2", "--gate-games", "10", "--acceptance-rate", "0.6"]
-        )
+    def test_default_actor_advances_but_accepted_never_does(self):
+        output = self.root / "actor-advancement"
+        state = self.run_loop(output, extra=["--iterations", "2"])
         first, second = state["iterations"]
-        self.assertEqual((first["decision"], second["decision"]), ("failed", "failed"))
         self.assertEqual(second["parent_model"], first["model"])
         self.assertEqual(second["parent_checkpoint"], first["checkpoint"])
         self.assertEqual(state["actor"]["model"], second["model"])
         self.assertIsNone(state["accepted"])
         self.assertFalse((Path(state["config"]["model_store"]) / "LATEST-ACCEPTED").exists())
 
-    def test_periodic_evaluation_does_not_block_actor_or_training_updates(self):
-        import test_acceptance
-
-        self.jobs = test_acceptance.ArenaJobs()
-        output = self.root / "periodic"
-        state = self.run_loop(
-            output,
-            extra=[
-                "--iterations",
-                "3",
-                "--gate-games",
-                "2",
-                "--reference-games",
-                "2",
-                "--evaluation-interval",
-                "3",
-            ],
-        )
-        self.assertEqual(
-            [job["decision"] for job in state["iterations"]],
-            ["not-evaluated", "not-evaluated", "passed"],
-        )
-        self.assertIsNone(state["iterations"][0]["gate"])
-        self.assertIsNone(state["iterations"][1]["reference"])
+    def test_training_and_actor_updates_do_not_launch_evaluation(self):
+        state = self.run_loop(self.root / "periodic", extra=["--iterations", "3"])
         self.assertTrue(all(job["actor_updated"] for job in state["iterations"]))
-        self.assertEqual(len([c for c in self.jobs.calls if "--candidate" in c]), 3)
+        self.assertFalse(any("--candidate" in c for c in self.jobs.calls))
+        self.assertTrue(all("gate" not in job for job in state["iterations"]))
         self.assertIsNone(state["accepted"])
 
     def test_actor_selection_checkpoint_gap_is_repaired_without_retraining(self):
