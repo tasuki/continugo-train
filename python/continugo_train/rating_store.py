@@ -112,10 +112,19 @@ def refresh(store, config, cache=None, *, visualize=True):
 
     update(store)  # Publish the chart before potentially slow neural reports.
     if visualize:
+        champion_file = directory / "champions.json"
+        skipped = (
+            set(json.loads(champion_file.read_text()).get("skipped", {}))
+            if champion_file.exists()
+            else set()
+        )
         for group in groups:
             for relative, _size, _mtime in group["files"]:
                 path = store / relative
                 output = path.with_suffix(".nn.html")
+                game = GAME_NAME.fullmatch(path.name)
+                if game["black"] in skipped or game["white"] in skipped:
+                    continue  # Preserve partial SGFs, but do no more work on skipped rounds.
                 if output.is_file():
                     continue
                 info = (

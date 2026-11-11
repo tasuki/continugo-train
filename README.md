@@ -29,8 +29,9 @@ models separately with `mise run rate-saved -- --family cg5`, or resume with
 `mise run rate-saved -- --resume`. [Ratings](docs/current/evaluation.md) belong under
 `artifacts/ratings/`, and games under `artifacts/sgfs/YYYY-MM-DD/`,
 not inside training iterations; the latest actor always advances. The evaluator
-uses a 7/10 → 28/40-win challenge and automatically advances champions, starting
-from the random bot. Each net gets ten random games; neural rating moves use 128
+uses a 7/10 → 28/40-win challenge on rounds 5, 10, 15, … and automatically advances champions, starting
+from the random bot. Only those multiples of five get any evaluation, including
+ten random games; other rounds are skipped entirely. Neural rating moves use 128
 simulations. **Publication** remains a separate explicit user decision.
 
 ## Next work

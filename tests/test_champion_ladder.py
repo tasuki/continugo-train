@@ -76,6 +76,9 @@ class ChampionTests(helpers.LoopHarness):
         self.store = Path(self.state["config"]["model_store"])
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
+        self.stack.enter_context(
+            patch.dict(rate_saved.POLICY, {"evaluation_every": 1, "challenge_every": 1})
+        )
         self.stack.enter_context(patch.object(loop, "run_process", self.jobs))
 
         def report(_sgf, output, *_args, **_kwargs):
@@ -92,6 +95,86 @@ class ChampionTests(helpers.LoopHarness):
 
     def saved_state(self):
         return torch.load(self.store / "ratings/evaluator.pt", weights_only=True)
+
+    def test_only_every_fifth_round_gets_any_evaluation(self):
+        rate_saved.POLICY.update(evaluation_every=5, challenge_every=5)
+        self.run_loop(self.campaign, resume=True, extra=["--iterations", "5"])
+        self.evaluate()
+        registry = rate_saved.load_champions(self.store)
+        self.assertEqual(registry["champion"], "test1-r0005")
+        self.assertEqual(
+            [entry["model"] for entry in registry["history"]], ["random", "test1-r0005"]
+        )
+        for index in range(1, 5):
+            name = f"test1-r{index:04d}"
+            self.assertIn(name, registry["skipped"])
+            self.assertNotIn(name, registry["evaluated"])
+        matches = list(self.saved_state()["matches"].values())
+        self.assertEqual(len([job for job in matches if job["kind"] == "reference"]), 1)
+        for job in matches:
+            if job["kind"].startswith("champion-"):
+                self.assertEqual(job["candidate_name"], "test1-r0005")
+        self.assertEqual(
+            len(
+                rate_saved.rating_store.refresh(
+                    self.store,
+                    EvaluationConfig.from_config(self.saved_state()["config"]),
+                    visualize=False,
+                )[1]
+            ),
+            2,
+        )
+
+    def test_cadence_uses_round_numbers_not_queue_positions(self):
+        rate_saved.POLICY.update(evaluation_every=5, challenge_every=5)
+        self.run_loop(self.campaign, resume=True, extra=["--iterations", "5"])
+        (self.store / "ratings").mkdir(exist_ok=True)
+        state = rate_saved.initialize(
+            self.store,
+            rate_saved.parse_args(
+                [
+                    "--model-store",
+                    str(self.store),
+                    "--family",
+                    "test1",
+                ]
+            ),
+        )
+        state["candidates"] = ["test1-r0004", "test1-r0005"]
+        loop.atomic_checkpoint(self.store / "ratings/evaluator.pt", state)
+        self.evaluate(resume=True)
+        registry = rate_saved.load_champions(self.store)
+        self.assertIn("test1-r0004", registry["skipped"])
+        self.assertFalse(
+            any(
+                job["candidate_name"] == "test1-r0004"
+                for job in self.saved_state()["matches"].values()
+            )
+        )
+        self.assertEqual(registry["evaluated"]["test1-r0005"]["decision"], "promoted")
+        self.assertEqual(registry["champion"], "test1-r0005")
+
+    def test_partial_off_cycle_batch_is_abandoned_without_new_games(self):
+        self.jobs.interrupt_kind = "reference"
+        with self.assertRaises(KeyboardInterrupt):
+            self.evaluate()
+        paths = list((self.store / "sgfs").glob("*/*.sgf"))
+        before = {path: path.read_bytes() for path in paths}
+        calls = len(self.jobs.calls)
+        rate_saved.POLICY.update(evaluation_every=5, challenge_every=5)
+        state = self.saved_state()
+        registry = json.loads((self.store / "ratings/champions.json").read_text())
+        state["policy"] = dict(rate_saved.POLICY)
+        registry["policy"] = dict(rate_saved.POLICY)
+        loop.atomic_checkpoint(self.store / "ratings/evaluator.pt", state)
+        rate_saved.save_champions(self.store, registry)
+        self.evaluate(resume=True)
+        self.assertEqual(len(self.jobs.calls), calls)
+        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+        registry = rate_saved.load_champions(self.store)
+        self.assertIsNone(registry["pending"])
+        self.assertEqual(set(registry["skipped"]), set(self.ids))
+        self.assertEqual(registry["evaluated"], {})
 
     def test_thresholds(self):
         decide = rate_saved.challenge_decision

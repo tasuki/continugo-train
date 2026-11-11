@@ -18,6 +18,8 @@ from .saved_models import saved_sources
 from .train import atomic_checkpoint
 
 POLICY = {
+    "evaluation_every": 5,
+    "challenge_every": 5,
     "screen_games": 10,
     "screen_wins": 7,
     "extension_games": 30,
@@ -222,11 +224,23 @@ def evaluate(runner, registry):
     state = runner.state
     if registry["champion"] != "random" and registry["champion"] not in state["models"]:
         raise ValueError("current champion model unavailable")
+    skipped = registry.setdefault("skipped", {})
     for number, candidate in enumerate(state["candidates"], 1):
-        if registry["evaluated"].get(candidate, {}).get("complete"):
+        if registry["evaluated"].get(candidate, {}).get("complete") or candidate in skipped:
             continue
         if registry["pending"] not in {None, candidate}:
             raise ValueError("resume the pending candidate before changing the queue")
+        round_number = int(candidate.rsplit("-r", 1)[1])
+        if round_number % state["policy"]["evaluation_every"] != 0:
+            skipped[candidate] = {"reason": "off-cycle", "recorded_at": utc_now().isoformat()}
+            registry["pending"] = None
+            state.setdefault("skipped", []).append(candidate)
+            runner.save()
+            save_champions(runner.root, registry)
+            runner.log(
+                f"Skipped {candidate}: all evaluation is restricted to multiples of {state['policy']['evaluation_every']}"
+            )
+            continue
         registry["pending"] = candidate
         save_champions(runner.root, registry)
         if candidate not in state["trials"]:
@@ -238,10 +252,24 @@ def evaluate(runner, registry):
             runner.save()
         trial = state["trials"][candidate]
         opponent = trial["opponent"]
+        if "challenge_due" not in trial:
+            # Finish a previously started challenge, but never start an off-cycle one.
+            started = bool(trial.get("screen")) or any(
+                job["candidate_name"] == candidate and job["kind"].startswith("champion-")
+                for job in state["matches"].values()
+            )
+            trial["challenge_due"] = (
+                started
+                or int(candidate.rsplit("-r", 1)[1]) % state["policy"]["challenge_every"] == 0
+            )
+            runner.save()
         runner.log(
             f"Candidate {number}/{len(state['candidates'])}: {candidate} vs champion {opponent}"
         )
         reference = play_match(runner, registry, candidate, "random", "reference", 10)
+        if trial["decision"] is None and not trial["challenge_due"]:
+            trial["decision"] = "not-challenged"
+            runner.save()
         if trial["decision"] is None:
             screen = (
                 reference
@@ -264,9 +292,12 @@ def evaluate(runner, registry):
             receipt = {
                 "decision": trial["decision"],
                 "opponent": opponent,
-                "screen_wins": trial["screen"]["wins"],
-                "total_wins": trial["screen"]["wins"]
-                + (trial.get("extension") or {}).get("wins", 0),
+                "screen_wins": trial.get("screen", {}).get("wins"),
+                "total_wins": (
+                    trial["screen"]["wins"] + (trial.get("extension") or {}).get("wins", 0)
+                )
+                if trial.get("screen")
+                else None,
                 "complete": False,
                 "recorded_at": utc_now().isoformat(),
             }

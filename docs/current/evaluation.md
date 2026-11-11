@@ -38,11 +38,15 @@ The evaluator never removes dated PNGs when refreshing `ratings.png`.
 ## Champion policy
 
 The initial champion is **random**, fixed at rating **100** with deviation zero.
-Candidates are tested chronologically, without using future-round outcomes:
+Only actual rounds **5, 10, 15, …, 100** are evaluated, in chronological order.
+All other rounds skip **everything**, including random calibration and neural
+reports. An off-cycle partial batch is abandoned; its completed SGFs are kept,
+but no more games or reports are generated for it. Completed historical results
+from earlier policies remain valid and are not removed.
 
-1. Every candidate plays **10 games against random**.
+1. Each eligible candidate plays **10 games against random**.
 2. It plays **10 games against the reigning champion**. At least **7 wins** permit
-   continuation. If random is still champion, its calibration games serve as this screen.
+   continuation. If random is still champion, its calibration games serve as the screen.
 3. It plays **30 more games against that same frozen champion**, with fresh paired seeds.
    At least **28 wins across the full 40 automatically replace the champion**.
 4. A new champion plays **10 games each against up to two other available, previously
@@ -85,7 +89,8 @@ partial-match progress and disposable rating cache live in `ratings/evaluator.pt
 A restarted evaluator adopts completed SGFs and plays only missing games. It does
 not retrain, export or copy models. Seeds are reserved before launching a match;
 a crash may waste seeds but cannot silently reuse them. Promotion decisions and
-moving champion head commit together in `champions.json`.
+moving champion head commit together in `champions.json`. Policy changes are audited;
+already-completed results and the existing champion are preserved when the cadence changes.
 
 Native arena files are renamed to Black-vs-White names as they are adopted, including
 a clean interruption. Invalid partial files are kept with an `.incomplete-N` suffix;
@@ -116,5 +121,6 @@ If a net has no completed evidence, show its broad prior rather than invent outc
 rating scale (random=100). All evaluated rounds are connected in order; champion
 lineage dots are saturated and non-champions are grayer. Error bars show **± rating
 deviation, not a 95% confidence interval**. Validation games are excluded from the
-x-axis, and replay/epochs do not count a game twice. The completed cg5 evaluation
-has 100 neural dots plus the random star, with uncertainty reflecting actual evidence.
+x-axis, and replay/epochs do not count a game twice. Only models with actual evidence are plotted; skipped rounds do not receive invented
+ratings or dots. Existing results remain plotted, including completed games from
+an abandoned partial batch, with uncertainty reflecting their actual evidence.
