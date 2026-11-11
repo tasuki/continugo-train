@@ -80,10 +80,10 @@ struct Args {
     ort_library: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     inference_threads: usize,
-    /// Active independent games (1..=64; default 12 for neural, 1 otherwise).
+    /// Active independent games (1..=64; default 32 for neural, 1 otherwise).
     #[arg(long)]
     concurrent_games: Option<usize>,
-    /// Maximum neural inference batch, bucketed by resolution (1..=32; default 12).
+    /// Maximum neural inference batch, bucketed by resolution (1..=32; default 32).
     #[arg(long)]
     inference_batch_size: Option<usize>,
     /// Maximum collection delay; partial batches always run (0..=1000 ms).
@@ -118,11 +118,11 @@ impl Args {
         let parallel = ParallelConfig {
             games: self.games,
             seed: self.seed,
-            concurrent_games: self.concurrent_games.unwrap_or(if neural { 12 } else { 1 }),
+            concurrent_games: self.concurrent_games.unwrap_or(if neural { 32 } else { 1 }),
             batching: BatchingConfig {
                 max_batch: self
                     .inference_batch_size
-                    .unwrap_or(if neural { 12 } else { 8 }),
+                    .unwrap_or(if neural { 32 } else { 8 }),
                 max_wait: Duration::from_millis(self.inference_batch_wait_ms),
             },
         };
@@ -373,8 +373,8 @@ mod tests {
             let args = Args::parse_from(["selfplay", "--engine", engine]);
             let config = args.parallel_config().unwrap();
             let neural = engine == "neural";
-            assert_eq!(config.concurrent_games, if neural { 12 } else { 1 });
-            assert_eq!(config.batching.max_batch, if neural { 12 } else { 8 });
+            assert_eq!(config.concurrent_games, if neural { 32 } else { 1 });
+            assert_eq!(config.batching.max_batch, if neural { 32 } else { 8 });
             assert_eq!(config.batching.max_wait, Duration::from_millis(2));
         }
     }

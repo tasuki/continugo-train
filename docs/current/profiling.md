@@ -37,7 +37,7 @@ The profiler:
    so repeated queries do not hide coarse/rules extraction and encoding.
 3. Generates six genuine neural MCTS games, two per size, seeds 800–805, eight
    simulations, cap 512. Default production cache settings apply here. Concurrency
-   defaults to twelve games / batch limit twelve / collection wait two ms, capped
+   defaults to 32 games / batch limit 32 / collection wait two ms, capped
    by the six games requested. Records completion, truncation, throughput and
    inference stages. Override with `--concurrent-games`, `--inference-batch-size`
    and `--inference-batch-wait-ms`. For historical sequential comparisons, pass
@@ -55,7 +55,7 @@ The profiler:
 6. Runs real FP32 SGD twice from the supplied weights and fresh optimizer state:
    an ordinary baseline and synchronized stage diagnostics. Each gets one untimed
    warmup step by default, then weights, BatchNorm buffers, RNG and optimizer reset.
-   Default caps: 12 steps, batch two, at most 12 sampled positions per game, six
+   Default caps: 12 steps, batch 32, at most 12 sampled positions per game, six
    feature workers. Short caps can skew the size mix; inspect `samples_by_size`.
    Use `--positions-per-game 0 --steps 120 --warmup-steps 20` for a longer
    fixed-corpus window. These are caps, not promises: corpus exhaustion can end

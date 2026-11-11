@@ -19,6 +19,8 @@ from continugo_train.train import parse_args as parse_train_args
 
 class PipelineProfileTests(unittest.TestCase):
     def test_six_worker_defaults_allow_explicit_and_saved_settings(self):
+        self.assertEqual(Options().batch_size, 32)
+        self.assertEqual(LoopConfig().batch_size, 32)
         self.assertEqual(Options().workers, 6)
         self.assertEqual(LoopConfig().workers, 6)
         for count in (0, 2, 6):
@@ -29,13 +31,14 @@ class PipelineProfileTests(unittest.TestCase):
         self.assertIsNone(parse_train_args(["--data", "unused"]).workers)
         self.assertIsNone(parse_loop_args([]).workers)
 
-    def test_twelve_game_defaults_allow_explicit_and_saved_settings(self):
+    def test_batch_and_concurrency_defaults_allow_explicit_and_saved_settings(self):
         required = ["--positions", "unused", "--model", "unused", "--checkpoint", "unused"]
         defaults = LoopConfig()
         profile = parse_profile_args(required)
         for name, expected in (
-            ("concurrent_games", 12),
-            ("inference_batch_size", 12),
+            ("concurrent_games", 32),
+            ("inference_batch_size", 32),
+            ("batch_size", 32),
             ("inference_batch_wait_ms", 2),
         ):
             self.assertEqual(getattr(defaults, name), expected)

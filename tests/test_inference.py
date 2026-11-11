@@ -655,7 +655,7 @@ class NativeInferenceTests(unittest.TestCase):
         self.assertGreater(int(re.search(r"scorer_max_batch: (\d+)", stats)[1]), 1)
         default_output, default_records, default_stats = run("concurrent-defaults", None, None)
         self.assertEqual(sequential.keys(), default_records.keys())
-        self.assertIn("concurrent_games=12 batch_size=12", default_stats)
+        self.assertIn("concurrent_games=32 batch_size=32", default_stats)
         self.assertGreater(int(re.search(r"scorer_max_batch: (\d+)", default_stats)[1]), 1)
         for folder, records in ((output, batched), (default_output, default_records)):
             for name in records:

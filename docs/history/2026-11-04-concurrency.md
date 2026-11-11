@@ -5,9 +5,16 @@ No inference/search algorithm, model, search budget or cache limit changed.
 Measurements used the existing scheduler and original defaults; the user
 subsequently requested adoption of the selected settings as defaults.
 
-## Result
+## Result (original November 4 experiment)
 
-The measured recipe, subsequently selected as the default, is
+**Update, November 11:** the original sweep stopped at twelve active games while
+throughput was still rising; it established the best tested setting, not an
+optimum. The extension below tests up to the current maximum of 64. On that new
+workload, 32–64 games outperform twelve by about 21–23%, with a plateau after 32.
+The historical results below remain unchanged; the workloads are not directly
+comparable.
+
+The measured recipe, subsequently selected as the default, was
 **12 concurrent games, maximum batch 12, wait 2 ms**.
 On the fixed workload, repeated median throughput is **31.42 moves/s**, versus:
 
@@ -147,14 +154,16 @@ sequential; explicit flags still override the defaults. Active games are capped
 by games requested: a 10-game iteration cannot use twelve active slots. Game
 budgets were not increased to fill the slots. Resume keeps frozen settings.
 
-No CPU-provider, larger/trained-model, size-9-only, default 40/40/20 mix, or
-32-simulation scaling claim is made. Recheck on the learning-trial workload before
+The original experiment made no CPU-provider, larger/trained-model, size-9-only,
+default 40/40/20 mix, or 32-simulation scaling claim. Recheck on the learning-trial workload before
 adopting it there; do not extend tuning indefinitely before starting that trial.
-No counts above twelve active games or batch twelve were tested.
+No counts above twelve active games or batch twelve were tested in the original
+experiment.
 
 ## Artifacts and reproduction
 
-Git-ignored `runs/20261104-concurrency/` contains `sweep.py`, `summary.json`, all
+The original report recorded git-ignored `runs/20261104-concurrency/` as containing
+`sweep.py`, `summary.json`, all
 14 SGF directories, raw run statistics/stdout/stderr/RSS, model/binary hashes,
 validated per-game metadata and the concurrency/batch/wait/repeat logs.
 All settings reuse the same binary/model/search/cache; vary one factor at a time.
@@ -175,3 +184,114 @@ The [inference guide](../current/inference.md#cross-game-batching) describes bou
 and semantics; the [profiling guide](../current/profiling.md) explains clock/memory
 overlap. Search-cache and evaluation parallelism tasks are now at the top of the
 conditional later section, not prerequisites for learning.
+
+## Extension — November 11: test beyond twelve games
+
+### Scope and controls
+
+The old `runs/20261104-concurrency/` directory and its original sweep/model were
+not present when revisiting this experiment. Instead, reuse the existing model
+from `scratch/20261109-185203-r70-terminal-pass-pilot/model/` (trained 4×32),
+copying its ONNX files/metadata and the existing release native binary into
+**`scratch/20261111-223900-concurrency-extension/`**. This is a new end-to-end
+workload, not a reproduction or an extension of the old numeric series.
+
+Same GTX 1080 / i5-8400, CUDA ONNX Runtime 1.20.1. Fixed **64 games**, uniform
+9/13/19 cycling, seeds **800–863**, **eight simulations per move**, **32-move
+cap**, six feature threads, one inference helper thread, 64-position / 32 MiB
+context cache, two-ms collection wait. All settings use the same 64 games, so
+concurrency up to 64 can actually be exercised. No feature sidecars or NN viewers
+built. Model/binary hashes, commands, raw stats, SGFs, logs and native lifetime
+RSS are retained in scratch. Existing models/campaigns are read only.
+
+First run 12 games / batch 12 as the historical-setting control. Then hold the
+batch limit at **32** and sweep **12, 24, 32, 48, 64 active games**. Repeat 64,
+32 and 12 in reverse order. Nine runs total; native timed generation/output
+summed to **635 seconds (10.6 minutes)**, excluding model load/record validation.
+
+### Results
+
+Throughput below is moves divided by median native wall time. Encoder means
+are ranges across repeats; memory is the maximum native lifetime peak RSS from
+`/usr/bin/time -v`, including load/warmup, not GPU allocation.
+
+| Active games | Batch limit | Runs | Median wall | Moves/s | Mean actual encoder batch | Max actual encoder batch | Peak RSS MiB |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 12 | 12 | 1 | 79.136 s | 25.63 | 2.69 | 6 | 785 |
+| 12 | 32 | 2 | 79.665 s | 25.46 | 2.69–2.70 | 6 | 798 |
+| 24 | 32 | 1 | 68.826 s | 29.47 | 5.61 | 9 | 949 |
+| 32 | 32 | 2 | 65.840 s | 30.80 | 8.46 | 13 | 1,013 |
+| 48 | 32 | 1 | 66.309 s | 30.58 | 7.21 | 15 | 1,142 |
+| 64 | 32 | 2 | 64.935 s | 31.23 | 9.33–9.35 | 18 | 1,384 |
+
+Repeated wall ranges: 12/b32 **78.929–80.401 s**, 32/b32
+**64.645–67.034 s**, 64/b32 **64.320–65.551 s**.
+
+- **12 was not the throughput optimum.** At fixed batch limit 32, moving to
+  32 active games improves throughput **21.0%**; 64 improves it **22.7%**.
+- **Throughput plateaus around 32 active games.** The measured gain from 32
+  to 64 is only **1.4%**, within these short-run timing ranges, while native
+  peak RSS grows about **37%**. This does not establish a significant winner
+  between 32 and 64. The current supported maximum is 64, now included in testing.
+- Raising the batch limit alone at twelve active games does not help. Useful
+  requests must be concurrent and share a resolution. Even at 64 active games,
+  the largest observed encoder batch is 18, not 32.
+- More concurrency reduces cache locality: cache hits fall from about **6,830**
+  at twelve to **4,010** at 32 and **3,004** at 64. Encoded positions rise from
+  about **17,280** to **20,080** and **21,076**. Larger batches offset some of
+  that recomputation, but the tradeoff helps explain diminishing returns.
+
+### Validation and limits
+
+All nine runs produced **64 SGFs / 2,028 moves**, with **one completed game and
+63 truncated games** each. Native Rust inspection replayed and validated all
+**576 records**; `validated-records.json` retains metadata and visit totals.
+These are deliberately short throughput trials, not training data or playing-
+strength tests. They emphasize opening/early positions and scheduler startup/
+drain; they do not establish full-game, normal-search-budget throughput.
+
+Unlike the original random-model test, the trained-model SGFs are **not byte-
+identical** across runs: six to nine of the 64 records differ from the first
+control, including real move/policy changes, not merely timestamps. Floating-
+point batching differences can change search trajectories; this experiment
+measures end-to-end throughput at matched seeds/budgets/counts, not perfectly
+identical computation. Per-run differing filenames are recorded in summaries.
+Inference call/value-call counts agree, but cache/feature work does not. No new
+CUDA parity or strength claim is made. GPU memory peaks were not sampled.
+
+**Operating conclusion:** 32 active games is a better-supported throughput/memory
+compromise than twelve for this workload; 64 offers no clear additional benefit.
+No concurrency default, search budget, game count, campaign or ratings state was
+changed by this experiment. Separately, the user-requested inference batch limit
+is now 32; existing twelve-game concurrency still prevents full batches of 32.
+A default-concurrency change remained a separate decision at that point; the
+user subsequently approved it (see below).
+
+Reproduce (creates fresh numbered run directories, roughly ten minutes):
+
+```sh
+PYTHONPATH=python .venv/bin/python scratch/20261111-223900-concurrency-extension/sweep.py
+PYTHONPATH=python .venv/bin/python scratch/20261111-223900-concurrency-extension/sweep.py \
+  64,32 32,32 12,32
+```
+
+### Default adoption and GPU-memory check — November 11
+
+At the user's request, new native neural self-play, loop and pipeline-profile
+runs now default to **32 concurrent games**, alongside the batch limit of 32.
+Non-neural engines remain sequential. Explicit overrides and saved/frozen run
+settings are unchanged; no existing campaign was resumed or modified.
+
+Repeated the same 64-game workload at 32 concurrent games / batch 32, sampling
+`nvidia-smi --query-compute-apps=pid,used_gpu_memory` for the native process
+approximately every .2 seconds plus query overhead. **Peak sampled native GPU
+memory: 410 MiB**, from 297 samples. This is driver-reported process memory,
+including ONNX Runtime/CUDA allocations, not Torch tensor memory. Desktop and
+other GPU allocations are excluded; total device usage before launch was
+1,386 MiB. Polling can miss brief peaks, and full games/different models can
+require more memory. The previous approximately 1 GiB figure was **host RSS**,
+not GPU memory.
+
+Artifacts: `gpu-memory.json`, `measure_gpu.py`, `memory-repeat.log`, and
+`c32-b32-r2/` in the same scratch directory. Six focused Python tests and two
+native default/override unit tests passed; diff whitespace checks passed.

@@ -245,8 +245,8 @@ hardware/model-specific, not a universal optimum; override them when appropriate
 Training feature workers are separate and unchanged. Random/unguided self-play
 remains sequential. Existing loops restore their frozen configuration.
 
-- `--concurrent-games`: 1..64, neural default 12; capped by games requested.
-- `--inference-batch-size`: 1..32, default 12; capped by active game slots.
+- `--concurrent-games`: 1..64, neural default 32; capped by games requested.
+- `--inference-batch-size`: 1..32, default 32; capped by active game slots.
 - `--inference-batch-wait-ms`: 0..1000, default 2. Zero drains immediately available
   requests; a single active game never waits to collect a batch. The bound covers
   collection, not queueing/execution latency. Batch-one concurrency is a control

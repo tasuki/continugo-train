@@ -163,11 +163,11 @@ def parse_args(argv=None):
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--feature-threads", type=int, default=6)
     parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--concurrent-games", type=int, default=12)
-    parser.add_argument("--inference-batch-size", type=int, default=12)
+    parser.add_argument("--concurrent-games", type=int, default=32)
+    parser.add_argument("--inference-batch-size", type=int, default=32)
     parser.add_argument("--inference-batch-wait-ms", type=int, default=2)
     parser.add_argument("--workers", type=int, default=Options().workers)
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument(
         "--positions-per-game", type=int, default=12, help="0 uses all eligible positions"
