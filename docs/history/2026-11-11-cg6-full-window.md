@@ -5,7 +5,8 @@ of features, NN inference/training and independent ratings, with overhead checks
 
 Campaign: `runs/20261111-145926-cg6-full-window/`. Launcher PID at start **1360542**.
 The first full epoch is the review boundary: no automatic new self-play or rating
-jobs after it. `run.py --continue-loop` explicitly enables the prepared loop later.
+jobs after it. The later continuation used `continue.py`, superseding
+`run.py --continue-loop`.
 
 Warm-start cg5 round 100, SHA-256
 `feedb3adfc610af5fcea47f28205281199a0d03f9bf5462d169bc95b134fdffb`, keeping
@@ -63,3 +64,12 @@ artifact store. Its startup imports the trainer for root configuration, so
 main module receives its own telemetry wrapper, and the real trainer reports the
 correct source, caps and data/split counts. No source changes were made during
 active training.
+
+## Continuation and stop
+
+Later approved 10 rounds: 100 fresh games, one exhaustive epoch over the latest
+1,000 games, saving and challenging the shared champion every round via
+`continue.py`. Iteration 1 completed; its 4/10 challenge left cg5-r0080 champion.
+User stopped the campaign on 2026-11-11: iteration 2's 18 SGF files and loop-state
+entry were deleted before training; target reset to 1. Iteration 1 and ratings
+are unchanged. Nothing is queued; further continuation needs approval.
