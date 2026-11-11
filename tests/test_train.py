@@ -119,7 +119,9 @@ class OfflineDataTests(unittest.TestCase):
         games, _ = data.inspect_corpus([str(self.paths[0])], 4)
         self.assertEqual(games[0].policy_plies, (1,))
         for workers in (0, 2):
-            samples = list(data._parallel_samples([(games[0], [0, 1])], 4, workers, None))
+            samples = list(
+                data._parallel_samples([(games[0], [0, 1])], 4, workers, None, feature_cache="off")
+            )
             self.assertEqual([s.policy_weight for s in samples], [0.0, 1.0])
             self.assertEqual([s.outcome for s in samples], [1.0, -1.0])
             self.assertTrue(all(s.ownership is not None and s.score is not None for s in samples))
@@ -299,6 +301,20 @@ class OfflineTrainerTests(unittest.TestCase):
             ]
         with redirect_stdout(io.StringIO()):
             return train(parse_args([*arguments, *extra]))
+
+    def test_new_jobs_auto_cache_all_games_even_after_an_uncached_parent(self):
+        from continugo_train.feature_cache import CacheReader, sidecar_path
+
+        source = self.run_training(self.root / "uncached", extra=["--feature-cache", "off"])
+        self.assertFalse((self.corpus / "features").exists())
+        latest = self.run_training(self.root / "auto", warm_start=source)
+        saved = torch.load(latest, weights_only=True)
+        self.assertEqual(saved["options"]["feature_cache"], "auto")
+        for game in saved["manifest"]:
+            self.assertTrue(sidecar_path(game["path"]).is_file())
+            with CacheReader(game["path"]) as reader:
+                self.assertEqual(sorted(reader.records), list(game["plies"]))
+        self.assertIn("Feature cache: 4 built", (latest.parent / "training.log").read_text())
 
     def test_plots_update_after_each_durable_saved_epoch(self):
         output = self.root / "live"

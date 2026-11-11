@@ -87,6 +87,9 @@ mise run rate-models -- --help
 ```
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
+Completed MCTS/neural games also get compressed `features/*.cfeat` sidecars by default.
+Training automatically builds missing sidecars and uses them; see
+[feature caching](docs/current/feature-cache.md) for opt-outs and cache validation.
 
 To see what the network sees, use the [neural game microscope](docs/current/nn-viewer.md):
 `mise run nn-view` for existing training/rated SGFs, or add

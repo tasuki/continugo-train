@@ -6,6 +6,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use clap::Parser;
 use continugo_rules::{Board, territory};
 use continugo_train::{
+    feature_cache::FeatureCacheArgs,
     inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
     nn_html::NnHtmlArgs,
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
@@ -104,6 +105,8 @@ struct Args {
     stats_json: Option<PathBuf>,
     #[command(flatten)]
     nn_view: NnHtmlArgs,
+    #[command(flatten)]
+    feature_cache: FeatureCacheArgs,
     /// Directory for self-contained .sgf records, or '-' for stdout.
     #[arg(long, default_value = "-")]
     output: PathBuf,
@@ -219,6 +222,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut total_moves = 0;
     let mut completed = 0;
     let mut draws = 0;
+    let mut cacheable_games = 0;
     let mut emit = |index: u32,
                     record: GameRecord,
                     generation_seconds: f64|
@@ -248,6 +252,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             stdout.flush().map_err(|e| e.to_string())?;
         } else {
             let path = save_record(&args.output, index + 1, &record).map_err(|e| e.to_string())?;
+            if !matches!(args.engine, Engine::Random) && record.metadata.result.is_some() {
+                cacheable_games += 1;
+            }
             args.nn_view.render(&path, true)?;
         }
         let output_seconds = output_started.elapsed().as_secs_f64();
@@ -329,6 +336,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         serde_json::to_writer_pretty(file, &summary)?;
+    }
+    // Keep search timings/RNG separate. Skip stdout-only, random and wholly
+    // truncated jobs; there are no eligible on-disk training games to cache.
+    if cacheable_games > 0 {
+        args.feature_cache.build(&args.output)?;
     }
     Ok(())
 }

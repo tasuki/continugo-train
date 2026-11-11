@@ -2,7 +2,8 @@
 
 SGFs remain authoritative. Caches contain existing CGFEAT02 packets, independently
 zlib-compressed per eligible ply; no model, split, or sampler state is stored.
-Build explicitly with python -m continugo_train.feature_cache --data DIR ... .
+Self-play and training build missing sidecars by default. Explicit builds use
+python -m continugo_train.feature_cache --data DIR ... .
 """
 
 import argparse
@@ -11,6 +12,7 @@ import json
 import os
 import struct
 import tempfile
+import threading
 import time
 import zlib
 from collections import OrderedDict
@@ -33,7 +35,10 @@ MAGIC = b"CGCACHE1"
 PREFIX = struct.Struct("<8sQ32s")
 MAX_INDEX = 32 * 1024 * 1024
 MAX_PACKET = 1_000_000_000
-MODES = ("off", "prefer", "require")
+MODES = ("auto", "off", "prefer", "require")
+# Bound synchronization state while preventing same-process workers from building
+# the same missing game concurrently. Cross-process writers use on-disk locks.
+_BUILD_LOCKS = [threading.Lock() for _ in range(64)]
 
 
 def file_hash(path):
@@ -170,7 +175,7 @@ class CacheReader:
 class SampleReader:
     """Bounded per-worker open-file LRU; Rust is started only for live extraction."""
 
-    def __init__(self, binary=None, *, cache="off", profile=False):
+    def __init__(self, binary=None, *, cache="auto", profile=False):
         if cache not in MODES:
             raise ValueError(f"feature cache mode must be one of {MODES}")
         self.binary, self.cache, self.profile = binary, cache, profile
@@ -209,7 +214,13 @@ class SampleReader:
                 except FileNotFoundError:
                     if self.cache == "require":
                         raise
-                    reader = None
+                    if self.cache == "auto":
+                        ensure_cache(sgf, density=density, binary=self.binary)
+                        reader = CacheReader(
+                            sgf, density=density, binary=self.binary, file_sha256=file_sha256
+                        )
+                    else:
+                        reader = None
                 if len(self.readers) >= 8:
                     self.readers.popitem(last=False)[1].close()
             if reader is not None:
@@ -222,7 +233,35 @@ class SampleReader:
         return sample
 
 
-def build_cache(sgf, *, density=4, binary=None, rebuild=False):
+def ensure_cache(sgf, *, density=4, binary=None):
+    """Create a missing cache, but never replace stale/incompatible cache contents."""
+    lock = _BUILD_LOCKS[hash(str(Path(sgf).resolve())) % len(_BUILD_LOCKS)]
+    with lock:
+        if not sidecar_path(Path(sgf).resolve()).exists():
+            return build_cache(sgf, density=density, binary=binary)
+    return None
+
+
+def ensure_caches(games, *, density=4, binary=None, workers=4):
+    """Prepare the selected corpus once, before epoch workers start reading it."""
+
+    def ensure(game):
+        result = ensure_cache(game.path, density=density, binary=binary)
+        with CacheReader(
+            game.path, density=density, binary=binary, file_sha256=game.file_sha256
+        ) as reader:
+            if not set(game.plies).issubset(reader.records):
+                raise ValueError(f"cache missing eligible positions: {game.path}")
+        return result is not None
+
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    try:
+        return sum(pool.map(ensure, games))
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def build_cache(sgf, *, density=4, binary=None, rebuild=False, skip_ineligible=False):
     """Single writer, atomic publication. Never writes to the SGF itself."""
     sgf = Path(sgf).resolve()
     destination = sidecar_path(sgf)
@@ -242,6 +281,8 @@ def build_cache(sgf, *, density=4, binary=None, rebuild=False):
             }
     info = inspect_game(sgf, density, binary)
     if not info["labeled"] or not info["eligible_plies"]:
+        if skip_ineligible:
+            return {"sgf": str(sgf), "status": "skipped-ineligible", "positions": 0}
         raise ValueError(f"no eligible labeled positions: {sgf}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     lock = destination.with_suffix(destination.suffix + ".lock")
@@ -316,6 +357,11 @@ def main(argv=None):
     parser.add_argument("--density", type=int, default=4)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--rebuild", action="store_true")
+    parser.add_argument(
+        "--skip-ineligible",
+        action="store_true",
+        help="skip unlabeled/truncated/no-policy games (for self-play output)",
+    )
     args = parser.parse_args(argv)
     if args.workers < 1 or args.density < 1:
         parser.error("workers and density must be positive")
@@ -334,12 +380,20 @@ def main(argv=None):
 
     def build(path):
         return build_cache(
-            path, density=args.density, binary=args.feature_binary, rebuild=args.rebuild
+            path,
+            density=args.density,
+            binary=args.feature_binary,
+            rebuild=args.rebuild,
+            skip_ineligible=args.skip_ineligible,
         )
 
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=args.workers)
+    try:
         for result in pool.map(build, sorted(paths)):
             print(json.dumps(result, sort_keys=True), flush=True)
+    finally:
+        # Do not keep starting queued games after interruption or a failed build.
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == "__main__":

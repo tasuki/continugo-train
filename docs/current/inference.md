@@ -19,6 +19,11 @@ Omitting `--output` reserves UTC-dated `scratch/YYYYMMDD-HHMMSS-export/model`,
 `--output -` previews neural SGFs on stdout. Bare Rust baseline self-play defaults
 to stdout and needs no inference runtime.
 
+On-disk self-play automatically builds [training-feature sidecars](feature-cache.md)
+for completed MCTS/neural games after generation. This post-generation step uses
+the project's Python and Rust feature binary; `--no-feature-cache` opts out. Random,
+truncated and stdout-only games are not cached. Arena/rating games are unaffected.
+
 CUDA is the default; `--device cpu` needs no `setup-gpu`. The latter installs ONNX
 Runtime GPU 1.20.1 / CUDA 11.8 / cuDNN 8.9.6 in `.venv/ort-gpu/`, reusing PyTorch's
 CUDA 11 libraries without replacing PyTorch/cuDNN or CPU ONNX Runtime 1.22.1.

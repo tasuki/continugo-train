@@ -61,7 +61,7 @@ class Options:
     size_weights: str = DEFAULT_SIZE_WEIGHTS
     score_loss_weight: float = 0.25
     ownership_loss_weight: float = 0.25
-    feature_cache: str = "off"
+    feature_cache: str = "auto"
 
     def validate(self):
         from .feature_cache import MODES
@@ -475,6 +475,9 @@ def train(args):
     if resuming and "size_weights" not in restored_options:
         restored_options["size_weights"] = "uniform"
     options = Options(**restored_options)
+    if not resuming:
+        # A new training job uses today's cache default, not its parent's I/O policy.
+        options.feature_cache = Options().feature_cache
     mutable = {
         "workers",
         "batch_size",
@@ -649,6 +652,17 @@ def train(args):
         log(
             "Validation is by complete unique game, stratified by resolution where possible; no synthetic policy/outcome labels."
         )
+        if options.feature_cache == "auto":
+            from .feature_cache import ensure_caches
+
+            log("Feature cache: auto; preparing missing sidecars before training.")
+            built = ensure_caches(
+                corpus.train + corpus.validation,
+                density=options.samples_per_diameter,
+                binary=binary,
+                workers=min(4, max(1, options.workers)),
+            )
+            log(f"Feature cache: {built} built; all selected games ready for cached reads.")
         step = saved["global_step"] if resuming else 0
         best = saved["best_validation"] if resuming else math.inf
         run_id = saved["run_id"] if resuming else uuid.uuid4().hex

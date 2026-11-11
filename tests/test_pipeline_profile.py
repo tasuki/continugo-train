@@ -128,7 +128,7 @@ class PipelineProfileTests(unittest.TestCase):
                         model,
                         optimizer,
                         corpus.train,
-                        Options(batch_size=2, workers=0, steps_per_epoch=1),
+                        Options(batch_size=2, workers=0, steps_per_epoch=1, feature_cache="off"),
                         0,
                         torch.device("cpu"),
                         None,

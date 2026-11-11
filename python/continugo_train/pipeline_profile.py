@@ -374,6 +374,8 @@ def main(argv=None):
         validation_positions_per_game=4,
         seed=args.seed,
         size_weights="uniform",
+        # This diagnostic measures live extraction/IPC and does not create sidecars.
+        feature_cache="off",
     )
     report["training_options"] = asdict(options)
     report["training_warmup_steps"] = args.warmup_steps

@@ -68,6 +68,7 @@ class LoopConfig:
     batch_size: int = 2
     workers: int = Options().workers
     shuffle_buffer: int = 8
+    feature_cache: str = Options().feature_cache
     validation_fraction: float = 0.2
     lr: float | None = None
     warm_start_optimizer: str = "keep"
@@ -80,6 +81,10 @@ class LoopConfig:
     model_store: str = str(ROOT / "artifacts")
 
     def validate(self):
+        from .feature_cache import MODES
+
+        if self.feature_cache not in MODES:
+            raise ValueError(f"feature_cache must be one of {MODES}")
         weighted_sizes(self.sizes, self.size_weights)
         if not self.sizes or any(size not in range(9, 20) for size in self.sizes):
             raise ValueError("sizes must be nonempty and in 9..19")
@@ -199,6 +204,7 @@ class LoopConfig:
             "steps_per_epoch",
             "validation_fraction",
             "size_weights",
+            "feature_cache",
         ]:
             options[name] = getattr(self, name)
         options["seed"] = self.seed + iteration - 1
@@ -642,6 +648,17 @@ class LoopRunner:
                 "--output",
                 str(directory),
             ]
+            environment["CONTINUGO_PYTHON"] = sys.executable
+            environment["CONTINUGO_FEATURE_BIN"] = self.config.feature_binary
+            if self.config.feature_cache == "off":
+                command += ["--no-feature-cache"]
+            else:
+                command += [
+                    "--feature-cache-density",
+                    str(self.state["feature_spec"]["samples_per_diameter"]),
+                    "--feature-cache-workers",
+                    str(min(4, max(1, self.config.workers))),
+                ]
             settings = {
                 **self.config.search(),
                 **(

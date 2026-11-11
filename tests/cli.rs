@@ -326,6 +326,8 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{:?}", output);
+    let cache = fs::read(directory.0.join("features/game-000001-size19-seed1.cfeat")).unwrap();
+    assert_eq!(&cache[..8], b"CGCACHE1");
     let text = fs::read_to_string(directory.0.join("game-000001-size19-seed1.sgf")).unwrap();
     let record = sgf::decode_record(&text).unwrap();
     let game = Game::from_record_on(board_from_sgf(&record), &record.plays).unwrap();

@@ -117,7 +117,7 @@ class FeatureCacheTests(unittest.TestCase):
             "shuffle_buffer": 0,
             "size_weights": "9:1,13:1,19:1",
         }
-        live = list(data.batches(games, **kwargs))
+        live = list(data.batches(games, **kwargs, feature_cache="off"))
         with patch.object(cache, "FeatureClient", side_effect=AssertionError("used Rust")):
             cached = list(data.batches(games, **kwargs, feature_cache="require"))
         self.assertEqual(len(live), len(cached))
@@ -144,6 +144,43 @@ class FeatureCacheTests(unittest.TestCase):
             self.assertTrue(torch.equal(value, second.state_dict()[key]), key)
         self.assertEqual(results[0]["loss"], results[2]["loss"])
         self.assertEqual(results[1]["loss"], results[3]["loss"])
+
+    def test_auto_is_default_and_builds_once_without_live_fallback(self):
+        self.assertEqual(trainer.Options().feature_cache, "auto")
+        self.assertEqual(trainer.parse_args(["--data", str(self.sgf)]).feature_cache, None)
+        games, _ = data.inspect_corpus([str(self.sgf)], 4)
+        self.assertEqual(cache.ensure_caches(games, workers=2), 1)
+        self.assertEqual(cache.ensure_caches(games, workers=2), 0)
+        self.assertTrue(cache.sidecar_path(self.sgf).is_file())
+        with patch.object(cache, "FeatureClient", side_effect=AssertionError("live fallback")):
+            with cache.SampleReader() as reader:
+                self.assertEqual(reader.load(self.sgf, 0).outcome, 1)
+            list(
+                data.batches(
+                    games,
+                    batch_size=2,
+                    seed=0,
+                    epoch=0,
+                    training=True,
+                    density=4,
+                    workers=2,
+                    shuffle_buffer=0,
+                )
+            )
+        # Concurrent first access builds once, even when plans share a game.
+        cache.sidecar_path(self.sgf).unlink()
+        samples = list(data._parallel_samples([(games[0], [0]), (games[0], [1])], 4, 2, None))
+        self.assertEqual([s.ply for s in samples], [0, 1])
+        self.assertTrue(cache.sidecar_path(self.sgf).is_file())
+        self.sgf.write_text(self.sgf.read_text() + "\n")
+        with cache.SampleReader() as reader, self.assertRaisesRegex(ValueError, "stale"):
+            reader.load(self.sgf, 0)
+
+    def test_ineligible_generation_is_skipped_without_publishing_a_cache(self):
+        self.sgf.write_text("(;FF[9071]GM[9071]SZ[13];B[])")
+        result = cache.build_cache(self.sgf, skip_ineligible=True)
+        self.assertEqual(result["status"], "skipped-ineligible")
+        self.assertFalse(cache.sidecar_path(self.sgf).exists())
 
     def test_cache_mode_validation(self):
         with self.assertRaises(ValueError):

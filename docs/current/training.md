@@ -161,9 +161,12 @@ SGFs stay the primary game records. The Rust `features --inspect` command emits
 metadata only. `features --serve` accepts local JSON request lines containing a
 path, ply, density and expected file hash; replies are status-u8 / length-u64
 framed CGFEAT02 tensors or UTF-8 errors. These are ephemeral IPC commands/tensors,
-not JSONL game records. Optional [binary feature sidecars](feature-cache.md) can be
-built explicitly and consumed with `--feature-cache prefer|require`; default `off`
-retains live extraction. The target packet contract changed; input feature meanings did not.
+not JSONL game records. [Binary feature sidecars](feature-cache.md) are built and
+used by default (`--feature-cache auto`): missing caches for all selected training
+and held-out games are prepared before epoch 1. `--feature-cache off` opts out;
+`prefer` and `require` provide explicit fallback/strict-read policies. Stale or corrupt
+caches fail clearly rather than being silently replaced. The target packet contract
+changed; input feature meanings did not.
 
 Corpora are immutable during a job. Workers check the inspected raw-file SHA-256
 when loading a game, then serve that snapshot. Do not point a run at files being

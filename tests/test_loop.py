@@ -297,6 +297,7 @@ class LoopTests(LoopHarness):
             (32, 256, 0.25),
         )
         defaults.validate()
+        self.assertEqual(defaults.feature_cache, "auto")
         output = self.root / "randomized"
         state = self.run_loop(
             output, extra=["--simulations", "32", "--policy-search-probability", "0.25"]
@@ -314,9 +315,21 @@ class LoopTests(LoopHarness):
         with self.assertRaisesRegex(ValueError, "conflicting override"):
             self.run_loop(output, resume=True, extra=["--policy-search-probability", "0"])
         saved = loop.load_training(output / iteration["checkpoint"]["path"])
+        self.assertEqual(saved["options"]["feature_cache"], "auto")
+        generation = next(c for c in self.jobs.calls if "--engine" in c)
+        self.assertEqual(generation[generation.index("--feature-cache-density") + 1], "4")
+        self.assertNotIn("--no-feature-cache", generation)
         generated = [g for g in saved["manifest"] if "selfplay" in g["path"]]
         self.assertTrue(generated)
         self.assertTrue(all(g["policy_plies"] == (0,) for g in generated))
+
+    def test_cache_opt_out_reaches_generation_and_training(self):
+        output = self.root / "uncached"
+        state = self.run_loop(output, extra=["--feature-cache", "off"])
+        generation = next(c for c in self.jobs.calls if "--engine" in c)
+        self.assertIn("--no-feature-cache", generation)
+        saved = loop.load_training(output / state["iterations"][0]["checkpoint"]["path"])
+        self.assertEqual(saved["options"]["feature_cache"], "off")
 
     def test_old_loop_missing_policy_settings_stays_fixed_budget(self):
         output = self.root / "legacy-caps"
