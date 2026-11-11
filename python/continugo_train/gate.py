@@ -1,4 +1,4 @@
-"""Restartable experimental matches. Passing is evidence, never promotion permission."""
+"""Restartable match measurements; champion policy decides promotion separately."""
 
 from .features import inspect_game
 from .ratings import REFERENCE_ID
@@ -17,7 +17,7 @@ def filename(ordinal, size, seed, candidate_black):
     return f"game-{ordinal + 1:06d}-size{size}-seed{seed}-candidate-{color}.sgf"
 
 
-def summarize(records, threshold):
+def summarize(records):
     totals = {"wins": 0, "losses": 0, "draws": 0, "truncated": 0}
     per_size = {}
     for record in records:
@@ -35,26 +35,18 @@ def summarize(records, threshold):
     completed = len(records) - totals["truncated"]
     points = totals["wins"] + 0.5 * totals["draws"]
     score = points / completed if completed else None
-    # Unknown games are not draws. Decide only when the planned match score is
-    # guaranteed even if every truncated game resolves against that decision.
+    # Unknown games are not draws; retain conservative score bounds without
+    # inventing a separate pass/fail threshold for the match.
     planned = len(records)
     lower = points / planned if planned else 0.0
     upper = (points + totals["truncated"]) / planned if planned else 1.0
-    if planned and points + 1e-10 >= threshold * planned:
-        decision = "passed"
-    elif planned and points + totals["truncated"] + 1e-10 < threshold * planned:
-        decision = "failed"
-    else:
-        decision = "inconclusive"
     return {
         **totals,
         "completed": completed,
         "games": len(records),
         "score": score,
         "planned_score_bounds": (lower, upper),
-        "threshold": threshold,
         "per_size": per_size,
-        "decision": decision,
     }
 
 
@@ -71,7 +63,7 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
     if gate["report"] is not None:
         return gate["report"]
     if count == 0:
-        gate["report"] = {"decision": "disabled", "disabled": True, "draws": 0, "truncated": 0}
+        gate["report"] = {"disabled": True, "draws": 0, "truncated": 0}
         runner.save()
         return gate["report"]
     search = dict(runner.state["rating_protocol"]["search"])
@@ -267,10 +259,7 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
         attempt["status"] = "succeeded"
         runner.save()
         adopt()
-    gate["report"] = summarize(gate["games"], config.acceptance_rate)
-    if reference:
-        gate["report"].pop("decision")
-        gate["report"].pop("threshold")
+    gate["report"] = summarize(gate["games"])
     runner.save()
     runner.log(f"{label} iteration={iteration['number']}: {gate['report']}")
     return gate["report"]

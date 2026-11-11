@@ -176,6 +176,47 @@ class ChampionTests(helpers.LoopHarness):
         self.assertEqual(set(registry["skipped"]), set(self.ids))
         self.assertEqual(registry["evaluated"], {})
 
+    def test_append_family_preserves_champion_and_overrides_only_its_cadence(self):
+        # Simulate an existing evaluator which knows only the first saved model.
+        (self.store / "ratings").mkdir(exist_ok=True)
+        rate_saved.POLICY.update(evaluation_every=5, challenge_every=5)
+        state = rate_saved.initialize(
+            self.store, rate_saved.parse_args(["--model-store", str(self.store), "--family", "test1"])
+        )
+        state["candidates"] = self.ids[:1]
+        state["models"] = {self.ids[0]: state["models"][self.ids[0]]}
+        state["checkpoints"] = {self.ids[0]: state["checkpoints"][self.ids[0]]}
+        registry = rate_saved.load_champions(self.store)
+        registry["champion"] = self.ids[0]
+        registry["history"].append({"model": self.ids[0]})
+        registry["evaluated"][self.ids[0]] = {"complete": True, "decision": "promoted"}
+        history = list(registry["history"])
+        runner = rate_saved.ArtifactRunner(self.store, state, None)
+        rate_saved.include_family(runner, registry, "test1", 1)
+        self.assertEqual(registry["champion"], self.ids[0])
+        self.assertEqual(registry["history"], history)
+        self.assertEqual(state["candidates"], self.ids)
+        self.assertEqual(state["policy"]["evaluation_every"], 5)
+        self.assertEqual(state["family_evaluation_every"], {"test1": 1})
+        changes = len(state["policy_changes"])
+        rate_saved.include_family(runner, registry, "test1", 1)
+        self.assertEqual(len(state["policy_changes"]), changes)
+        rate_saved.evaluate(runner, registry)
+        self.assertEqual(registry["champion"], self.ids[-1])
+        self.assertFalse(registry.get("skipped"))
+
+    def test_reports_have_no_redundant_threshold(self):
+        self.evaluate()
+        state = self.saved_state()
+        self.assertNotIn("acceptance_rate", state["config"])
+        for job in state["matches"].values():
+            for key in ("gate", "reference"):
+                if job.get(key):
+                    self.assertNotIn("threshold", job[key]["report"])
+                    self.assertNotIn("decision", job[key]["report"])
+        legacy = EvaluationConfig.from_config({"acceptance_rate": 0.5})
+        self.assertFalse(hasattr(legacy, "acceptance_rate"))
+
     def test_thresholds(self):
         decide = rate_saved.challenge_decision
         self.assertEqual(decide({"games": 10, "wins": 6, "draws": 4}), "screen-failed")
@@ -222,6 +263,60 @@ class ChampionTests(helpers.LoopHarness):
         calls = len(self.jobs.calls)
         self.evaluate(resume=True)
         self.assertEqual(len(self.jobs.calls), calls)
+
+    def test_neural_challengers_rejected_without_random_games(self):
+        self.jobs.wins["champion-screen"] = 6
+        self.evaluate()
+        state = self.saved_state()
+        references = [j for j in state["matches"].values() if j["kind"] == "reference"]
+        self.assertEqual([j["candidate_name"] for j in references], [self.ids[0]])
+        registry = rate_saved.load_champions(self.store)
+        self.assertEqual(registry["champion"], self.ids[0])
+        for name in self.ids[1:]:
+            self.assertEqual(registry["evaluated"][name]["decision"], "screen-failed")
+        calls = len(self.jobs.calls)
+        self.evaluate(resume=True)
+        self.assertEqual(len(self.jobs.calls), calls)
+
+    def test_neural_reference_runs_only_after_promotion_commit(self):
+        play = rate_saved.play_match
+        calls = []
+
+        def checked(runner, registry, candidate, opponent, kind, games):
+            if kind == "reference" and candidate != self.ids[0]:
+                committed = rate_saved.load_champions(self.store)
+                self.assertEqual(committed["champion"], candidate)
+                self.assertEqual(committed["evaluated"][candidate]["decision"], "promoted")
+            calls.append((candidate, kind))
+            return play(runner, registry, candidate, opponent, kind, games)
+
+        with patch.object(rate_saved, "play_match", checked):
+            self.evaluate()
+        for name in self.ids[1:]:
+            kinds = [kind for candidate, kind in calls if candidate == name]
+            self.assertLess(kinds.index("champion-extension"), kinds.index("reference"))
+
+    def test_interrupted_post_promotion_reference_preserves_champion(self):
+        play = rate_saved.play_match
+
+        def interrupt(runner, registry, candidate, opponent, kind, games):
+            if candidate == self.ids[1] and kind == "reference":
+                self.jobs.interrupt_kind = "reference"
+            return play(runner, registry, candidate, opponent, kind, games)
+
+        with patch.object(rate_saved, "play_match", interrupt), self.assertRaises(KeyboardInterrupt):
+            self.evaluate()
+        registry = rate_saved.load_champions(self.store)
+        self.assertEqual(registry["champion"], self.ids[1])
+        self.assertFalse(registry["evaluated"][self.ids[1]]["complete"])
+        before = {p: p.read_bytes() for p in (self.store / "sgfs").glob("*/*.sgf")}
+        self.evaluate(resume=True)
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        self.assertEqual(rate_saved.load_champions(self.store)["champion"], self.ids[-1])
+        references = [j for j in self.saved_state()["matches"].values()
+                      if j["kind"] == "reference" and j["candidate_name"] == self.ids[1]]
+        self.assertEqual(len(references), 1)
+        self.assertEqual(len(references[0]["reference"]["attempts"]), 2)
 
     def test_rejection_keeps_champion_random(self):
         self.jobs.wins["reference"] = 6

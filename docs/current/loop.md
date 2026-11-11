@@ -81,8 +81,9 @@ mise run rate-saved -- --family cg5
 mise run rate-saved -- --resume
 ```
 
-The standalone evaluator owns its protocol, ten-game random calibration and
-10+30-game champion challenges. Seven wins in ten permit continuation; 28 wins
+The standalone evaluator owns its protocol, 10+30-game champion challenges and
+post-promotion ten-game random calibration (not for rejected challengers).
+Seven wins in ten permit continuation; 28 wins
 in forty **automatically replace the evaluation champion**, initially the random
 bot. Rated neural moves use 128 simulations by default. Publication is still a
 separate user decision. The shared evaluator state/log and champion lineage live under `artifacts/ratings/`;

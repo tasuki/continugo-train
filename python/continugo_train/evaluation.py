@@ -15,7 +15,6 @@ class EvaluationConfig(LoopConfig):
     gate_games: int = 20
     gate_simulations: int = 128
     gate_max_moves: int = 512
-    acceptance_rate: float = 0.5
 
     @classmethod
     def from_config(cls, config):
@@ -30,9 +29,8 @@ class EvaluationConfig(LoopConfig):
         if (
             not 0 < self.gate_simulations < 2**32
             or min(self.gate_max_moves, self.reference_max_moves) <= 0
-            or not 0.5 <= self.acceptance_rate <= 1
         ):
-            raise ValueError("positive evaluation budgets and acceptance-rate in 0.5..1 required")
+            raise ValueError("positive evaluation budgets required")
 
 
 def validate_output(root, store):

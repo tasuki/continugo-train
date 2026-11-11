@@ -520,9 +520,9 @@ class RatingsTests(EvaluationHarness):
         self.assertNotIn(state["iterations"][1]["checkpoint"]["sha256"], ids)
 
     def test_rejected_candidates_are_kept_and_rated_but_not_marked_accepted(self):
-        state = self.rated_loop(self.root / "loop", ["--acceptance-rate", "0.6"])
+        state = self.rated_loop(self.root / "loop")
         iteration = state["iterations"][0]
-        self.assertEqual(iteration["decision"], "failed")
+        self.assertNotIn("decision", iteration["gate"]["report"])
         self.assertEqual(iteration["parent_model"], state["initial_model"])
         self.assertIsNone(state["accepted"])
         candidate = next(
@@ -539,7 +539,7 @@ class RatingsTests(EvaluationHarness):
         state = self.rated_loop(
             self.root / "truncated", ["--reference-max-moves", "1", "--gate-max-moves", "1"]
         )
-        self.assertEqual(state["iterations"][0]["decision"], "inconclusive")
+        self.assertNotIn("decision", state["iterations"][0]["gate"]["report"])
         for row in self.rows():
             self.assertEqual((row["games"], row["draws"]), ("0", "0"))
             if row["network_id"] != ratings.REFERENCE_ID:
@@ -552,7 +552,7 @@ class RatingsTests(EvaluationHarness):
         self.jobs.reference_mode = self.jobs.arena_mode = "draw"
         other = self.root / "draw-models"
         state = self.rated_loop(self.root / "draws", ["--model-store", str(other)])
-        self.assertEqual(state["iterations"][0]["decision"], "passed")
+        self.assertNotIn("decision", state["iterations"][0]["gate"]["report"])
         for row in read_csv(other / "ratings/networks.csv"):
             self.assertEqual((row["wins"], row["losses"], row["draws"]), ("0", "0", "4"))
             self.assertEqual(float(row["rating"]), 100)

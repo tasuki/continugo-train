@@ -38,20 +38,39 @@ The evaluator never removes dated PNGs when refreshing `ratings.png`.
 ## Champion policy
 
 The initial champion is **random**, fixed at rating **100** with deviation zero.
-Only actual rounds **5, 10, 15, …, 100** are evaluated, in chronological order.
+By default, actual rounds **5, 10, 15, …** are evaluated, in chronological order.
+A family-specific override can evaluate/challenge every saved model without
+resetting the shared champion or revisiting another family's skipped rounds:
+
+```sh
+mise run rate-saved -- --resume --include-family cg6 --family-evaluation-every 1
+```
+
+`--include-family` appends compatible saved models to the existing queue; repeat
+it as new models are saved. The cadence override is persisted and audited for
+that family only. cg6 currently requests every-round challenges.
+
 All other rounds skip **everything**, including random calibration and neural
 reports. An off-cycle partial batch is abandoned; its completed SGFs are kept,
 but no more games or reports are generated for it. Completed historical results
 from earlier policies remain valid and are not removed.
 
-1. Each eligible candidate plays **10 games against random**.
-2. It plays **10 games against the reigning champion**. At least **7 wins** permit
-   continuation. If random is still champion, its calibration games serve as the screen.
-3. It plays **30 more games against that same frozen champion**, with fresh paired seeds.
+1. Each eligible candidate plays **10 games against the reigning champion**.
+   At least **7 wins** permit continuation.
+2. It plays **30 more games against that same frozen champion**, with fresh paired seeds.
    At least **28 wins across the full 40 automatically replace the champion**.
+3. **Only after promotion is committed**, the new champion plays **10 games against
+   random** for rating calibration. Rejected challengers do not play random.
+   Initial bootstrap against random already supplies the ten reference games;
+   these are reused, never duplicated. No later result resets the champion to random.
 4. A new champion plays **10 games each against up to two other available, previously
    evaluated models** near its rating. The defeated champion is excluded: it already
    supplied forty games. These extra games calibrate ratings; they do not veto promotion.
+
+Match reports contain counts, scores and truncation bounds, not a generic
+50% acceptance threshold or passed/failed label. Only the 7/10 and 28/40 win
+requirements above decide challenge continuation and champion replacement.
+Historical reports remain evidence; legacy `acceptance_rate` config is ignored.
 
 All neural turns use **128 simulations** by default, including random calibration
 and historical matches. The random bot is direct random play, not MCTS. This budget

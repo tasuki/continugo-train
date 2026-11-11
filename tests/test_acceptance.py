@@ -175,14 +175,14 @@ class SamplingTests(unittest.TestCase):
                 for result in [*["B+1.0"] * wins, *["W+1.0"] * losses, *[None] * truncated]
             ]
 
-        accepted = gate.summarize(records(6, 0, 4), 0.5)
-        self.assertEqual(accepted["decision"], "passed")
-        self.assertEqual(accepted["planned_score_bounds"], (0.6, 1.0))
-        rejected = gate.summarize(records(0, 7, 3), 0.5)
-        self.assertEqual(rejected["decision"], "failed")
-        inconclusive = gate.summarize(records(2, 4, 4), 0.5)
-        self.assertEqual(inconclusive["decision"], "inconclusive")
-        self.assertEqual(inconclusive["draws"], 0)
+        for counts, bounds in [((6, 0, 4), (0.6, 1.0)),
+                               ((0, 7, 3), (0.0, 0.3)),
+                               ((2, 4, 4), (0.2, 0.6))]:
+            report = gate.summarize(records(*counts))
+            self.assertEqual(report["planned_score_bounds"], bounds)
+            self.assertEqual(report["draws"], 0)
+            self.assertNotIn("threshold", report)
+            self.assertNotIn("decision", report)
 
     def test_zero_weights_and_unavailable_sizes_are_renormalized(self):
         self.assertEqual(weighted_sizes((9, 13, 19), "9:2,13:2,19:0"), [9, 13])
@@ -229,7 +229,7 @@ class AcceptanceTests(EvaluationHarness):
         report = iteration["gate"]["report"]
         self.assertEqual(report["draws"], 10)
         self.assertEqual(report["score"], 0.5)
-        self.assertEqual(iteration["decision"], "passed")
+        self.assertNotIn("decision", report)
         self.assertIsNone(state["accepted"])
         self.assertIn("WARNING DRAW", (output / "loop.log").read_text())
         reference = retain.retain(output)
@@ -261,7 +261,7 @@ class AcceptanceTests(EvaluationHarness):
         self.assertEqual(report["truncated"], 10)
         self.assertEqual(report["draws"], 0)
         self.assertIsNone(report["score"])
-        self.assertEqual(iteration["decision"], "inconclusive")
+        self.assertNotIn("decision", report)
         self.assertIsNone(state["accepted"])
         self.assertEqual(state["actor"]["model"], iteration["model"])
         self.assertIn("WARNING TRUNCATED", (output / "loop.log").read_text())
@@ -283,7 +283,7 @@ class AcceptanceTests(EvaluationHarness):
 
     def test_recovery_after_losing_runs_keeps_training_and_experimental_actor_separate(self):
         output = self.root / "lost-run"
-        self.run_loop(output, extra=["--gate-games", "10", "--acceptance-rate", "0.6"])
+        self.run_loop(output, extra=["--gate-games", "10"])
         latest_reference = retain.retain(output)
         initial_reference = retain.retain(output, 0)
         latest = Path(latest_reference["directory"])
@@ -307,8 +307,6 @@ class AcceptanceTests(EvaluationHarness):
                 "300",
                 "--gate-games",
                 "10",
-                "--acceptance-rate",
-                "0.6",
             ],
         )
         self.assertEqual(resumed["initial_checkpoint"]["sha256"], training_hash)

@@ -230,15 +230,19 @@ def evaluate(runner, registry):
             continue
         if registry["pending"] not in {None, candidate}:
             raise ValueError("resume the pending candidate before changing the queue")
-        round_number = int(candidate.rsplit("-r", 1)[1])
-        if round_number % state["policy"]["evaluation_every"] != 0:
+        family, round_text = candidate.rsplit("-r", 1)
+        round_number = int(round_text)
+        cadence = state.get("family_evaluation_every", {}).get(family)
+        evaluation_every = cadence or state["policy"]["evaluation_every"]
+        challenge_every = cadence or state["policy"]["challenge_every"]
+        if round_number % evaluation_every != 0:
             skipped[candidate] = {"reason": "off-cycle", "recorded_at": utc_now().isoformat()}
             registry["pending"] = None
             state.setdefault("skipped", []).append(candidate)
             runner.save()
             save_champions(runner.root, registry)
             runner.log(
-                f"Skipped {candidate}: all evaluation is restricted to multiples of {state['policy']['evaluation_every']}"
+                f"Skipped {candidate}: all evaluation is restricted to multiples of {evaluation_every}"
             )
             continue
         registry["pending"] = candidate
@@ -260,19 +264,18 @@ def evaluate(runner, registry):
             )
             trial["challenge_due"] = (
                 started
-                or int(candidate.rsplit("-r", 1)[1]) % state["policy"]["challenge_every"] == 0
+                or round_number % challenge_every == 0
             )
             runner.save()
         runner.log(
             f"Candidate {number}/{len(state['candidates'])}: {candidate} vs champion {opponent}"
         )
-        reference = play_match(runner, registry, candidate, "random", "reference", 10)
         if trial["decision"] is None and not trial["challenge_due"]:
             trial["decision"] = "not-challenged"
             runner.save()
         if trial["decision"] is None:
             screen = (
-                reference
+                play_match(runner, registry, candidate, "random", "reference", 10)
                 if opponent == "random"
                 else play_match(runner, registry, candidate, opponent, "champion-screen", 10)
             )
@@ -313,6 +316,12 @@ def evaluate(runner, registry):
                 )
             save_champions(runner.root, registry)
             plot_ratings.update(runner.root)
+        # Calibration is a reward for promotion, never a prerequisite. Commit
+        # the champion first; a resumed partial reference batch cannot undo it.
+        # During initial bootstrap the random challenge already supplies these
+        # ten games, so do not schedule a duplicate reference match.
+        if trial["decision"] == "promoted" and opponent != "random":
+            play_match(runner, registry, candidate, "random", "reference", 10)
         if trial["history_opponents"] is None:
             opponents = []
             if trial["decision"] == "promoted":
@@ -337,6 +346,55 @@ def evaluate(runner, registry):
         runner.log(f"Finished {candidate}: {trial['decision']}; champion={registry['champion']}")
 
 
+def include_family(runner, registry, family, cadence=None):
+    """Append compatible saved models without resetting the shared champion/history."""
+    sources = {key: value for key, value in saved_sources(runner.root).items()
+               if value["family"] == family}
+    if not sources:
+        raise ValueError(f"no saved models for family {family}")
+    models, checkpoints = model_references(runner.root, sources)
+    state = runner.state
+    ordered = sorted(sources.values(), key=lambda source: source["round"])
+    added = []
+    for source in ordered:
+        name = source["id"]
+        if name in state["models"]:
+            if state["models"][name] != models[name] or state["checkpoints"][name] != checkpoints[name]:
+                raise ValueError(f"saved model identity changed: {name}")
+        else:
+            saved = torch.load(source["checkpoint"]["path"], map_location="cpu", weights_only=True)
+            if saved["feature_spec"] != state["feature_spec"]:
+                raise ValueError(f"incompatible feature semantics: {name}")
+            added.append(name)
+    old_cadence = state.get("family_evaluation_every", {}).get(family)
+    if cadence is not None and cadence <= 0:
+        raise ValueError("family evaluation cadence must be positive")
+    state["models"].update(models)
+    state["checkpoints"].update(checkpoints)
+    for source in ordered:
+        if source["id"] not in state["candidates"]:
+            state["candidates"].append(source["id"])
+    if cadence is not None:
+        state.setdefault("family_evaluation_every", {})[family] = cadence
+        registry.setdefault("family_evaluation_every", {})[family] = cadence
+        # A cadence change can make previously skipped models eligible. Never
+        # discard completed evidence or alter another family's cadence.
+        for source in ordered:
+            name = source["id"]
+            if source["round"] % cadence == 0:
+                registry.get("skipped", {}).pop(name, None)
+                if name in state.get("skipped", []):
+                    state["skipped"].remove(name)
+    if added or cadence is not None and cadence != old_cadence:
+        change = dict(family=family, added_models=added,
+                      evaluation_every=cadence if cadence is not None else old_cadence,
+                      recorded_at=utc_now().isoformat())
+        state.setdefault("policy_changes", []).append(change)
+        registry.setdefault("policy_changes", []).append(change)
+    runner.save()
+    save_champions(runner.root, registry)
+
+
 def run(args):
     store = (args.model_store or ROOT / "artifacts").resolve()
     archive.initialize_store(store)
@@ -355,9 +413,13 @@ def run(args):
             if path.exists():
                 raise ValueError("the shared evaluator exists; use --resume")
             state = initialize(store, args)
+        # Ignore the removed generic report threshold in historical state.
+        state["config"].pop("acceptance_rate", None)
         runner = ArtifactRunner(store, state, lock)
         runner.verify_runtime()
         registry = load_champions(store)
+        if args.include_family:
+            include_family(runner, registry, args.include_family, args.family_evaluation_every)
         if not registry["evaluated"] and not state["matches"]:
             registry["next_seed"] = state["config"]["seed"]
         evaluate(runner, registry)
@@ -375,7 +437,15 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", choices=["cpu", "cuda"])
     parser.add_argument("--resume", action="store_true")
-    return parser.parse_args(argv)
+    parser.add_argument("--include-family", help="append saved models to the existing shared evaluator")
+    parser.add_argument("--family-evaluation-every", type=int,
+                        help="evaluation/challenge cadence for --include-family only (1 = every model)")
+    args = parser.parse_args(argv)
+    if args.family_evaluation_every is not None and (
+        not args.include_family or args.family_evaluation_every <= 0
+    ):
+        parser.error("positive --family-evaluation-every requires --include-family")
+    return args
 
 
 def main(argv=None):

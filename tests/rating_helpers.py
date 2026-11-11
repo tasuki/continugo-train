@@ -29,14 +29,12 @@ class EvaluationHarness(helpers.LoopHarness):
             "gate_max_moves",
             "gate_simulations",
             "reference_max_moves",
-            "acceptance_rate",
         }
         it = iter(extra)
         for flag in it:
             if flag.removeprefix("--").replace("-", "_") in evaluation_names:
                 name = flag[2:].replace("-", "_")
-                kind = float if name == "acceptance_rate" else int
-                options[name] = kind(next(it))
+                options[name] = int(next(it))
             else:
                 training.append(flag)
         fixture = output / "evaluation-fixture.pt"
@@ -102,8 +100,5 @@ class EvaluationHarness(helpers.LoopHarness):
                     )
                     gate.evaluate(runner, job, reference=key == "reference")
                     runner.rate_evaluation(job, key, checkpoints)
-                job["decision"] = (
-                    (job.get("gate") or {}).get("report", {}).get("decision", "disabled")
-                )
             runner.save()
         return evaluated
