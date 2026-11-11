@@ -161,13 +161,16 @@ SGFs stay the primary game records. The Rust `features --inspect` command emits
 metadata only. `features --serve` accepts local JSON request lines containing a
 path, ply, density and expected file hash; replies are status-u8 / length-u64
 framed CGFEAT02 tensors or UTF-8 errors. These are ephemeral IPC commands/tensors,
-**not JSONL game records or SGF sidecars**. The target packet contract changed; input feature meanings did not.
+not JSONL game records. Optional [binary feature sidecars](feature-cache.md) can be
+built explicitly and consumed with `--feature-cache prefer|require`; default `off`
+retains live extraction. The target packet contract changed; input feature meanings did not.
 
 Corpora are immutable during a job. Workers check the inspected raw-file SHA-256
 when loading a game, then serve that snapshot. Do not point a run at files being
 rewritten by self-play. The implementation stores per-game snapshots, so unusually
-long games consume more worker memory. Cell-feature packets are never cached as
-an entire corpus; their size depends on target-cell coverage. Reduce `--shuffle-buffer`,
+long games consume more worker memory. Cell-feature packets are never retained as
+an entire corpus in memory; optional sidecars are read one position at a time.
+Their size depends on target-cell coverage. Reduce `--shuffle-buffer`,
 `--batch-size`, or `--workers` for less host memory (`--shuffle-buffer` applies only
 in uniform mode). Worker queues are bounded;
 early epoch termination closes readers and reaps Rust processes.

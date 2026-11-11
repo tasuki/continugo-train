@@ -61,8 +61,13 @@ class Options:
     size_weights: str = DEFAULT_SIZE_WEIGHTS
     score_loss_weight: float = 0.25
     ownership_loss_weight: float = 0.25
+    feature_cache: str = "off"
 
     def validate(self):
+        from .feature_cache import MODES
+
+        if self.feature_cache not in MODES:
+            raise ValueError(f"feature_cache must be one of {MODES}")
         parse_weights(self.size_weights)
         if any(
             not math.isfinite(w) or w < 0
@@ -231,6 +236,7 @@ def run_phase(
         binary=binary,
         size_weights=options.size_weights,
         feature_profile=feature_profile,
+        feature_cache=options.feature_cache,
     )
     memory = GpuMemorySampler(enabled=profile_stages and device.type == "cuda")
     with memory, closing(stream), torch.set_grad_enabled(training):
@@ -477,6 +483,7 @@ def train(args):
         "steps_per_epoch",
         "lr",
         "grad_clip",
+        "feature_cache",
     }
     for field in fields(Options):
         value = getattr(args, field.name)

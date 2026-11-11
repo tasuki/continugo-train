@@ -21,7 +21,8 @@ from pathlib import Path
 import torch
 from torch import Tensor
 
-from .features import FeatureClient, inspect_game
+from .feature_cache import SampleReader
+from .features import inspect_game
 from .sampling import position_quotas, weighted_sizes
 
 
@@ -279,15 +280,15 @@ def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_si
     return ordered
 
 
-def _serial_samples(plans, density, binary, feature_profile=None):
-    with FeatureClient(binary, profile=feature_profile is not None) as client:
+def _serial_samples(plans, density, binary, feature_profile=None, feature_cache="off"):
+    with SampleReader(binary, cache=feature_cache, profile=feature_profile is not None) as client:
         for game, plies in plans:
             for ply in plies:
                 try:
                     sample = client.load(
                         game.path, ply, density=density, file_sha256=game.file_sha256
                     )
-                    if feature_profile is not None:
+                    if feature_profile is not None and client.last_profile is not None:
                         feature_profile.add(client.process.pid, client.last_profile)
                     if (
                         sample.full_domain
@@ -321,11 +322,11 @@ def _serial_samples(plans, density, binary, feature_profile=None):
                     raise ValueError(f"{game.path} ply {ply}: {error}") from error
 
 
-def _parallel_samples(plans, density, workers, binary, feature_profile=None):
+def _parallel_samples(plans, density, workers, binary, feature_profile=None, feature_cache="off"):
     if not plans:
         return
     if not workers:
-        yield from _serial_samples(plans, density, binary, feature_profile)
+        yield from _serial_samples(plans, density, binary, feature_profile, feature_cache)
         return
     count = min(workers, len(plans))
     stop = threading.Event()
@@ -341,7 +342,9 @@ def _parallel_samples(plans, density, workers, binary, feature_profile=None):
 
     def produce(shard, channel):
         try:
-            with closing(_serial_samples(shard, density, binary, feature_profile)) as stream:
+            with closing(
+                _serial_samples(shard, density, binary, feature_profile, feature_cache)
+            ) as stream:
                 for sample in stream:
                     if stop.is_set():
                         break
@@ -383,6 +386,7 @@ def batches(
     binary=None,
     size_weights="uniform",
     feature_profile=None,
+    feature_cache="off",
 ):
     """Bounded, deterministic shuffling and homogeneous-resolution batches.
 
@@ -407,7 +411,9 @@ def batches(
             return batch
         return None
 
-    with closing(_parallel_samples(plans, density, workers, binary, feature_profile)) as stream:
+    with closing(
+        _parallel_samples(plans, density, workers, binary, feature_profile, feature_cache)
+    ) as stream:
         for sample in stream:
             if training and shuffle_buffer:
                 if len(buffered) < shuffle_buffer:

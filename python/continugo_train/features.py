@@ -368,8 +368,16 @@ class FeatureClient:
     Tensor semantics are explicitly versioned; JSON lines are IPC, not game records.
     """
 
-    def __init__(self, binary: str | Path | None = None, *, profile: bool = False):
+    def __init__(
+        self,
+        binary: str | Path | None = None,
+        *,
+        profile: bool = False,
+        retain_packet: bool = False,
+    ):
         self.profile = profile
+        self.retain_packet = retain_packet
+        self.last_packet = None
         self.last_profile = None
         self.last_view = None
         self.process = subprocess.Popen(
@@ -504,6 +512,7 @@ class FeatureClient:
             sample = decode_sample(data, feature_schema=feature_schema)
         if sample.ply != ply or sample.samples_per_diameter != density or sample.full_domain:
             raise RuntimeError("feature-server response does not match the request")
+        self.last_packet = data if self.retain_packet else None
         return sample
 
 
