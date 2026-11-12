@@ -174,37 +174,34 @@ def save_figure(plt, figure, output):
 
 def plot(jobs, output, title):
     plt = pyplot(output)
-    # Plot job segments separately: replay changes make losses incomparable
-    # across boundaries, and connecting them would imply one fixed dataset.
+    # Connect saved epochs across jobs to expose campaign trends. Round markers
+    # and the footer retain the warning that replay datasets change between jobs.
     figure, axes = plt.subplots(len(METRICS), 1, figsize=(13, 3 * len(METRICS)), sharex=True)
     offset = 0
     starts = []
+    full_x = []
+    series = {(metric, phase): [] for metric, _ in METRICS for phase in ('train', 'validation')}
     for index, job in enumerate(jobs):
         epochs = sorted(job.epochs)
         x = [offset + epoch for epoch in epochs]
         starts.append((x[0], job.label))
+        full_x.extend(range(x[0], x[-1] + 1))
         for axis, (metric, label) in zip(axes, METRICS, strict=True):
             for phase, color in [("train", "tab:blue"), ("validation", "tab:orange")]:
                 # NaNs leave holes for missing epochs rather than joining across them.
-                full_x = list(range(x[0], x[-1] + 1))
-                y = [
+                series[metric, phase].extend([
                     job.epochs[epoch][phase][metric] if epoch in job.epochs else math.nan
                     for epoch in range(epochs[0], epochs[-1] + 1)
-                ]
-                axis.plot(
-                    full_x,
-                    y,
-                    color=color,
-                    marker=".",
-                    markersize=4,
-                    linewidth=1.2,
-                    label=phase.capitalize() if index == 0 else None,
-                )
+                ])
             axis.set_ylabel(label)
             axis.grid(alpha=0.2)
             if index:
                 axis.axvline(x[0] - 0.5, color="grey", linewidth=0.7, alpha=0.35)
         offset += epochs[-1]
+    for axis, (metric, _) in zip(axes, METRICS, strict=True):
+        for phase, color in [('train', 'tab:blue'), ('validation', 'tab:orange')]:
+            axis.plot(full_x, series[metric, phase], color=color, marker='.',
+                      markersize=4, linewidth=1.2, label=phase.capitalize())
     axes[0].legend(loc="best")
     axes[-1].set_xlabel("Recorded training epoch (local epoch counters stitched across jobs)")
     # Limit label density on long campaigns while retaining the final round.
@@ -219,7 +216,7 @@ def plot(jobs, output, title):
     figure.text(
         0.5,
         0.01,
-        "Saved epochs only • Lines break at replay/job changes • Loss is not playing strength",
+        "Saved epochs only • Replay changes between rounds • Loss is not playing strength",
         ha="center",
         fontsize=9,
     )

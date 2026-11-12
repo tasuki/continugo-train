@@ -166,6 +166,31 @@ class PlotMetricsTests(unittest.TestCase):
         self.assertFalse(conflict.exists())
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "install plotting extra")
+    def test_connects_rounds_but_preserves_missing_epoch_gaps(self):
+        import math
+        import matplotlib.pyplot as plt
+
+        self.log("loop/iteration-0001/train-attempt-0001/training.log", epoch(1, 3))
+        self.log("loop/iteration-0002/train-attempt-0001/training.log", epoch(1, 7) + epoch(3, 5))
+        with patch("continugo_train.plot_metrics.save_figure") as save:
+            plot(collect_jobs(self.root), self.root / "metrics.png", "Connected")
+        figure = save.call_args.args[1]
+        try:
+            for axis in figure.axes[:5]:
+                lines = {line.get_label(): line for line in axis.lines}
+                self.assertIn("Train", lines)
+                self.assertIn("Validation", lines)
+                for label in ("Train", "Validation"):
+                    line = lines[label]
+                    self.assertEqual(list(line.get_xdata()), [1, 2, 3, 4])
+                    self.assertTrue(math.isnan(line.get_ydata()[2]))
+                    self.assertEqual(line.get_linestyle(), "-")
+            train = next(line for line in figure.axes[0].lines if line.get_label() == "Train")
+            self.assertEqual(list(train.get_ydata()[:2]), [3, 7])
+        finally:
+            plt.close(figure)
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "install plotting extra")
     def test_plot_svg_png_and_cli_read_only(self):
         path = self.log("training.log", epoch(1) + epoch(2, 2))
         original = path.read_bytes()

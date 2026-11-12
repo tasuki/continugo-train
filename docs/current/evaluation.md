@@ -138,7 +138,7 @@ If a net has no completed evidence, show its broad prior rather than invent outc
 
 `ratings.png` retains the linear cumulative-unique-training-game axis and the same
 rating scale (random=100). All evaluated rounds are connected in order; champion
-lineage dots are saturated and non-champions are grayer. Error bars show **± rating
+lineage checkpoints are solid circles in their campaign colour and non-champions are same-sized, grayer dots at 40% opacity. Error bars show **± rating
 deviation, not a 95% confidence interval**. Validation games are excluded from the
 x-axis, and replay/epochs do not count a game twice. Only models with actual evidence are plotted; skipped rounds do not receive invented
 ratings or dots. Existing results remain plotted, including completed games from

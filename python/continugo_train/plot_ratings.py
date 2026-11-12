@@ -216,23 +216,36 @@ def plot(points, output, title="Network ratings", labels=False):
         axis.errorbar(
             [p.games for p in series],
             [p.rating for p in series],
-            yerr=[p.deviation for p in series],
             fmt="-",
-            capsize=3,
             alpha=0.85,
             color=colors(color_index),
             label=campaign_label(campaign, series),
         )
-        full = [point for point in series if point.champion is not False]
+        champions = [point for point in series if point.champion is True]
+        unknown = [point for point in series if point.champion is None]
         muted = [point for point in series if point.champion is False]
         hue = colors(color_index)
         gray = tuple(0.7 * 0.6 + 0.3 * component for component in hue[:3])
-        for group, color, alpha in [(full, hue, 1.0), (muted, gray, 0.8)]:
+        for group, color, alpha, marker, size in [
+            (champions, hue, 1.0, "o", 32),
+            (unknown, hue, 1.0, "o", 32),
+            (muted, gray, 0.4, "o", 32),
+        ]:
             if group:
+                axis.errorbar(
+                    [p.games for p in group],
+                    [p.rating for p in group],
+                    yerr=[p.deviation for p in group],
+                    fmt="none",
+                    capsize=3,
+                    color=color,
+                    alpha=alpha,
+                )
                 axis.scatter(
                     [p.games for p in group],
                     [p.rating for p in group],
-                    s=32,
+                    marker=marker,
+                    s=size,
                     color=color,
                     alpha=alpha,
                     zorder=4,
@@ -255,54 +268,18 @@ def plot(points, output, title="Network ratings", labels=False):
     axis.set_xlim(-0.03 * maximum, 1.1 * maximum)
     axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
     axis.grid(True, which="major", alpha=0.25)
-    from matplotlib.lines import Line2D
-
-    handles, _ = axis.get_legend_handles_labels()
-    if any(point.champion is not None for point in networks):
-        handles.extend(
-            [
-                Line2D(
-                    [], [], marker="o", linestyle="none", color="tab:blue", label="Champion lineage"
-                ),
-                Line2D(
-                    [],
-                    [],
-                    marker="o",
-                    linestyle="none",
-                    color="0.6",
-                    label="Non-champion / provisional estimate",
-                ),
-            ]
-        )
-    axis.legend(
-        handles=[
-            *handles,
-            Line2D(
-                [],
-                [],
-                marker="*",
-                linestyle="none",
-                color="black",
-                markersize=12,
-                label="Random bot (0 games)",
-            ),
-        ],
-        loc="upper left",
-        bbox_to_anchor=(0, -0.13),
-        fontsize=8,
-    )
     figure.suptitle(title)
-    figure.supxlabel("Cumulative unique training games", y=0.27)
+    figure.supxlabel("Cumulative unique training games", y=0.10)
     figure.text(
         0.5,
         0.02,
         "Error bars: ± rating deviation (not a 95% confidence interval). "
-        "Validation excluded; replay counted once. Lines connect every evaluated round; muted dots are non-champions.\n"
+        "Validation excluded; replay counted once. Lines connect every evaluated round; solid dots are champion lineage, translucent muted dots are non-champions.\n"
         "Different model schemas use separate compatible evaluation runtimes; compare across protocols cautiously.",
         ha="center",
         fontsize=8,
     )
-    figure.subplots_adjust(left=0.09, right=0.98, bottom=0.34, top=0.9)
+    figure.subplots_adjust(left=0.09, right=0.98, bottom=0.18, top=0.9)
     save_figure(plt, figure, output)
 
 

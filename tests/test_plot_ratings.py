@@ -140,6 +140,22 @@ class PlotRatingsTests(unittest.TestCase):
             self.assertNotEqual(
                 list(dots[0].get_facecolors()[0]), list(dots[1].get_facecolors()[0])
             )
+            from matplotlib.markers import MarkerStyle
+
+            circle = MarkerStyle("o")
+            for collection, marker, size in [(dots[0], circle, 32), (dots[1], circle, 32)]:
+                expected = marker.get_path().transformed(marker.get_transform())
+                self.assertTrue((collection.get_paths()[0].vertices == expected.vertices).all())
+                self.assertEqual(list(collection.get_sizes()), [size])
+            self.assertTrue(
+                (dots[0].get_facecolors()[0] == axis.containers[0].lines[0].get_color()).all()
+            )
+            self.assertIsNone(axis.get_legend())
+            self.assertEqual(dots[0].get_alpha(), 1.0)
+            self.assertEqual(dots[1].get_alpha(), 0.4)
+            for bars, dots_group in zip(axis.containers[1:3], dots[:2]):
+                bar_color = bars.lines[2][0].get_colors()[0]
+                self.assertTrue((bar_color == dots_group.get_facecolors()[0]).all())
             self.assertEqual(len(axis.containers[0].lines[0].get_xdata()), 100)
             self.assertEqual(axis.get_xscale(), "linear")
             save(plt, figure, target)
@@ -214,7 +230,10 @@ class PlotRatingsTests(unittest.TestCase):
         save = plot_ratings.save_figure
 
         def inspect(plt, figure, target):
-            curves = {item.get_label(): item.lines[0] for item in figure.axes[0].containers}
+            curves = {
+                item.get_label(): item.lines[0]
+                for item in figure.axes[0].containers if item.lines[0] is not None
+            }
             self.assertEqual(set(curves), {"campaign-a", "campaign-b"})
             self.assertEqual(list(curves["campaign-a"].get_xdata()), [100, 200])
             self.assertEqual(list(curves["campaign-b"].get_xdata()), [50, 150])
@@ -244,7 +263,7 @@ class PlotRatingsTests(unittest.TestCase):
         self.assertEqual(plot_ratings.campaign_label("campaign", [point("custom-net")]), "campaign")
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
-    def test_plot_legend_uses_filename_family_prefix(self):
+    def test_plot_omits_legend(self):
         points = [
             plot_ratings.Point("cg4-b4c32-s10-d20", 100, 150, 30, False, "score-campaign"),
             plot_ratings.Point("random", 0, 100, 0, True),
@@ -252,8 +271,7 @@ class PlotRatingsTests(unittest.TestCase):
         save = plot_ratings.save_figure
 
         def inspect(plt, figure, target):
-            labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
-            self.assertIn("cg4 · score-campaign", labels)
+            self.assertIsNone(figure.axes[0].get_legend())
             save(plt, figure, target)
 
         with patch.object(plot_ratings, "save_figure", inspect):
