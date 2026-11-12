@@ -5,51 +5,63 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
-## First: avoid repeated fine-feature work
+## Priority: improve training generalization
 
-- [ ] Remove the obsolete local liberty-footprint scalar implementation and its
-  test-only cache/projection/shortcut benchmarks now that binary region splitting
-  replaces it. Keep the comparison results and eye-making rationale in history;
-  preserve schema-4 support. This cleanup concerns the replaced fine scalar, not
-  the separate coarse spatial liberty-center/footprint planes.
+The [network-size comparison](history/2026-11-11-network-size-comparison.md)
+showed overfitting across all four architectures and heads. Keep 4×32 as the
+baseline; prioritize these checks over larger networks or more passes on the
+same games. Follow-up experiments need explicit budgets before launch.
+
+- [ ] Audit generalization measurements: evaluate larger fixed train/validation
+  probes in inference mode; compare split distributions (source rounds, game
+  lengths, outcomes and scores); verify targets, masks and loss denominators.
+  Test whether BatchNorm-statistics recalibration explains validation spikes.
+- [ ] Test data scarcity with a fixed-recipe learning curve over progressively
+  more unique, diverse games, keeping a common game-disjoint holdout. Distinguish
+  new-data gains from gains due merely to extra position exposures.
+- [ ] Test fewer passes per replay window with fresh self-play data rather than
+  repeatedly fitting a static corpus; choose budgets from held-out curves,
+  without assuming the observed 2–3-epoch optimum transfers to other corpora.
+- [ ] If needed after the audits, test stronger weight decay, lower/decaying
+  learning rates and auxiliary-loss reweighting separately. Compare per-head
+  held-out progress and inference-mode gaps, not training loss alone.
+
+## Later, only for a measured bottleneck
+
+None of these performance experiments blocks the generalization work above.
+
 - [ ] Trial a certified no-capture summary fast path in shared rules, reusing
-  prepared liberty witnesses and avoiding child construction/repeated scans on
-  proven ordinary moves. Unresolved candidates must use the authoritative
-  validator. Obtain confirmation before modifying the sibling checkout;
-  differential-check captures, suicide, joins, both colours and board sizes.
-  Compare any rules fast path in fixed seeded native searches for end-to-end
-  throughput, peak memory and moves/visits/results, with concurrency, batching,
-  model and source positions fixed. Include value-only leaves; retain only
-  measured benefits and recheck trained schema-5 proposals.
+  prepared liberty witnesses to avoid discarded child construction/repeated scans.
+  Preserve splitting's use of actual child survivors. Unresolved
+  candidates must use the authoritative validator. Obtain confirmation before
+  modifying the sibling checkout; differential-check captures, suicide, joins,
+  both colours and board sizes. Compare fixed seeded native searches, including
+  value-only leaves, for throughput, peak memory and moves/visits/results; recheck
+  trained schema-5 proposals rather than relying on old footprint timings.
+- [ ] Only if unresolved candidates remain costly after that trial, profile
+  `PreparedPosition::analyze_move` and test a general shared-rules summary-only
+  path, preserving the child-survivor information needed by splitting.
+- [ ] Tune the existing search-context LRU's capacity/reuse against memory cost.
+- [ ] Parallelize/batch independent arena/rating games if evaluation dominates
+  runtime; preserve paired seeds, recovery and promotion semantics.
+- [ ] Profile cached training loading/decoding/collation and transfers if data
+  waiting is significant. Investigate cross-phase live-worker reuse only if
+  uncached extraction is actually needed and startup is a measured bottleneck;
+  do not require another worker sweep before learning.
+- [ ] Tune existing scorer batching/chunk limits and selected-cell budgets only
+  if costly; retain tactical-coverage and strength checks.
+- [ ] Investigate CPU/GPU pipelining and GPU-resident contexts if transfer costs
+  justify them.
+- [ ] Measure standalone rollout cost/strength before proposing its addition to
+  the supervised loop/rating protocol.
 
-The [friendly-region split replacement](history/2026-11-08-friendly-region-splitting.md)
-is implemented; the old local-footprint field, projection optimization and
-inherited scalar-cache proposal are obsolete. The prior
-[fine-feature investigation](history/2026-11-08-fine-shortcuts.md) still motivates
-avoiding discarded child construction in shared rules, with confirmation.
+## Optional cleanup
 
-## Later, only if a bottleneck appears
-
-- [ ] Tune the existing search cache: test whether retaining more already-computed
-  board features/network encodings avoids enough repeated work to justify the
-  extra memory. Keep concurrency and search settings fixed for this comparison.
-- [ ] Run independent evaluation games in parallel/batches when evaluation is a
-  substantial part of trial runtime. This speeds evaluation, not training steps.
-- [ ] Investigate keeping feature workers alive between training phases if startup
-  or waiting for features becomes a substantial cost. Use longer training runs
-  to check this; recheck the six-worker setting on the trial corpus rather than
-  making another worker sweep a prerequisite for learning.
-- [ ] If unresolved candidates still dominate after the certified fast path,
-  profile `PreparedPosition::analyze_move` internals and trial a general shared-rules
-  summary-only path to avoid discarded children/repeated scans/allocations on
-  those candidates too; differential-check captures and suicide.
-- [ ] Tune scorer batching and cell budgets for speed if their measured cost
-  becomes significant; retain tactical-coverage and strength checks.
-- [ ] Investigate CPU/GPU pipelining and GPU-resident contexts if the remaining
-  compute/transfer split justifies them.
-- [ ] Measure rollout cost/strength before adding it to the supervised loop/rating protocol.
-- [ ] Tune search/training budgets and manually scale network capacity; consider
-  learned group embeddings only with evidence of better strength per compute.
+- [ ] Remove the test-only old local-footprint scalar and obsolete
+  cache/projection/shortcut benchmarks, updating their diagnostic docs/scripts
+  and the splitting comparison that still uses the old scalar as a reference.
+  Keep comparison results and eye-making rationale in history. Preserve schema-4
+  support and the separate coarse spatial liberty-center/footprint planes.
 
 Time-box performance experiments; keep them only for measured end-to-end benefit
 within bounded memory. Keep model/search settings and source games fixed; check

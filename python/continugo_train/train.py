@@ -62,12 +62,15 @@ class Options:
     score_loss_weight: float = 0.25
     ownership_loss_weight: float = 0.25
     feature_cache: str = "auto"
+    augmentation: str = "d4"
 
     def validate(self):
         from .feature_cache import MODES
 
         if self.feature_cache not in MODES:
             raise ValueError(f"feature_cache must be one of {MODES}")
+        if self.augmentation not in ("none", "d4"):
+            raise ValueError("augmentation must be none or d4")
         parse_weights(self.size_weights)
         if any(
             not math.isfinite(w) or w < 0
@@ -237,6 +240,7 @@ def run_phase(
         size_weights=options.size_weights,
         feature_profile=feature_profile,
         feature_cache=options.feature_cache,
+        augmentation=options.augmentation,
     )
     memory = GpuMemorySampler(enabled=profile_stages and device.type == "cuda")
     with memory, closing(stream), torch.set_grad_enabled(training):
@@ -474,10 +478,13 @@ def train(args):
     # New jobs/warm-starts use the new 40/40/20 default unless explicitly set.
     if resuming and "size_weights" not in restored_options:
         restored_options["size_weights"] = "uniform"
+    if resuming and "augmentation" not in restored_options:
+        restored_options["augmentation"] = "none"
     options = Options(**restored_options)
     if not resuming:
         # A new training job uses today's cache default, not its parent's I/O policy.
         options.feature_cache = Options().feature_cache
+        options.augmentation = Options().augmentation
     mutable = {
         "workers",
         "batch_size",

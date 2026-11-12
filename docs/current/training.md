@@ -59,6 +59,18 @@ subset each training epoch. `--validation-positions-per-game` chooses a fixed
 seeded subset per held-out game. `--steps-per-epoch` caps optimizer batches;
 otherwise an epoch exhausts the data. Final partial batches are retained.
 
+### Board-symmetry augmentation
+
+New training/warm-start jobs default to `--augmentation d4`: one uniformly sampled
+square symmetry (four rotations × reflected/not reflected) per position per epoch.
+Coarse inputs, ownership targets, action coordinates and directional border fields
+transform together. Candidate row order, policy indices/visits, legality, pass,
+value and score are preserved. Augmentation uses an independent seeded RNG and
+adds no position exposures. Validation is never augmented. Cached tensors remain
+unchanged; transforms happen after decoding. Use `--augmentation none` to disable.
+Resuming an older checkpoint without this option preserves its unaugmented recipe;
+resuming a newer one restores its saved setting.
+
 ### Board mixture: 40% / 40% / 20%
 
 New training/warm-start runs default to `--size-weights 9:2,13:2,19:1`, emphasizing

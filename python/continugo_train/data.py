@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 from torch import Tensor
 
+from .augmentation import augment_sample
 from .feature_cache import SampleReader
 from .features import inspect_game
 from .sampling import position_quotas, weighted_sizes
@@ -387,21 +388,28 @@ def batches(
     size_weights="uniform",
     feature_profile=None,
     feature_cache="auto",
+    augmentation="d4",
 ):
     """Bounded, deterministic shuffling and homogeneous-resolution batches.
 
     Close the generator when stopping an epoch early, so Rust workers are reaped.
     """
+    if augmentation not in ("none", "d4"):
+        raise ValueError("augmentation must be none or d4")
     plans = _plans(games, seed, epoch, training, limit, size_weights, batch_size)
     # Weighted plans already shuffle references within each size. A global
     # shuffle would undo the early-step budget mix and waste extraction work.
     if size_weights != "uniform":
         shuffle_buffer = 0
     rng = random.Random(seed + epoch * 1000033)
+    # Separate RNG: augmentation must not change sample ordering or model RNG.
+    augmentation_rng = random.Random(seed + epoch * 1000037 + 17041)
     buffered = []
     buckets = defaultdict(list)
 
     def enqueue(sample):
+        if training and augmentation == "d4":
+            sample = augment_sample(sample, augmentation_rng.randrange(8))
         key = tuple(sample.coarse.shape)
         bucket = buckets[key]
         bucket.append(sample)
