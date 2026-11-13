@@ -38,7 +38,8 @@ def summarize(rows):
             "bin": b,
             "positions": len(group),
             "predicted_points": sum((r["value"] + 1) / 2 for r in group) / len(group),
-            "observed_points": sum((r["outcome"] + 1) / 2 for r in group) / len(group),
+            "observed_points": sum((r.get("outcome_target", r["outcome"]) + 1) / 2 for r in group)
+            / len(group),
         }
         for b, group in sorted(bins.items())
     ]
@@ -89,6 +90,11 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
                 truth = sample.ownership.to(device)
                 weights = ownership_weights(game.resolution, device=device)
                 v, s = value.item(), score.item()
+                target = (
+                    (-1.0 if sample.outcome == 0 else sample.outcome)
+                    if saved.get("outcome_semantics") == "jigo-loss-v1"
+                    else sample.outcome
+                )
                 stage = "opening" if index == 0 else "late" if index >= len(plies) - 2 else "middle"
                 rows.append(
                     {
@@ -99,9 +105,10 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
                         "stage": stage,
                         "value": v,
                         "outcome": sample.outcome,
+                        "outcome_target": target,
                         "score": s,
                         "score_target": sample.score,
-                        "value_mse": (v - sample.outcome) ** 2,
+                        "value_mse": (v - target) ** 2,
                         "score_mae": abs(s - sample.score),
                         "score_mse": (s - sample.score) ** 2,
                         "score_bias": s - sample.score,

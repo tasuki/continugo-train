@@ -504,6 +504,10 @@ def train(args):
                 )
             setattr(options, field.name, value)
     options.validate()
+    if resuming and saved.get("outcome_semantics") != "jigo-loss-v1":
+        raise ValueError(
+            "resume would change the outcome objective; use --warm-start for jigo-as-loss"
+        )
     config = NetworkConfig(**saved["config"]) if saved else NetworkConfig()
     settings = asdict(config)
     for name in [
@@ -598,6 +602,12 @@ def train(args):
                 "global_step": saved["global_step"],
             },
         }
+        if saved.get("outcome_semantics") != "jigo-loss-v1":
+            initialization["outcome_change"] = {
+                "from": "draw-zero",
+                "to": "jigo-loss-v1",
+                "architecture_unchanged": True,
+            }
         previous_activation = NetworkConfig(**saved["config"]).value_activation
         if previous_activation != config.value_activation:
             initialization["value_activation_change"] = {
@@ -703,6 +713,7 @@ def train(args):
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "config": asdict(config),
+                "outcome_semantics": "jigo-loss-v1",
                 "options": asdict(options),
                 "feature_spec": spec,
                 "corpus_fingerprint": corpus.fingerprint,

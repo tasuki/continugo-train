@@ -123,6 +123,11 @@ def export_checkpoint(checkpoint, output):
             "progress": checkpoint_progress(saved),
             "config": saved["config"],
             "feature_spec": spec,
+            **(
+                {"outcome_semantics": saved["outcome_semantics"]}
+                if "outcome_semantics" in saved
+                else {}
+            ),
         },
         sort_keys=True,
     )

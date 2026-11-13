@@ -1,7 +1,7 @@
 //! Optional cold-start leaf evaluation from naturally completed legal playouts.
 //! No unfinished-board scoring, eye filter, neural value or fabricated cap draws.
 
-use super::{color_sign, terminal_estimate};
+use super::{SearchValue, color_sign, terminal_estimate};
 use crate::action::Proposals;
 use continugo_rules::Game;
 use rand::Rng;
@@ -85,9 +85,9 @@ pub(super) fn evaluate(
     score_weight: f64,
     rng: &mut impl Rng,
     stats: &mut RolloutStats,
-) -> Option<f64> {
+) -> Option<SearchValue> {
     let perspective = color_sign(source.on_move());
-    let mut total = 0.0;
+    let mut total = SearchValue::default();
     let mut completed = 0;
     for _ in 0..config.playouts {
         let mut game = source.clone();
@@ -108,23 +108,33 @@ pub(super) fn evaluate(
             stats.plies += 1;
         }
         if game.is_finished() {
-            let estimate = terminal_estimate(&game);
+            let (estimate, jigo) = terminal_estimate(&game);
             let sign = color_sign(game.on_move()) * perspective;
-            let value = sign * estimate.value;
+            let value = if jigo { 0.0 } else { sign * estimate.value };
             stats.completed += 1;
             stats.wins += u64::from(value > 0.0);
             stats.losses += u64::from(value < 0.0);
             stats.draws += u64::from(value == 0.0);
-            total += sign
-                * estimate
+            let mut evidence = SearchValue {
+                value: estimate
                     .utility(score_weight)
-                    .expect("validated score weight");
+                    .expect("validated score weight"),
+                jigo_penalty: if jigo { 1.0 - score_weight } else { 0.0 },
+            };
+            if sign < 0.0 {
+                evidence = evidence.flipped();
+            }
+            total.value += evidence.value;
+            total.jigo_penalty += evidence.jigo_penalty;
             completed += 1;
         } else {
             stats.truncated += 1;
         }
     }
-    (completed > 0).then(|| total / f64::from(completed))
+    (completed > 0).then(|| SearchValue {
+        value: total.value / f64::from(completed),
+        jigo_penalty: total.jigo_penalty / f64::from(completed),
+    })
 }
 
 #[cfg(test)]
@@ -166,7 +176,7 @@ mod tests {
             .unwrap();
         let mut rng = StdRng::seed_from_u64(0);
         assert_eq!(
-            evaluate(&game, &config(2), 128, 1.0, &mut rng, &mut stats),
+            evaluate(&game, &config(2), 128, 1.0, &mut rng, &mut stats).map(|v| v.value),
             Some(-1.0)
         );
         assert_eq!(stats.losses, 4);
@@ -179,15 +189,38 @@ mod tests {
                 1.0,
                 &mut rng,
                 &mut stats
-            ),
+            )
+            .map(|v| v.value),
             Some(1.0)
         );
         assert_eq!(stats.wins, 4);
         assert_eq!(
-            evaluate(&Game::default(), &config(2), 128, 1.0, &mut rng, &mut stats),
+            evaluate(&Game::default(), &config(2), 128, 1.0, &mut rng, &mut stats).map(|v| v.value),
             Some(0.0)
         );
         assert_eq!(stats.draws, 4);
+    }
+
+    #[test]
+    fn jigo_rollouts_penalize_both_players_but_statistics_still_report_draws() {
+        for game in [Game::default(), Game::default().pass().unwrap()] {
+            let mut stats = RolloutStats::default();
+            let value = evaluate(
+                &game,
+                &config(2),
+                128,
+                0.5,
+                &mut StdRng::seed_from_u64(0),
+                &mut stats,
+            )
+            .unwrap();
+            assert_eq!(value.value, -0.5);
+            assert_eq!(value.flipped().value, -0.5);
+            assert_eq!(value.jigo_penalty, 0.5);
+            assert_eq!(stats.draws, 4);
+            assert_eq!(stats.losses, 0);
+            assert_eq!(stats.wins, 0);
+        }
     }
 
     #[test]
@@ -227,7 +260,7 @@ mod tests {
             .unwrap()
             .pass()
             .unwrap();
-        let expected = -terminal_estimate(&game.pass().unwrap()).score;
+        let expected = -terminal_estimate(&game.pass().unwrap()).0.score;
         assert!(expected > 0.0 && expected < 1.0);
         for (weight, expected) in [(1.0, expected), (0.0, 1.0)] {
             let mut stats = RolloutStats::default();
@@ -239,7 +272,7 @@ mod tests {
                 &mut StdRng::seed_from_u64(0),
                 &mut stats,
             );
-            assert_eq!(value, Some(expected));
+            assert_eq!(value.map(|v| v.value), Some(expected));
             assert_eq!(stats.wins, 4);
         }
     }

@@ -126,7 +126,12 @@ Search defaults to `--score-weight 0.5`, using
 `(1-weight)*outcome + weight*normalized_score`: equal bounded contributions.
 Weight 1 is score-only and 0 outcome-only. This replaces the old relative-weight
 formula; native fingerprints change. Terminal, neural and completed-rollout
-values share the objective. Old policy/value-only ONNX graphs are rejected.
+values share the objective. Known terminal jigos count as a loss for both players;
+search preserves their shared penalty through backups instead of negating it.
+At weight 0.5 an empty-board jigo is -0.5 for each. Ordinary neural leaves retain
+sign-flipping, assuming negligible unobserved draw probability; no network head is
+added. Actual results and ratings still count jigo as a draw.
+Old policy/value-only ONNX graphs are rejected.
 
 Neural and unguided `--engine mcts` share PUCT, progressive widening, side-to-move
 backup signs, terminal scoring, and visit-count move sampling. Terminal outcomes

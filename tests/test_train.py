@@ -579,6 +579,47 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(captured["python_rng"], random.Random(123).getstate())
         self.assertFalse(torch.equal(captured["torch_rng"], parent["rng_cpu"]))
 
+    def test_jigo_objective_warm_start_preserves_architecture_weights_and_momentum(self):
+        checkpoint = self.run_training(self.root / "parent")
+        parent = torch.load(checkpoint, weights_only=True)
+        del parent["outcome_semantics"]  # Historical draw-zero checkpoint.
+        legacy = self.root / "legacy.pt"
+        atomic_checkpoint(legacy, parent)
+        before = legacy.read_bytes()
+        with self.assertRaisesRegex(ValueError, "use --warm-start"):
+            self.run_training(self.root, epochs=2, resume=legacy)
+        original_phase = trainer.run_phase
+        captured = {}
+
+        def phase(model, optimizer, *args):
+            if not captured:
+                captured["model"] = copy.deepcopy(model.state_dict())
+                captured["optimizer"] = copy.deepcopy(optimizer.state_dict())
+            return original_phase(model, optimizer, *args)
+
+        with patch.object(trainer, "run_phase", side_effect=phase):
+            warmed = self.run_training(
+                self.root / "jigo",
+                warm_start=legacy,
+                extra=["--warm-start-optimizer", "keep"],
+            )
+        self.assertEqual(captured["model"].keys(), parent["model"].keys())
+        for name, value in parent["model"].items():
+            torch.testing.assert_close(captured["model"][name], value, atol=0, rtol=0)
+        for key, state in parent["optimizer"]["state"].items():
+            torch.testing.assert_close(
+                captured["optimizer"]["state"][key]["momentum_buffer"],
+                state["momentum_buffer"],
+                atol=0,
+                rtol=0,
+            )
+        saved = torch.load(warmed, weights_only=True)
+        self.assertEqual(saved["outcome_semantics"], "jigo-loss-v1")
+        self.assertTrue(saved["initialization"]["outcome_change"]["architecture_unchanged"])
+        self.assertEqual(saved["split_history"], parent["split_history"])
+        self.assertEqual(legacy.read_bytes(), before)
+        self.run_training(warmed.parent, epochs=2, resume=warmed)
+
     def test_explicit_value_activation_warm_start_keeps_weights_momentum_and_provenance(self):
         checkpoint = self.run_training(
             self.root / "parent", epochs=2, extra=["--value-activation", "relu"]

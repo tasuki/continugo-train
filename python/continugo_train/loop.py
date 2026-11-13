@@ -348,6 +348,11 @@ def verify_export(directory, checkpoint, saved):
         "progress": checkpoint_progress(saved),
         "config": saved["config"],
         "feature_spec": saved["feature_spec"],
+        **(
+            {"outcome_semantics": saved["outcome_semantics"]}
+            if "outcome_semantics" in saved
+            else {}
+        ),
     }
     for name in ["encoder.onnx", "policy.onnx"]:
         graph = onnx.load(directory / name)

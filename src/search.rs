@@ -114,6 +114,32 @@ impl SearchResult {
     }
 }
 
+/// Internal search evidence, not an additional network output. Only observed
+/// terminal jigos contribute a shared penalty; neural estimates remain scalar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct SearchValue {
+    value: f64,
+    jigo_penalty: f64,
+}
+
+impl From<f64> for SearchValue {
+    fn from(value: f64) -> Self {
+        Self {
+            value,
+            jigo_penalty: 0.0,
+        }
+    }
+}
+
+impl SearchValue {
+    fn flipped(self) -> Self {
+        Self {
+            value: -self.value - 2.0 * self.jigo_penalty,
+            ..self
+        }
+    }
+}
+
 struct Edge {
     action: Action,
     child: Node,
@@ -124,10 +150,11 @@ struct Node {
     visits: u32,
     // Always from this node's side-to-move perspective, not its parent's.
     value_sum: f64,
+    jigo_penalty_sum: f64,
     value_visits: u32,
     // Exact utility of a terminal child, available without inventing visit counts.
     // A winning pass never suppresses higher-scoring continuations.
-    terminal_value: Option<f64>,
+    terminal_value: Option<SearchValue>,
     proposals: Proposals,
     prepared: OnceLock<PreparedGame>,
     children: Vec<Edge>,
@@ -142,6 +169,7 @@ impl Node {
             game,
             visits: 0,
             value_sum: 0.0,
+            jigo_penalty_sum: 0.0,
             value_visits: 0,
             terminal_value: None,
             proposals: Proposals::new(rng),
@@ -174,10 +202,10 @@ impl Node {
         config: &SearchConfig,
         rng: &mut impl Rng,
         stats: &mut RolloutStats,
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<SearchValue>, String> {
         if self.game.is_finished() {
             return Ok(
-                self.update_estimate(Some(terminal_utility(&self.game, config.score_weight)))
+                self.update_estimate(Some(terminal_search_value(&self.game, config.score_weight)))
             );
         }
         self.expand_pass(config, rng)?;
@@ -195,7 +223,8 @@ impl Node {
                 Some(
                     evaluator
                         .estimate(&self.game)?
-                        .utility(config.score_weight)?,
+                        .utility(config.score_weight)?
+                        .into(),
                 )
             };
             return Ok(self.update_estimate(value));
@@ -226,7 +255,7 @@ impl Node {
                 .unwrap()
                 .child
                 .simulate_neural(evaluator, config, rng, stats)?
-                .map(|v| -v);
+                .map(SearchValue::flipped);
             return Ok(self.update_estimate(value));
         }
         let placement_weight: f64 = self
@@ -250,8 +279,8 @@ impl Node {
                 } else {
                     placement / (self.children.len() - 1) as f64
                 };
-                let score =
-                    -edge.child.mean() + exploration * prior / (1.0 + f64::from(edge.child.visits));
+                let score = edge.child.opponent_mean()
+                    + exploration * prior / (1.0 + f64::from(edge.child.visits));
                 (index, score, rng.random::<u64>())
             })
             .max_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)))
@@ -260,7 +289,7 @@ impl Node {
         let value = self.children[best]
             .child
             .simulate_neural(evaluator, config, rng, stats)?
-            .map(|v| -v);
+            .map(SearchValue::flipped);
         Ok(self.update_estimate(value))
     }
 
@@ -272,7 +301,7 @@ impl Node {
             let next = self.game.pass()?;
             let terminal = next
                 .is_finished()
-                .then(|| terminal_utility(&next, config.score_weight));
+                .then(|| terminal_search_value(&next, config.score_weight));
             let mut child = Node::new(next, rng);
             child.terminal_value = terminal;
             self.children.push(Edge {
@@ -283,10 +312,11 @@ impl Node {
         Ok(())
     }
 
-    fn update_estimate(&mut self, value: Option<f64>) -> Option<f64> {
+    fn update_estimate(&mut self, value: Option<SearchValue>) -> Option<SearchValue> {
         self.visits += 1;
         if let Some(value) = value {
-            self.value_sum += value;
+            self.value_sum += value.value;
+            self.jigo_penalty_sum += value.jigo_penalty;
             self.value_visits += 1;
         }
         value
@@ -294,7 +324,7 @@ impl Node {
 
     fn mean(&self) -> f64 {
         if let Some(value) = self.terminal_value {
-            return value;
+            return value.value;
         }
         if self.value_visits == 0 {
             0.0 // Explicit lack of evidence, not an observed draw.
@@ -303,19 +333,29 @@ impl Node {
         }
     }
 
+    fn opponent_mean(&self) -> f64 {
+        if let Some(value) = self.terminal_value {
+            value.flipped().value
+        } else if self.value_visits == 0 {
+            0.0
+        } else {
+            -self.mean() - 2.0 * self.jigo_penalty_sum / f64::from(self.value_visits)
+        }
+    }
+
     fn simulate(
         &mut self,
         config: &SearchConfig,
         rng: &mut impl Rng,
         stats: &mut RolloutStats,
-    ) -> Option<f64> {
+    ) -> Option<SearchValue> {
         if self.game.is_finished() {
-            let value = terminal_utility(&self.game, config.score_weight);
+            let value = terminal_search_value(&self.game, config.score_weight);
             return self.update_estimate(Some(value));
         }
         self.expand_pass(config, rng).expect("unfinished game");
         if self.visits == 0 {
-            let value = config.rollout.as_ref().map_or(Some(0.0), |rollout| {
+            let value = config.rollout.as_ref().map_or(Some(0.0.into()), |rollout| {
                 rollout::evaluate(
                     &self.game,
                     rollout,
@@ -357,7 +397,8 @@ impl Node {
             .iter()
             .enumerate()
             .map(|(index, edge)| {
-                let score = -edge.child.mean() + exploration / (1.0 + f64::from(edge.child.visits));
+                let score =
+                    edge.child.opponent_mean() + exploration / (1.0 + f64::from(edge.child.visits));
                 (index, score, rng.random::<u64>())
             })
             .max_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)))
@@ -366,7 +407,7 @@ impl Node {
         let value = self.children[best]
             .child
             .simulate(config, rng, stats)
-            .map(|v| -v);
+            .map(SearchValue::flipped);
         self.update_estimate(value)
     }
 }
@@ -489,7 +530,7 @@ pub fn search_neural(
     let mut root = Node::new(game.clone(), rng);
     let value = root.evaluate_neural(evaluator, config, rng)?;
     // In rollout mode the network supplies policy only, never leaf values.
-    root.update_estimate(config.rollout.is_none().then_some(value));
+    root.update_estimate(config.rollout.is_none().then_some(value.into()));
     let mut rollout_stats = RolloutStats::default();
     for _ in 0..config.simulations {
         root.simulate_neural(evaluator, config, rng, &mut rollout_stats)?;
@@ -526,8 +567,8 @@ pub fn black_outcome(game: &Game) -> f64 {
     }
 }
 
-/// Authoritative terminal heads, in the terminal side-to-move perspective.
-fn terminal_estimate(game: &Game) -> LeafEstimate {
+/// Authoritative terminal heads and actual jigo flag, in side-to-move perspective.
+fn terminal_estimate(game: &Game) -> (LeafEstimate, bool) {
     assert!(
         game.is_finished(),
         "terminal utility requires natural completion"
@@ -538,15 +579,28 @@ fn terminal_estimate(game: &Game) -> LeafEstimate {
         territory::Outcome::Win(color, _) => color_sign(color),
     };
     let sign = color_sign(game.on_move());
-    LeafEstimate {
-        value: sign * outcome,
-        score: sign * crate::targets::normalized_score(areas),
+    (
+        LeafEstimate {
+            value: if outcome == 0.0 { -1.0 } else { sign * outcome },
+            score: sign * crate::targets::normalized_score(areas),
+        },
+        outcome == 0.0,
+    )
+}
+
+fn terminal_search_value(game: &Game, weight: f64) -> SearchValue {
+    let (estimate, jigo) = terminal_estimate(game);
+    SearchValue {
+        value: estimate.utility(weight).expect("valid score weight"),
+        jigo_penalty: if jigo { 1.0 - weight } else { 0.0 },
     }
 }
 
 /// Terminal, neural and rollout estimates share the same objective.
+#[cfg(test)]
 fn terminal_utility(game: &Game, weight: f64) -> f64 {
     terminal_estimate(game)
+        .0
         .utility(weight)
         .expect("valid terminal estimate and score weight")
 }
@@ -622,11 +676,13 @@ mod tests {
         let mut terminal = Node::new(game.pass().unwrap(), &mut rng);
         // Black passes; White is to move in the finished Black win.
         assert_eq!(
-            terminal.simulate(
-                &SearchConfig::default(),
-                &mut rng,
-                &mut RolloutStats::default()
-            ),
+            terminal
+                .simulate(
+                    &SearchConfig::default(),
+                    &mut rng,
+                    &mut RolloutStats::default()
+                )
+                .map(|v| v.value),
             Some(-1.0)
         );
         let config = SearchConfig {
@@ -687,7 +743,7 @@ mod tests {
         let value = root
             .evaluate_neural(&mut evaluator, &config, &mut rng)
             .unwrap();
-        root.update_estimate(Some(value));
+        root.update_estimate(Some(value.into()));
         for _ in 0..2 {
             root.simulate_neural(
                 &mut evaluator,
@@ -728,7 +784,8 @@ mod tests {
                     &mut rng,
                     &mut RolloutStats::default()
                 )
-                .unwrap(),
+                .unwrap()
+                .map(|v| v.value),
             Some(-1.0)
         );
         assert_eq!(evaluator.calls, 3);
@@ -888,14 +945,14 @@ mod tests {
             let mut child = Node::new(action.apply(&game).unwrap(), &mut rng);
             child.importance = 1.0;
             // This continuation has already received one real score estimate.
-            child.update_estimate(Some(-0.9));
+            child.update_estimate(Some((-0.9).into()));
             child.neural = Some(SampledPolicy {
                 pass: 1.0,
                 placement: 0.0,
                 candidates: Vec::new(),
             });
             root.children.push(Edge { action, child });
-            root.update_estimate(Some(0.0));
+            root.update_estimate(Some(0.0.into()));
             root.neural = Some(SampledPolicy {
                 pass: 0.999,
                 placement: 0.001,
@@ -1002,10 +1059,11 @@ mod tests {
                         score: 1.0,
                     }
                     .utility(config.score_weight)
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                 ));
                 root.children.push(Edge { action, child });
-                root.update_estimate(Some(-1.0));
+                root.update_estimate(Some((-1.0).into()));
                 root.neural = Some(SampledPolicy {
                     pass: 0.5,
                     placement: 0.5,
@@ -1021,7 +1079,7 @@ mod tests {
                     } else {
                         root.simulate(&config, &mut rng, &mut stats)
                     };
-                    assert_eq!(backed, Some(pass_value));
+                    assert_eq!(backed.map(|v| v.value), Some(pass_value));
                 }
                 assert_eq!(root.children[0].action, Action::PASS);
                 assert_eq!(root.children[0].child.visits, 2);
@@ -1091,7 +1149,7 @@ mod tests {
     fn unknown_rollouts_do_not_dilute_completed_value_evidence() {
         let mut node = Node::new(Game::default(), &mut StdRng::seed_from_u64(8));
         node.update_estimate(None);
-        node.update_estimate(Some(1.0));
+        node.update_estimate(Some(1.0.into()));
         assert_eq!(node.visits, 2);
         assert_eq!(node.value_visits, 1);
         assert_eq!(node.mean(), 1.0);
@@ -1209,7 +1267,10 @@ mod tests {
         };
         node.expand_pass(&config, &mut rng).unwrap();
         let u = terminal_utility(&terminal, 1.0);
-        assert_eq!(node.children[0].child.terminal_value, Some(u));
+        assert_eq!(
+            node.children[0].child.terminal_value.map(|v| v.value),
+            Some(u)
+        );
         assert_eq!(node.children[0].child.visits, 0);
         assert_eq!(node.children[0].child.value_visits, 0);
         assert_eq!(node.children[0].child.mean(), u);
@@ -1219,7 +1280,84 @@ mod tests {
             crate::targets::normalized_score(territory::areas(terminal.position().stones()));
         assert_eq!(u, color_sign(terminal.on_move()) * score);
         let draw = Game::default().pass().unwrap().pass().unwrap();
-        assert_eq!(terminal_utility(&draw, 0.3), 0.0);
+        assert_eq!(terminal_utility(&draw, 0.3), -0.7);
+    }
+
+    #[test]
+    fn known_jigo_stays_a_loss_through_backups_and_mixed_evidence() {
+        let mut rng = StdRng::seed_from_u64(41);
+        let terminal = Game::default().pass().unwrap().pass().unwrap();
+        assert_eq!(black_outcome(&terminal), 0.0); // The recorded result stays a draw.
+        for weight in [0.0, 0.5, 1.0] {
+            let expected = -(1.0 - weight);
+            let value = terminal_search_value(&terminal, weight);
+            assert_eq!(value.value, expected);
+            assert_eq!(value.flipped().value, expected);
+            assert_eq!(value.flipped().flipped(), value);
+            let mut parent = Node::new(Game::default().pass().unwrap(), &mut rng);
+            parent.update_estimate(Some(value.flipped()));
+            let mut root = Node::new(Game::default(), &mut rng);
+            root.update_estimate(Some(value.flipped().flipped()));
+            assert_eq!(parent.mean(), expected);
+            assert_eq!(parent.opponent_mean(), expected);
+            assert_eq!(root.mean(), expected);
+            assert_eq!(root.opponent_mean(), expected);
+            let config = SearchConfig {
+                score_weight: weight,
+                ..Default::default()
+            };
+            parent.expand_pass(&config, &mut rng).unwrap();
+            assert_eq!(parent.children[0].child.opponent_mean(), expected);
+        }
+        let mut node = Node::new(Game::default(), &mut rng);
+        node.update_estimate(Some(terminal_search_value(&terminal, 0.5)));
+        node.update_estimate(Some(0.75.into())); // Ordinary scalar neural evidence.
+        node.update_estimate(None); // Unknown rollouts must not dilute either component.
+        assert_eq!(node.mean(), 0.125);
+        assert_eq!(node.opponent_mean(), -0.625);
+        assert_eq!(node.value_visits, 2);
+        assert_eq!(SearchValue::from(0.75).flipped().value, -0.75);
+    }
+
+    #[test]
+    fn both_searches_prefer_unknown_continuation_to_an_immediate_jigo() {
+        let config = SearchConfig {
+            cpuct: 0.001,
+            widening: 0.01,
+            ..Default::default()
+        };
+        for neural in [false, true] {
+            let mut rng = StdRng::seed_from_u64(11);
+            let game = Game::default().pass().unwrap();
+            let mut root = Node::new(game.clone(), &mut rng);
+            root.expand_pass(&config, &mut rng).unwrap();
+            let action = Action::from_index(700_700).unwrap();
+            let mut child = Node::new(action.apply(&game).unwrap(), &mut rng);
+            child.importance = 1.0;
+            root.children.push(Edge { action, child });
+            root.update_estimate(Some(0.0.into()));
+            root.neural = Some(SampledPolicy {
+                pass: 0.5,
+                placement: 0.5,
+                candidates: vec![],
+            });
+            if neural {
+                root.simulate_neural(
+                    &mut FixedEvaluator { calls: 0 },
+                    &config,
+                    &mut rng,
+                    &mut RolloutStats::default(),
+                )
+                .unwrap();
+            } else {
+                root.simulate(&config, &mut rng, &mut RolloutStats::default());
+            }
+            assert_eq!(
+                root.children[0].child.visits, 0,
+                "jigo must not become a win"
+            );
+            assert_eq!(root.children[1].child.visits, 1);
+        }
     }
 
     #[test]

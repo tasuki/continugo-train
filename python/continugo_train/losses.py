@@ -84,7 +84,10 @@ def policy_value_loss(
     # Normalize over enabled positions, not all value samples. All-cheap batches
     # retain a differentiable zero policy loss and full value/auxiliary losses.
     policy = (per_position * policy_weights).sum() / policy_weights.sum().clamp_min(1)
-    value = F.mse_loss(values, outcomes)
+    # Keep authoritative replay/cache results unchanged (jigo = 0). The
+    # learning objective treats that result as a loss for either player.
+    value_targets = torch.where(outcomes == 0, -torch.ones_like(outcomes), outcomes)
+    value = F.mse_loss(values, value_targets)
     return Losses(policy + value, policy, value)
 
 

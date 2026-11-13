@@ -254,7 +254,24 @@ class LossTests(unittest.TestCase):
             torch.tensor([[2.0, 3.0]]),
             torch.zeros(1),
         )
-        torch.testing.assert_close(losses.total, torch.tensor(0.0))
+        torch.testing.assert_close(losses.policy, torch.tensor(0.0))
+        torch.testing.assert_close(losses.value, torch.tensor(1.0))  # Jigo's target is -1.
+
+    def test_jigo_targets_are_losses_for_either_player_without_mutating_raw_outcomes(self):
+        outcomes = torch.tensor([0.0, 0.0, 1.0, -1.0])
+        indices = torch.zeros(4, 1, dtype=torch.int64)
+        visits = torch.ones(4, 1)
+        correct = torch.tensor([-1.0, -1.0, 1.0, -1.0], requires_grad=True)
+        loss = policy_value_loss(torch.zeros(4, 1), correct, indices, visits, outcomes)
+        self.assertEqual(loss.value.item(), 0)
+        self.assertEqual(outcomes.tolist(), [0, 0, 1, -1])
+        predicted = torch.zeros(4, requires_grad=True)
+        loss = policy_value_loss(torch.zeros(4, 1), predicted, indices, visits, outcomes)
+        loss.value.backward()
+        self.assertGreater(predicted.grad[0].item(), 0)
+        self.assertGreater(predicted.grad[1].item(), 0)
+        self.assertLess(predicted.grad[2].item(), 0)
+        self.assertGreater(predicted.grad[3].item(), 0)
 
     def test_invalid_or_illegal_targets_fail_instead_of_producing_nan(self):
         logits = torch.tensor([[0.0, -torch.inf, 0.0]])

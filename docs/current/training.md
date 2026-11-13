@@ -147,8 +147,12 @@ short-hash suffix; inner epoch/checkpoint filenames stay stable.
 ## Data loading and validation
 
 - Rust validates **every** move/policy in each SGF and checks scored RE against
-  authoritative final scoring. Value targets are side-to-move win/loss/draw,
-  not score margins. Missing RE means no value label, even after two passes.
+  authoritative final scoring. Value targets are +1 for a win and -1 for a loss
+  **or jigo**, for either player; the single value head is unchanged. SGFs and
+  matching feature caches retain the actual draw result (0), remapped at loss time;
+  no data rewrite is needed. Missing RE means no value label, even after two passes.
+  New checkpoints/exports record `outcome_semantics: jigo-loss-v1`. Adopt older
+  checkpoints via `--warm-start` (optionally keeping momentum), not strict resume.
 - A canonical identity hashes board size plus decoded plays. Copies with changed
   names/comments/seeds cannot land in both train and validation. Duplicate games
   use one deterministic representative (lowest raw-file hash, then path).
