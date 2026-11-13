@@ -5,30 +5,7 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 Use [KataGo's self-play training](https://github.com/lightvector/KataGo/blob/master/SelfplayTraining.md)
 as a reference, adapting it to ContinuGo.
 
-## Priority: improve training generalization
-
-The [network-size comparison](history/2026-11-11-network-size-comparison.md)
-showed overfitting across all four architectures and heads. Keep 4×32 as the
-baseline; prioritize these checks over larger networks or more passes on the
-same games. Follow-up experiments need explicit budgets before launch.
-
-- [ ] Audit generalization measurements: evaluate larger fixed train/validation
-  probes in inference mode; compare split distributions (source rounds, game
-  lengths, outcomes and scores); verify targets, masks and loss denominators.
-  Test whether BatchNorm-statistics recalibration explains validation spikes.
-- [ ] Test data scarcity with a fixed-recipe learning curve over progressively
-  more unique, diverse games, keeping a common game-disjoint holdout. Distinguish
-  new-data gains from gains due merely to extra position exposures.
-- [ ] Test fewer passes per replay window with fresh self-play data rather than
-  repeatedly fitting a static corpus; choose budgets from held-out curves,
-  without assuming the observed 2–3-epoch optimum transfers to other corpora.
-- [ ] If needed after the audits, test stronger weight decay, lower/decaying
-  learning rates and auxiliary-loss reweighting separately. Compare per-head
-  held-out progress and inference-mode gaps, not training loss alone.
-
 ## Later, only for a measured bottleneck
-
-None of these performance experiments blocks the generalization work above.
 
 - [ ] Trial a certified no-capture summary fast path in shared rules, reusing
   prepared liberty witnesses to avoid discarded child construction/repeated scans.
