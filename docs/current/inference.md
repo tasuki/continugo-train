@@ -212,15 +212,15 @@ coordinate sampling inside selected cells; it does not recover omitted cells.
 
 ### Randomized policy-search caps
 
-The training loop enables randomized 32/256 budgets by default. Standalone
+The training loop enables randomized 100/400 budgets by default. Standalone
 self-play retains fixed-budget behavior unless explicitly enabled:
 
 ```sh
-mise run neural-selfplay -- --model scratch/model-001 --simulations 32 \
-  --policy-simulations 256 --policy-search-probability 0.25 --output scratch/mixed-budget
+mise run neural-selfplay -- --model scratch/model-001 --simulations 100 \
+  --policy-simulations 400 --policy-search-probability 0.25 --output scratch/mixed-budget
 ```
 
-The expensive budget is the **total**, not 256 additional simulations. A separate
+The expensive budget is the **total**, not 400 additional simulations. A separate
 seeded RNG chooses each cap before search. Cheap moves still have at least 32
 simulations, preserve their actual visit counts in SGF, and train only the
 value/score/ownership heads. Only expensive moves supply policy supervision.

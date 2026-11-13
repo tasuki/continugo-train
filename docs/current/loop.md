@@ -92,11 +92,11 @@ SGFs live under `artifacts/sgfs/YYYY-MM-DD/`, with no duplicate game ledger. See
 
 ## Randomized policy-search budget
 
-New loops default to **32 simulations on 75% of moves and 256 on 25%**:
-`--simulations 32 --policy-simulations 256 --policy-search-probability 0.25`.
+New loops default to **100 simulations on 75% of moves and 400 on 25%**:
+`--simulations 100 --policy-simulations 400 --policy-search-probability 0.25`.
 The cap is sampled before search from a separate per-game seeded RNG, independent
 of position evaluation, search RNG consumption and worker scheduling. Expected
-work is 88 simulations/move, not a wall-time guarantee.
+work is 175 simulations/move, not a wall-time guarantee.
 
 Only expensive positions contribute policy cross-entropy. Cheap positions retain
 outcome, final-score and ownership supervision, subject to sampling caps and natural

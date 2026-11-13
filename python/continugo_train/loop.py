@@ -43,8 +43,8 @@ class LoopConfig:
     size_weights: str = DEFAULT_SIZE_WEIGHTS
     games_per_iteration: int = 10
     seed: int = 0
-    simulations: int = 32
-    policy_simulations: int = 256
+    simulations: int = 100
+    policy_simulations: int = 400
     policy_search_probability: float = 0.25
     max_moves: int = 512
     cpuct: float = 1.5

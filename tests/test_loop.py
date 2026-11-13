@@ -294,7 +294,7 @@ class LoopTests(LoopHarness):
         defaults = loop.LoopConfig()
         self.assertEqual(
             (defaults.simulations, defaults.policy_simulations, defaults.policy_search_probability),
-            (32, 256, 0.25),
+            (100, 400, 0.25),
         )
         defaults.validate()
         self.assertEqual(defaults.feature_cache, "auto")
@@ -305,7 +305,7 @@ class LoopTests(LoopHarness):
         iteration = state["iterations"][0]
         for record in iteration["games"]:
             info = inspect_game(output / record["path"])
-            self.assertEqual(info["policy_visit_totals"], [256, 32, 32])
+            self.assertEqual(info["policy_visit_totals"], [400, 32, 32])
             self.assertEqual(info["policy_training_plies"], [0])
             self.assertEqual(info["eligible_plies"], [0, 1, 2])
             self.assertEqual(record["policy_positions"], 1)
