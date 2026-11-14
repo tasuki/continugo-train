@@ -34,8 +34,11 @@ options `--top-cells` and `--exploration-cells` (both positive). Exploration use
 the game's search RNG seed and position, independent of batching/cache order.
 Thus different games can explore different cells even at the same opening.
 
-Only selected cells receive exact move analysis: every integer coordinate inside
-them, once. No overlapping windows or full-board exact scan. Within each cell,
+Default schema-5 inference uses the [geometry proposal policy](geometry-proposals.md)
+to choose coordinates inside selected cells; only those coordinates receive
+exact move analysis. It reuses the same encoder/scorer without changing the
+training contract. Legacy schema-4 models and `infer --complete-cells` analyze
+every integer coordinate inside selected cells. No overlapping windows or full-board exact scan. Within each cell,
 the coordinate scorer bilinearly samples 16-channel projected coarse context,
 adds a shared linear projection of eleven exact features, applies ReLU, and reads
 out a scalar. Schema-5 column 6 is binary `splits_friendly_region`: using actual
@@ -58,11 +61,13 @@ extraction cost.
 ## Probabilities and training objective
 
 The coarse softmax covers **all cells and pass**. Each nonempty cell has a local
-softmax over all its exact legal coordinates. Training uses hierarchical weights
+softmax over all its exact legal coordinates for training. Training uses hierarchical weights
 `P(cell) * P(coordinate | cell)`; pass uses its global coarse probability.
 
 Native inference preserves this **global pass/placement split**. Let `S` be the
-selected cells containing at least one legal coordinate, and `p = P(pass)`:
+selected cells containing at least one retained legal coordinate, and `p = P(pass)`.
+Native local probabilities are normalized over each cell's shortlisted legal
+coordinates, not the complete training domain:
 
 - Pass retains probability `p`.
 - Selected cells divide the entire placement mass `1-p`, proportional to their
@@ -94,15 +99,15 @@ Training uses genuine sparse MCTS visit counts and natural game outcomes:
 `joint_loss` adds the auxiliary terms to `hierarchical_policy_value_loss`, which
 implements this factorized proposal objective.
 It does **not** apply another candidate-only softmax. The objective is not the
-inference-time CE: inference conditions the placement stratum on selected nonempty
-cells while preserving the global coarse pass probability. Coarse proposals can put mass on empty
+inference-time CE: inference conditions placement on selected nonempty cells and
+shortlisted coordinates while preserving the global coarse pass probability. Coarse proposals can put mass on empty
 cells during learning; no claim of an exhaustively legal-normalized distribution
 is made. Illegal positive targets are rejected. Ragged batches pad exact rows with
 false legality and remap pass to the final column; pass-only targets need no rows.
 
 Compared with a single candidate-union softmax, this hierarchy provides direct
 whole-board supervision for selection without scoring a million exact moves or
-estimating their partition function. Coverage/strength remain experimental.
+estimating their partition function. Coverage and playing strength require validation.
 
 ## Format and benchmarks
 

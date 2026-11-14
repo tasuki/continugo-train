@@ -38,6 +38,12 @@ struct Args {
         default_value = "0,999,1000,999999,500500,500501,1000000"
     )]
     actions: Vec<u32>,
+    /// Override the schema-5 geometry soft budget (default 16, range 1..=128).
+    #[arg(long, conflicts_with = "complete_cells")]
+    geometry_budget: Option<usize>,
+    /// Analyze complete selected cells instead of using geometry proposals.
+    #[arg(long)]
+    complete_cells: bool,
     #[arg(long)]
     value_only: bool,
     #[arg(long, default_value_t = 0)]
@@ -57,6 +63,10 @@ struct Args {
 }
 
 fn report(mut value: serde_json::Value, args: &Args, evaluator: &OnnxEvaluator, seconds: f64) {
+    value["proposal_policy"] = evaluator.proposal_policy().into();
+    if let Some(budget) = evaluator.geometry_budget() {
+        value["geometry_budget"] = budget.into();
+    }
     if args.profile_json {
         value["seconds"] = seconds.into();
         value["iterations"] = args.iterations.into();
@@ -85,6 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.device,
     )?;
     evaluator.configure_features(args.feature_threads, args.cache_positions)?;
+    if args.complete_cells {
+        evaluator.configure_geometry(None)?;
+    } else if let Some(budget) = args.geometry_budget {
+        evaluator.configure_geometry(Some(budget))?;
+    }
     evaluator.profile_coarse = args.profile_json;
     let text = std::fs::read_to_string(&args.sgf)?;
     let position = load_position(&text, args.ply)?;
@@ -158,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if args.value_only {
             evaluator.value(&position.game)?;
         } else {
-            evaluator.evaluate(&position.game)?;
+            evaluator.evaluate_seeded(&position.game, args.seed)?;
         }
     }
     evaluator.stats = Default::default();
@@ -180,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut last = None;
     for _ in 0..args.iterations {
-        last = Some(evaluator.evaluate(&position.game)?);
+        last = Some(evaluator.evaluate_seeded(&position.game, args.seed)?);
     }
     let seconds = started.elapsed().as_secs_f64();
     let evaluation = last.unwrap();

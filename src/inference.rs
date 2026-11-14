@@ -44,8 +44,8 @@ pub struct Evaluation {
     /// the full placement mass, preserving the global coarse P(pass).
     /// With no selected legal placement, pass has probability one.
     pub logits: Vec<f32>,
-    /// Exact legality inside selected cells; zero also means unselected, not a
-    /// claim of illegality across the whole board.
+    /// Exact legality at analyzed coordinates; zero also means unselected or
+    /// unchecked (including pruned coordinates inside geometry-mode cells).
     pub legal: Vec<u8>,
 }
 
@@ -158,6 +158,11 @@ pub struct InferenceStats {
     /// Actual exact rows, excluding padding; no million-coordinate scan.
     pub exact_coordinates: u64,
     pub selected_cells: u64,
+    pub proposal_seconds: f64,
+    pub proposal_preliminary: u64,
+    pub proposal_overflow: u64,
+    /// Disjoint proposal-source/shared stages; populated only with profile_coarse.
+    pub proposal_stages: crate::geometry_proposals::ProposalProfile,
     /// Worker queue/collection delay and end-to-end request latency, summed.
     pub queue_seconds: f64,
     pub request_seconds: f64,
@@ -166,7 +171,7 @@ pub struct InferenceStats {
     pub cache_misses: u64,
     pub cache_evictions: u64,
     pub cache_entries: usize,
-    /// Encoded spatial + cell-logit payloads; excludes Game keys/allocator overhead.
+    /// Encoded context + optional proposal geometry; excludes Game keys/allocator overhead.
     pub cache_bytes: usize,
 }
 
@@ -178,8 +183,9 @@ pub struct OnnxEvaluator {
     cache: ContextCache,
     pub device: InferenceDevice,
     pub stats: InferenceStats,
-    /// Opt-in per-group CPU clocks, independent of cache configuration.
+    /// Opt-in coarse-group and geometry-proposal stage clocks, independent of cache.
     pub profile_coarse: bool,
+    geometry_budget: Option<usize>,
 }
 
 impl OnnxEvaluator {
@@ -189,6 +195,18 @@ impl OnnxEvaluator {
 
     pub fn samples_per_diameter(&self) -> usize {
         self.metadata.feature_spec.samples_per_diameter
+    }
+
+    pub fn geometry_budget(&self) -> Option<usize> {
+        self.geometry_budget
+    }
+
+    pub fn proposal_policy(&self) -> &'static str {
+        if self.geometry_budget.is_some() {
+            crate::geometry_proposals::VERSION
+        } else {
+            "complete-cells-v1"
+        }
     }
 
     pub fn load(
@@ -227,6 +245,70 @@ impl OnnxEvaluator {
         self.stats.cache_entries = 0;
         self.stats.cache_bytes = 0;
         Ok(())
+    }
+
+    /// Select geometry proposals with a budget, or complete cells with None.
+    /// Changing modes clears contexts so geometry is never missing on a cache hit.
+    pub fn configure_geometry(&mut self, budget: Option<usize>) -> Result<(), String> {
+        if budget.is_some_and(|b| b == 0 || b > 128) {
+            return Err("geometry budget must be in 1..=128".into());
+        }
+        if budget.is_some() && self.feature_schema() != crate::features::SCHEMA_VERSION {
+            return Err("geometry proposals require feature schema 5".into());
+        }
+        if self.geometry_budget != budget {
+            self.cache.clear();
+            self.stats.cache_entries = 0;
+            self.stats.cache_bytes = 0;
+        }
+        self.geometry_budget = budget;
+        Ok(())
+    }
+
+    /// The same candidate generator/cell selection as policy inference, for dots
+    /// and coverage diagnostics. No fine features or search are run here.
+    pub fn geometry_shortlist(
+        &mut self,
+        game: &Game,
+        seed: u64,
+    ) -> Result<crate::geometry_proposals::Shortlist, String> {
+        let budget = self
+            .geometry_budget
+            .ok_or("enable geometry proposals first")?;
+        let context = self
+            .contexts(&[game])
+            .map_err(|e| e.to_string())?
+            .pop()
+            .unwrap();
+        let selected = proposals::select(
+            game,
+            &context.cells,
+            self.metadata.config.top_cells,
+            self.metadata.config.exploration_cells,
+            seed,
+        );
+        let started = std::time::Instant::now();
+        let generate = if self.profile_coarse {
+            crate::geometry_proposals::generate_profiled
+        } else {
+            crate::geometry_proposals::generate
+        };
+        let shortlist = generate(
+            game,
+            context.geometry.as_ref().ok_or("missing geometry")?,
+            context.resolution,
+            &selected,
+            budget,
+            seed,
+        )?;
+        self.stats.proposal_seconds += started.elapsed().as_secs_f64();
+        if let Some(profile) = &shortlist.profile {
+            self.stats.proposal_stages.merge(profile);
+        }
+        self.stats.proposal_preliminary += shortlist.preliminary_candidates as u64;
+        self.stats.proposal_overflow += shortlist.protected_overflow as u64;
+        self.stats.selected_cells += selected.len() as u64;
+        Ok(shortlist)
     }
 
     fn load_inner(
@@ -306,6 +388,10 @@ impl OnnxEvaluator {
         {
             return Err("incompatible feature/architecture metadata".into());
         }
+        // Schema 4 retains its original complete-cell behavior. Current models
+        // use direct geometry proposals unless explicitly reconfigured.
+        let geometry_budget = (spec.schema == crate::features::SCHEMA_VERSION)
+            .then_some(crate::geometry_proposals::DEFAULT_BUDGET);
         Ok(Self {
             encoder,
             scorer,
@@ -315,6 +401,7 @@ impl OnnxEvaluator {
             cache: ContextCache::new(64, 32 * 1024 * 1024),
             stats: InferenceStats::default(),
             profile_coarse: false,
+            geometry_budget,
         })
     }
 }

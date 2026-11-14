@@ -12,6 +12,13 @@ pub(super) struct Context {
     pub pass: f32,
     pub value: f64,
     pub score: f64,
+    pub geometry: Option<Arc<crate::geometry_proposals::Geometry>>,
+}
+impl Context {
+    fn bytes(&self) -> usize {
+        (self.spatial.capacity() + self.cells.capacity()) * size_of::<f32>()
+            + self.geometry.as_ref().map_or(0, |g| g.bytes())
+    }
 }
 
 pub(super) struct ContextCache {
@@ -43,17 +50,22 @@ impl ContextCache {
         Some(context)
     }
 
-    /// Return eviction count. The byte budget covers spatial/cell payloads; keys and
-    /// scalar/allocator overhead are additionally bounded by the entry limit.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    /// Return eviction count. Budget includes optional exact proposal geometry;
+    /// keys and scalar/allocator overhead are bounded by the entry limit.
     pub fn insert(&mut self, game: &Game, context: Arc<Context>) -> usize {
-        let bytes = (context.spatial.len() + context.cells.len()) * size_of::<f32>();
+        let bytes = context.bytes();
         if self.capacity == 0 || bytes > self.byte_limit {
             return 0;
         }
         let mut evictions = 0;
         while self.entries.len() >= self.capacity || self.bytes + bytes > self.byte_limit {
             let (_, oldest) = self.entries.pop_front().unwrap();
-            self.bytes -= (oldest.spatial.len() + oldest.cells.len()) * size_of::<f32>();
+            self.bytes -= oldest.bytes();
             evictions += 1;
         }
         self.bytes += bytes;
@@ -75,7 +87,29 @@ mod tests {
             pass: 0.0,
             value: 0.25,
             score: -0.1,
+            geometry: None,
         })
+    }
+
+    #[test]
+    fn geometry_is_included_in_cache_budget_and_clear_drops_it() {
+        use crate::geometry_proposals::{Geometry, GroupGeometry};
+        let game = Game::new(Board::new(9).unwrap());
+        let mut c = context();
+        Arc::get_mut(&mut c).unwrap().geometry = Some(Arc::new(Geometry {
+            groups: Vec::<GroupGeometry>::with_capacity(8),
+        }));
+        let bytes = c.bytes();
+        assert!(bytes > 16);
+        let mut small = ContextCache::new(4, bytes - 1);
+        small.insert(&game, Arc::clone(&c));
+        assert_eq!(small.len(), 0);
+        let mut exact = ContextCache::new(4, bytes);
+        exact.insert(&game, c);
+        assert_eq!(exact.bytes, bytes);
+        exact.clear();
+        assert_eq!(exact.bytes, 0);
+        assert!(exact.get(&game).is_none());
     }
 
     #[test]

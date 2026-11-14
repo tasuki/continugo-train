@@ -107,11 +107,12 @@ opt-in checkpoint replay includes ownership, which production exports omit.
   default is one. Native self-play and `infer` use mimalloc. The standalone feature
   exporter remains serial per process; training uses multiple loader processes.
 - `--cache-positions 64`: host-side LRU of encoded spatial context, cell logits,
-  pass logit, and value. A value query populates context reusable for subsequent value/policy work.
+  pass logit, value and exact per-group proposal geometry. A value query populates
+  context reusable for subsequent value/policy work without generating proposals.
   Keys use exact immutable Game equality, including record/turn/pass history,
   within one frozen model/backend/density. Reconfiguration clears it; terminal
   queries are rejected before lookup. There is no approximate or cross-model reuse.
-- Spatial plus cell-logit payload is capped at 32 MiB; game keys/scalars/allocator overhead are
+- Spatial, cell-logit and retained geometry payloads are capped at 32 MiB; game keys/scalars/allocator overhead are
   separate and bounded by entry count. Oversized contexts are not cached; zero
   positions disables caching. Raw coarse rasters, dense exact rows, and million-
   action logits are not cached. Search retains only small candidate reservoirs.
@@ -184,8 +185,9 @@ compares unguided search against the direct reference without ONNX.
 ### Huge-action-space adaptation
 
 Expanded nodes select **32 top coarse cells plus 8 exploratory cells** by default,
-then compute exact legality/features for every coordinate inside them. Cells do
-not overlap. Exploration is seeded from each tree's RNG, so opening coverage can
+then generate direct geometric proposals inside them for schema-5 models. Only
+those proposals receive exact legality/features. Legacy schema-4 models and
+`infer --complete-cells` analyze complete selected cells. Cells do not overlap. Exploration is seeded from each tree's RNG, so opening coverage can
 vary across games without depending on queue/batch order. Both budgets are pinned
 in model configuration (`--top-cells`, `--exploration-cells` at training/export).
 
@@ -213,7 +215,80 @@ using stratified importance sampling ([Sampled MuZero](https://arxiv.org/abs/210
 A tiny candidate softmax would over-weight pass; weighting policy-sampled moves by
 policy again would double-count it. The correction avoids both mistakes but remains
 a finite-sample approximation, not exhaustive search. This correction concerns
-coordinate sampling inside selected cells; it does not recover omitted cells.
+sampling within the available domain; it does not recover omitted cells or
+coordinates omitted by geometry proposals.
+
+### Geometry proposals
+
+Schema-5 models default to direct **Extend (including Hug) / Join / Capture /
+Random** proposals (`geometry-v2-frontier`), with soft budget 16. This applies to
+neural self-play, arena and `infer`. `infer --geometry-budget N` changes the budget;
+`infer --complete-cells` restores complete-cell analysis for reference comparisons.
+Legacy schema-4 models retain complete-cell behavior. Coarse top/exploratory cells are unchanged; no proposal can leave
+those cells. Group-level reasoning retains complete exact liberty spans from
+coarse extraction, including out-of-cell liberties. Geometry memory counts toward
+the context LRU budget; value-only calls do not generate proposals.
+
+Per friendly group/cell, Extend proposes 1–3 true outward-reach points, always
+reserving a connected hugging point when geometrically available, even inside
+maximum reach. It does not invent cell-corner extensions. Join takes four
+lens-oriented extremes: the two side tips perpendicular to the supporting-stone
+axis plus the two axial extremes, deduplicated; no extra centers. Multiway joins
+use four cardinal extremes. Capture uses complete enemy liberties. Random reserves
+2–4 free points/cell. There is no Restrict/Breathe scoring, large preliminary
+pool, diversity ranking, or padding to a target count. The budget remains soft:
+log overflow instead of silently dropping selected geometric opportunities.
+Only the direct shortlist receives authoritative legality/tactical/splitting
+features. Illegal proposals are removed; adaptive refill is not yet implemented.
+The existing fine NN and normalization operate on this **restricted domain**;
+pass keeps its coarse mass. Training remains complete-cell `cells-v1`, unchanged.
+
+`proposal_seconds`, `proposal_preliminary`, and `proposal_overflow` report extra
+CPU work separately from fine extraction. With `infer --profile-json`,
+`proposal_stages` splits generation into setup, Extend, Join, Capture, Random,
+tagging and finishing; source counts are Extend/Join/Hug/Capture/Random and overlap.
+`proposal_preliminary` now equals the direct pre-legality shortlist size.
+The [old stage breakdown](../history/2026-11-14-geometry-proposal-stages.md) describes
+v1, not the current generator. Coverage of rare splitting moves and playing
+strength need measurement; coordinate
+reduction alone is not evidence of equivalent strength. See the
+[geometry proposal policy](geometry-proposals.md).
+
+For enlarged boards using the shared **ContinuGo embedded viewer**, with legal
+proposal dots or mover-coloured candidate stones (default layer opacity 0.2):
+
+```sh
+OUT="scratch/$(date -u +%Y%m%d-%H%M%S)-geometry-proposals"
+cargo run --bin proposal-view -- --model MODEL --ort-library LIBONNXRUNTIME \
+  --sgf GAME.sgf --ply 35 --budget 16 --output "$OUT/previews"
+```
+
+The new output directory contains `index.html`, a copy of the shared
+`continugo-viewer.js` bundle, and `proposals.json`. Open `index.html` directly;
+no server or network access is needed. Source filters include **Connected hugging**,
+**Extend + Hug**, and **Join — lens extremes**.
+Toggle **Dots / Stones**, adjust stone opacity, and show/hide coarse cells.
+Opacity is applied to the whole candidate layer so overlapping alternatives remain
+translucent. Overlays do not intercept native hover/group/capture previews.
+
+By default the bundle is read from
+`../continugo/frontend/viewer/dist/continugo-viewer.js`, relative to this checkout.
+Build it in the sibling repository with `mise run //frontend:build-viewer` if
+missing, or pass `--viewer-bundle PATH`. The generator copies the built bundle;
+it does not edit or build the sibling repository. SGF is embedded safely in the
+page; native replay is checked against the authoritative Rust position in browser
+tests. Shaded cells are the actual coarse-NN selections; candidates are proposals,
+not final fine-NN/MCTS choices. No output directory, source SGF or model is overwritten.
+
+Browser smoke test (Node 22+ and Chrome; Node 20 needs `--experimental-websocket`):
+
+```sh
+node tests/test_proposal_view.mjs "$OUT/previews/index.html" "$OUT/screenshots"
+```
+
+An optional second argument writes new dots/stones PNG screenshots to that
+directory. The test checks both modes, opacity, every source filter, native replay,
+hover passthrough, and overlay alignment after resizing/offsetting the board.
 
 ### Randomized policy-search caps
 

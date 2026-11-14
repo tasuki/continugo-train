@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geometry move proposals</title>
+<style>
+  :root { color-scheme: light; font: 16px system-ui, sans-serif; color: #222; background: #fbfaf7; }
+  body { max-width: 1500px; margin: 24px auto; padding: 0 20px; }
+  h1 { font-size: 1.6rem; margin-bottom: 8px; }
+  p { line-height: 1.5; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center;
+    padding: 12px; margin: 16px 0; background: #f0eee8; border-radius: 6px; }
+  fieldset { display: inline-flex; gap: 12px; border: 1px solid #bbb; border-radius: 4px; }
+  legend { font-size: .85rem; }
+  select, input, label { font: inherit; }
+  label { display: inline-flex; gap: 6px; align-items: center; }
+  #opacity { width: 110px; }
+  #count { font-variant-numeric: tabular-nums; }
+  .board-stack { position: relative; width: 100%; aspect-ratio: 1; }
+  #position { width: 100%; }
+  #candidate-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #error { color: #a00; }
+</style>
+<h1 id="heading">Geometry move proposals</h1>
+<p id="subtitle"></p>
+<div class="controls">
+  <label>Source <select id="source" aria-label="Proposal source"></select></label>
+  <fieldset><legend>Candidate display</legend>
+    <label><input type="radio" name="mode" value="dots" checked>Dots</label>
+    <label><input type="radio" name="mode" value="stones">Stones</label>
+  </fieldset>
+  <label>Stone opacity <input id="opacity" type="range" min="0.05" max="0.5" step="0.05" value="0.2" disabled>
+    <output id="opacity-value" for="opacity">0.20</output></label>
+  <label><input id="show-cells" type="checkbox" checked>Coarse cells</label>
+  <strong id="count" role="status" aria-live="polite"></strong>
+</div>
+<p id="error" role="alert" hidden></p>
+<div class="board-stack">
+  <div id="position"></div>
+  <svg id="candidate-overlay" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" role="img" aria-label="Geometry proposal overlay">
+    <g id="selected-cells"></g>
+    <g id="candidate-marks"></g>
+  </svg>
+</div>
+<p>The board is the shared <b>ContinuGo embedded viewer</b>. Hover to inspect groups,
+liberties and hypothetical captures. Dots/stones are legal proposals, not final NN
+or MCTS choices. Source categories overlap; shaded cells are the coarse NN selections.</p>
+<p>Stone opacity is applied to the whole candidate layer, so dense overlaps remain
+translucent. Candidate stones show alternative placements, not a simultaneous position.</p>
+<script id="proposal-data" type="application/json">__PROPOSAL_DATA_JSON__</script>
+<script src="continugo-viewer.js"></script>
+<script>
+(() => {
+  'use strict';
+  const data = JSON.parse(document.getElementById('proposal-data').textContent);
+  const source = document.getElementById('source');
+  const opacity = document.getElementById('opacity');
+  const marks = document.getElementById('candidate-marks');
+  const cells = document.getElementById('selected-cells');
+  const svg = (name, attributes) => {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    return node;
+  };
+  document.title = data.title;
+  document.getElementById('heading').textContent = data.title;
+  document.getElementById('subtitle').textContent = data.subtitle;
+  const sources = [
+    ['All', 0], ['Extend', 1], ['Join — lens extremes', 2], ['Connected hugging', 4],
+    ['Extend + Hug', 5], ['Capture', 16], ['Random', 32],
+  ];
+  const matches = (candidate, mask) => (candidate.sources & mask) === mask;
+  for (const [label, mask] of sources) {
+    const option = document.createElement('option');
+    option.value = mask;
+    option.textContent = `${label} (${data.candidates.filter(c => matches(c, mask)).length})`;
+    source.append(option);
+  }
+  for (const cell of data.cells) {
+    cells.append(svg('rect', {
+      x: cell.left - 0.5, y: cell.top - 0.5,
+      width: cell.right - cell.left + 1, height: cell.bottom - cell.top + 1,
+      fill: '#3b82f6', 'fill-opacity': 0.12, stroke: '#3b82f6',
+      'stroke-opacity': 0.35, 'stroke-width': 0.4,
+    }));
+  }
+  function render() {
+    const stones = document.querySelector('input[name="mode"]:checked').value === 'stones';
+    const visible = data.candidates.filter(c => matches(c, Number(source.value)));
+    opacity.disabled = !stones;
+    document.getElementById('opacity-value').value = Number(opacity.value).toFixed(2);
+    marks.setAttribute('opacity', stones ? opacity.value : '1');
+    marks.replaceChildren(...visible.map(candidate => svg('circle', {
+      cx: candidate.action % 1000, cy: Math.floor(candidate.action / 1000),
+      r: stones ? data.position.radius : 2.15,
+      fill: stones ? (data.position.player === 'black' ? '#222' : '#fff') : '#006fe6',
+      stroke: stones ? '#222' : '#fff',
+      'stroke-width': stones ? data.position.radius / 10 : 0.4,
+      'data-action': candidate.action,
+    })));
+    document.getElementById('count').textContent = `${visible.length} / ${data.candidates.length} legal proposals`;
+  }
+  source.addEventListener('change', render);
+  document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', render));
+  opacity.addEventListener('input', render);
+  document.getElementById('show-cells').addEventListener('change', event => {
+    cells.style.display = event.target.checked ? '' : 'none';
+  });
+  try {
+    if (!globalThis.ContinugoViewer) throw Error('Could not load continugo-viewer.js.');
+    ContinugoViewer.mount(document.getElementById('position'), {
+      sgf: data.sgf, move: data.move, showPolicy: false, hover: true,
+    });
+    render();
+  } catch (error) {
+    const message = document.getElementById('error');
+    message.hidden = false;
+    message.textContent = `Viewer error: ${error.message}`;
+  }
+})();
+</script>
+</html>

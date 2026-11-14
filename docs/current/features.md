@@ -99,8 +99,11 @@ IDs are u32 on the wire / `torch.int64` in Python.
 ## Exact coordinate input `[N, 11]` and legality `[N]`
 
 Coordinate IDs are `x + 1000*y`, excluding pass. Rows preserve caller order.
-Selective inference evaluates complete chosen coarse cells; training evaluates
-complete target-bearing cells (see [network](network.md)). The explicit diagnostic
+Default schema-5 inference uses the [geometry proposal policy](geometry-proposals.md):
+it retains exact per-group spans during coarse extraction and analyzes only
+proposed coordinates inside chosen cells. `infer --complete-cells` and legacy
+schema-4 inference evaluate complete chosen cells. Training still evaluates
+complete target-bearing cells (see [network](network.md)). Retention does not change any feature bits. The explicit diagnostic
 `--full-domain` mode uses IDs 0 through 999,999 as a reference only. Pass is always
 the separate final policy-output column, including when no placements are supplied.
 

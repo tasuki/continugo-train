@@ -18,7 +18,10 @@ mod cache_bench;
 #[cfg(test)]
 mod fine_bench;
 
-use crate::profile::Stage;
+use crate::{
+    geometry_proposals::{Geometry, GroupGeometry},
+    profile::Stage,
+};
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -210,6 +213,8 @@ pub struct FeatureExtractor<'a> {
     pub resolution: usize,
     /// Plane-major [12, H, W]; schema determines channel meanings.
     pub coarse: Vec<f32>,
+    /// Opt-in exact per-group source geometry, before colour union/rasterization.
+    pub geometry: Option<std::sync::Arc<Geometry>>,
 }
 
 impl<'a> FeatureExtractor<'a> {
@@ -219,7 +224,7 @@ impl<'a> FeatureExtractor<'a> {
 
     /// Preserve point-sampled inputs for explicitly versioned existing models.
     pub fn with_schema(game: &'a Game, density: usize, schema: u32) -> Result<Self, String> {
-        Self::build::<false>(game, density, schema).map(|(extractor, _)| extractor)
+        Self::build::<false>(game, density, schema, false).map(|(extractor, _)| extractor)
     }
 
     /// Diagnostic path with identical rules and rasters; ordinary extraction has
@@ -236,13 +241,31 @@ impl<'a> FeatureExtractor<'a> {
         density: usize,
         schema: u32,
     ) -> Result<(Self, CoarseProfile), String> {
-        Self::build::<true>(game, density, schema)
+        Self::build::<true>(game, density, schema, false)
+    }
+
+    /// Keep exact geometry already computed for schema-5 coarse inputs.
+    pub fn with_geometry(
+        game: &'a Game,
+        density: usize,
+        schema: u32,
+        profile: bool,
+    ) -> Result<(Self, CoarseProfile), String> {
+        if schema != SCHEMA_VERSION {
+            return Err("geometry proposals require feature schema 5".into());
+        }
+        if profile {
+            Self::build::<true>(game, density, schema, true)
+        } else {
+            Self::build::<false>(game, density, schema, true)
+        }
     }
 
     fn build<const PROFILE: bool>(
         game: &'a Game,
         samples_per_diameter: usize,
         schema: u32,
+        retain_geometry: bool,
     ) -> Result<(Self, CoarseProfile), String> {
         validate_schema(schema)?;
         let mut profile = CoarseProfile::default();
@@ -268,6 +291,7 @@ impl<'a> FeatureExtractor<'a> {
         let grid = (schema == SCHEMA_VERSION).then(|| spatial::Grid::new(&edges));
         let mut sizes: [Option<Vec<f32>>; 2] = [None, None];
         let mut liberties = [Vec::new(), Vec::new()];
+        let mut geometry = retain_geometry.then(Geometry::default);
         for color in [game.on_move(), game.on_move().other()] {
             let offset = usize::from(color != game.on_move());
             for members in this.prepared.groups(color) {
@@ -290,6 +314,13 @@ impl<'a> FeatureExtractor<'a> {
                         members,
                         size,
                     );
+                    if let Some(geometry) = &mut geometry {
+                        geometry.groups.push(GroupGeometry {
+                            friendly: offset == 0,
+                            members: members.to_vec(),
+                            spans: spans.clone(),
+                        });
+                    }
                     liberties[offset].extend(spans);
                     if let Some(tick) = tick {
                         profile.painting.record(tick);
@@ -411,6 +442,7 @@ impl<'a> FeatureExtractor<'a> {
             profile.painting.record(tick);
             profile.raster.borders.record(tick);
         }
+        this.geometry = geometry.map(std::sync::Arc::new);
         Ok((this, profile))
     }
 
@@ -429,6 +461,7 @@ impl<'a> FeatureExtractor<'a> {
             footprints: footprint::Cache::default(),
             resolution: 0,
             coarse: Vec::new(),
+            geometry: None,
         })
     }
 

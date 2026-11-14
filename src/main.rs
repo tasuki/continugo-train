@@ -190,7 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         evaluator.configure_features(args.feature_threads, args.cache_positions)?;
         evaluator.profile_coarse = args.stats_json.is_some();
         eprintln!(
-            "ONNX device={} model={} threads={} feature_threads={} cache_positions={} concurrent_games={} batch_size={} batch_wait_ms={}",
+            "ONNX device={} model={} threads={} feature_threads={} cache_positions={} concurrent_games={} batch_size={} batch_wait_ms={} proposal_policy={} geometry_budget={:?}",
             evaluator.device.name(),
             evaluator.model_id(),
             args.inference_threads,
@@ -198,7 +198,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             args.cache_positions,
             parallel.concurrent_games,
             parallel.batching.max_batch,
-            args.inference_batch_wait_ms
+            args.inference_batch_wait_ms,
+            evaluator.proposal_policy(),
+            evaluator.geometry_budget()
         );
     }
     let schedule = weighted_sizes(&args.sizes, &args.size_weights)?;

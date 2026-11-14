@@ -1,4 +1,5 @@
-//! Resolution-bucketed encoding and selective, complete-cell exact scoring.
+//! Resolution-bucketed encoding and selective exact scoring. Schema 5 defaults
+//! to direct geometric proposals; complete cells remain a reference/legacy mode.
 use super::{Evaluation, LeafEstimate, OnnxEvaluator, cache::Context};
 use crate::features::{FeatureExtractor, resolution};
 use continugo_rules::{COORDINATE_ACTIONS, Game};
@@ -99,13 +100,17 @@ impl OnnxEvaluator {
             let density = self.metadata.feature_spec.samples_per_diameter;
             let schema = self.metadata.feature_spec.schema;
             let profile = self.profile_coarse;
+            let geometry = self.geometry_budget.is_some();
             let extract = |&i: &usize| {
-                if profile {
+                if geometry {
+                    FeatureExtractor::with_geometry(games[i], density, schema, profile)
+                        .map(|(e, stages)| (e.coarse, stages, e.geometry))
+                } else if profile {
                     FeatureExtractor::profiled_with_schema(games[i], density, schema)
-                        .map(|(e, stages)| (e.coarse, stages))
+                        .map(|(e, stages)| (e.coarse, stages, None))
                 } else {
                     FeatureExtractor::with_schema(games[i], density, schema)
-                        .map(|e| (e.coarse, Default::default()))
+                        .map(|e| (e.coarse, Default::default(), None))
                 }
             };
             let rasters: Result<Vec<_>, _> = match &self.feature_pool {
@@ -114,9 +119,11 @@ impl OnnxEvaluator {
             };
             let planes = self.metadata.feature_spec.coarse.len();
             let mut coarse = Vec::with_capacity(indices.len() * planes * size * size);
-            for (raster, stages) in rasters? {
+            let mut geometries = Vec::with_capacity(indices.len());
+            for (raster, stages, geometry) in rasters? {
                 coarse.extend(raster);
                 self.stats.coarse_stages.merge(&stages);
+                geometries.push(geometry);
             }
             let seconds = tick.elapsed().as_secs_f64();
             self.stats.coarse_seconds += seconds;
@@ -162,6 +169,7 @@ impl OnnxEvaluator {
                     pass: pass[row],
                     value: f64::from(value[row]),
                     score: f64::from(score[row]),
+                    geometry: geometries[row].take(),
                 });
                 self.stats.cache_evictions +=
                     self.cache.insert(games[i], Arc::clone(&context)) as u64;
@@ -218,9 +226,37 @@ impl OnnxEvaluator {
                         queries[i].2,
                     );
                     self.stats.selected_cells += selected.len() as u64;
-                    crate::cells::actions(&selected, size)
+                    if let Some(budget) = self.geometry_budget {
+                        let tick = Instant::now();
+                        let generate = if self.profile_coarse {
+                            crate::geometry_proposals::generate_profiled
+                        } else {
+                            crate::geometry_proposals::generate
+                        };
+                        let shortlist = generate(
+                            queries[i].0,
+                            queries[i]
+                                .1
+                                .geometry
+                                .as_ref()
+                                .ok_or("missing proposal geometry")?,
+                            size,
+                            &selected,
+                            budget,
+                            queries[i].2,
+                        )?;
+                        self.stats.proposal_seconds += tick.elapsed().as_secs_f64();
+                        if let Some(profile) = &shortlist.profile {
+                            self.stats.proposal_stages.merge(profile);
+                        }
+                        self.stats.proposal_preliminary += shortlist.preliminary_candidates as u64;
+                        self.stats.proposal_overflow += shortlist.protected_overflow as u64;
+                        Ok(shortlist.actions())
+                    } else {
+                        Ok(crate::cells::actions(&selected, size))
+                    }
                 })
-                .collect();
+                .collect::<Result<_, String>>()?;
             let count = actions.iter().map(Vec::len).max().unwrap_or(0);
             let mut raw: Vec<Vec<f32>> = actions
                 .iter()

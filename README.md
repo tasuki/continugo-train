@@ -4,6 +4,9 @@ Rust self-play experiments using shared ContinuGo rules, plus a configurable PyT
 
 The [neural policy](docs/current/network.md) selects non-overlapping coarse cells
 before exact coordinate analysis, with whole-board exploration and pass.
+Schema-5 inference defaults to [geometric move proposals](docs/current/geometry-proposals.md)
+inside those cells rather than enumerating every coordinate; `infer --complete-cells`
+provides the complete-cell reference mode.
 New training uses [twelve coarse input planes](docs/current/features.md)
 (schema 5): antialiased stones, connected group size, liberty centers,
 liberty footprints and borders—without scalar liberty area or capturability flags. Existing schema-4 models retain their original inputs. The
@@ -111,6 +114,7 @@ See [artifact organization](docs/current/artifacts.md).
 - [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Network architecture](docs/current/network.md)
+- [Geometry move proposals](docs/current/geometry-proposals.md)
 - [Self-contained neural game viewer](docs/current/nn-viewer.md)
 - [Score/ownership labels, utility and diagnostics](docs/current/auxiliary.md)
 

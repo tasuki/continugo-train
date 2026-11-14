@@ -21,6 +21,7 @@ from continugo_train.runtime import gpu_library, gpu_root, inference_environment
 from continugo_train.train import feature_spec
 
 ROOT = Path(__file__).resolve().parents[1]
+INFER_BINARY = Path(os.environ.get("CONTINUGO_INFER_BIN", ROOT / "target/release/infer"))
 GPU_READY = (gpu_root() / "nvidia/cudnn/lib/libcudnn.so.8").is_file() and torch.cuda.is_available()
 
 
@@ -66,7 +67,7 @@ class NativeInferenceTests(unittest.TestCase):
     ):
         return subprocess.run(
             [
-                str(ROOT / "target/release/infer"),
+                str(INFER_BINARY),
                 "--model",
                 str(model or self.bundle),
                 "--ort-library",
@@ -264,13 +265,39 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertEqual(stats["coarse_stages"]["positions"], 0)
             self.assertEqual(stats["coarse_seconds"], 0)
 
-    def test_real_selected_cell_native_outputs_match_torch_across_sizes(self):
+    def test_geometry_is_default_with_explicit_complete_cell_reference(self):
+        source = self.root / "geometry-default.sgf"
+        source.write_text(SGF)
+        flags = ["--profile-json", "--feature-threads", "1", "--cache-positions", "0"]
+        plain = self.infer(source, [1000000], extra=flags)
+        explicit = self.infer(source, [1000000], extra=[*flags, "--geometry-budget", "16"])
+        complete = self.infer(source, [1000000], extra=[*flags, "--complete-cells"])
+        for result in (plain, explicit, complete):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        a, b, full = [json.loads(result.stdout) for result in (plain, explicit, complete)]
+        self.assertEqual(a["proposal_policy"], "geometry-v2-frontier")
+        self.assertEqual(a["geometry_budget"], 16)
+        self.assertEqual(a["logits"], b["logits"])
+        self.assertEqual(a["cells"], b["cells"])
+        self.assertEqual(a["stats"]["exact_coordinates"], b["stats"]["exact_coordinates"])
+        self.assertLess(a["stats"]["exact_coordinates"], full["stats"]["exact_coordinates"] / 2)
+        self.assertEqual(full["proposal_policy"], "complete-cells-v1")
+        self.assertNotIn("geometry_budget", full)
+        self.assertEqual(a["logits"], full["logits"])  # global pass mass is unchanged
+        self.assertEqual(a["value"], full["value"])
+        self.assertEqual(a["score"], full["score"])
+        for report in (a, b, full):
+            self.assertAlmostEqual(report["policy_mass"], 1.0, places=5)
+        conflict = self.infer(source, [1000000], extra=["--complete-cells", "--geometry-budget", "8"])
+        self.assertNotEqual(conflict.returncode, 0)
+
+    def test_complete_cell_native_outputs_match_torch_across_sizes(self):
         self.assertLess(self.error, 1e-5)
         for size in [9, 13, 19]:
             source = self.root / f"size-{size}.sgf"
             source.write_text(SGF.replace("SZ[13]", f"SZ[{size}]").replace("RE[B+220.4]", ""))
             geometry = load_position(source, 1, actions=[500500])
-            preview = self.infer(source, [1000000])
+            preview = self.infer(source, [1000000], extra=["--complete-cells"])
             self.assertEqual(preview.returncode, 0, preview.stderr)
             selected = json.loads(preview.stdout)["cells"]
             self.assertTrue(selected)
@@ -310,7 +337,7 @@ class NativeInferenceTests(unittest.TestCase):
                 placement_shift = coarse_logp[0, :-1].logsumexp(0) - coarse_logp[
                     0, selected
                 ].logsumexp(0)
-            native = self.infer(source, actions)
+            native = self.infer(source, actions, extra=["--complete-cells"])
             self.assertEqual(native.returncode, 0, native.stderr)
             result = json.loads(native.stdout)
             self.assertEqual(result["cells"], selected)
@@ -370,6 +397,8 @@ class NativeInferenceTests(unittest.TestCase):
             native = self.infer(source, [500500, 1000000], model=bundle)
             self.assertEqual(native.returncode, 0, native.stderr)
             result = json.loads(native.stdout)
+            self.assertEqual(result["proposal_policy"], "complete-cells-v1")
+            self.assertNotIn("geometry_budget", result)
             self.assertAlmostEqual(result["value"], value.item(), places=6)
             self.assertAlmostEqual(result["score"], score.item(), places=6)
 
@@ -537,7 +566,7 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertEqual(list(annotation)[:3], ["win_pct", "score", "policy"])
             estimate = subprocess.run(
                 [
-                    str(ROOT / "target/release/infer"),
+                    str(INFER_BINARY),
                     "--model",
                     str(self.bundle),
                     "--sgf",
