@@ -62,6 +62,10 @@ run = ".venv/bin/python -m continugo_train.plot_metrics"
 description = "Plot global ratings against cumulative training games (log x from 100, random at 0)"
 run = ".venv/bin/python -m continugo_train.plot_ratings"
 
+[tasks.campaign]
+description = "Launch/resume a recipe-driven campaign with a frozen runtime"
+run = ".venv/bin/python -m continugo_train.campaign"
+
 [tasks.loop-status]
 description = "Read-only training, experimental actor, accepted identity and live loop progress"
 run = ".venv/bin/python -m continugo_train.status"

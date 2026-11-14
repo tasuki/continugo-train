@@ -22,6 +22,10 @@ candidate is trained, exported and verified, it becomes the next actor. There is
 no actor gate or evaluation verdict. Approval changes neither training nor actors.
 The accepted head is only read at startup and iteration boundaries.
 
+For a unified, repo-tracked launcher with per-campaign recipes, frozen code/binaries
+and inherited replay, use the [campaign runner](campaigns.md). The commands below expose the
+lower-level loop directly.
+
 ## Start, resume, inspect
 
 Requires a full training checkpoint and the CPU/CUDA setup in [inference](inference.md).

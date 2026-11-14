@@ -114,6 +114,7 @@ See [artifact organization](docs/current/artifacts.md).
 - [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Network architecture](docs/current/network.md)
+- [Campaign recipes and unified launcher](docs/current/campaigns.md)
 - [Geometry move proposals](docs/current/geometry-proposals.md)
 - [Self-contained neural game viewer](docs/current/nn-viewer.md)
 - [Score/ownership labels, utility and diagnostics](docs/current/auxiliary.md)
