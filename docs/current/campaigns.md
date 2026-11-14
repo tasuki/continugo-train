@@ -23,6 +23,13 @@ or extractor-incompatible caches are rebuilt in the new campaign, never rewritte
 or relabeled in historical campaigns. Preparation reports progress on stdout;
 redirect stdout/stderr to `<output>/run.log` for unattended runs.
 
+The launcher passes an absolute `CONTINUGO_VIEWER_BUNDLE` path to the frozen
+runtime so rating reports can find the shared viewer outside the campaign tree.
+By default it uses `../continugo/frontend/viewer/dist/continugo-viewer.js`; build
+that bundle with `mise run //frontend:build-viewer` in `../continugo`, or set
+`CONTINUGO_VIEWER_BUNDLE` to override it. This also applies when resuming older
+frozen campaigns; their runtime files do not need modification.
+
 A recipe pins a completed source round/checkpoint and gives only family, output,
 iteration/rating cadence and loop-setting overrides. The runner inherits the
 parent's search/training configuration, model, SGD momentum, cumulative counters,

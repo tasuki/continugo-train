@@ -96,6 +96,24 @@ class CampaignTests(unittest.TestCase):
                 runner.save_milestone({"number": 5})
                 execute.assert_not_called()
 
+    def test_frozen_environment_resolves_viewer_outside_campaign(self):
+        root = Path("/project/continugo-train")
+        run = root / "runs/test"
+        with patch.dict(campaign.os.environ, {}, clear=True):
+            environment = campaign.frozen_environment(root, run)
+        self.assertEqual(environment["PYTHONPATH"], str(run / "runtime"))
+        self.assertEqual(
+            environment["CONTINUGO_VIEWER_BUNDLE"],
+            "/project/continugo/frontend/viewer/dist/continugo-viewer.js",
+        )
+        with patch.dict(
+            campaign.os.environ, {"CONTINUGO_VIEWER_BUNDLE": "custom/viewer.js"}, clear=True
+        ):
+            environment = campaign.frozen_environment(root, run)
+        self.assertEqual(
+            environment["CONTINUGO_VIEWER_BUNDLE"], str(Path("custom/viewer.js").resolve())
+        )
+
     def test_prepare_resume_is_independent_of_source_loop(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

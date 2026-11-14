@@ -266,6 +266,18 @@ def campaign_runner(run, receipt):
     return CampaignLoop
 
 
+def frozen_environment(root, run):
+    """Resolve external viewer assets before moving into the frozen package."""
+    environment = dict(os.environ, PYTHONPATH=str(run / "runtime"))
+    bundle = environment.get("CONTINUGO_VIEWER_BUNDLE")
+    environment["CONTINUGO_VIEWER_BUNDLE"] = str(
+        Path(bundle).resolve()
+        if bundle
+        else root.parent / "continugo/frontend/viewer/dist/continugo-viewer.js"
+    )
+    return environment
+
+
 def stop(_signum, _frame):
     raise KeyboardInterrupt
 
@@ -346,7 +358,7 @@ def main(argv=None):
                 raise
             return
     # Run both the supervisor and all children from the same immutable package.
-    environment = dict(os.environ, PYTHONPATH=str(run / "runtime"))
+    environment = frozen_environment(root, run)
     command = [
         sys.executable,
         "-m",
