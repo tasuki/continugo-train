@@ -10,6 +10,8 @@ import hashlib
 import html
 import json
 import math
+import os
+import re
 import struct
 import sys
 import zlib
@@ -358,7 +360,7 @@ PAGE = r"""<!doctype html>
 body{margin:0}header{position:sticky;top:0;z-index:2;background:#172134;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 button,a,select{color:#edf4ff;background:#293950;border:1px solid #58718d;padding:5px 10px;border-radius:5px}input{flex:1;min-width:100px}button:disabled{opacity:.4}
 main{padding:12px;display:grid;grid-template-columns:290px 1fr;gap:12px}.panel,section{background:#141f30;border:1px solid #2e4056;border-radius:8px;padding:10px;min-width:0}
-aside{grid-row:span 3}h2{font-size:15px;margin:0 0 8px}p{line-height:1.4}.muted,small{color:#9fadc2}#board{width:100%;background:#b99563;border-radius:6px}
+aside{grid-row:span 3}.board-stack{position:relative;aspect-ratio:1}#played-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}h2{font-size:15px;margin:0 0 8px}p{line-height:1.4}.muted,small{color:#9fadc2}#board{width:100%;background:#b99563;border-radius:6px}
 .gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:6px}figure{margin:0;min-width:0;background:#101826;border-radius:4px;padding:5px}
 figure img{width:100%;max-height:155px;object-fit:contain;image-rendering:pixelated;background:repeating-conic-gradient(#243044 0% 25%,#172134 0% 50%) 50%/8px 8px;cursor:zoom-in}
 aside small{overflow-wrap:anywhere}figcaption{font-size:11px;overflow-wrap:anywhere}figure small{font-size:10px}#stats{font-variant-numeric:tabular-nums;line-height:1.7}
@@ -370,7 +372,7 @@ dialog{max-width:94vw;max-height:94vh;background:#172134;color:#fff;border:1px s
 <header><strong>ContinuGo · NN microscope</strong><button id="prev">←</button><span id="position"></span><button id="next">→</button><input id="slider" type="range" min="0" value="0"><a id="sgf" download="game.sgf">SGF ↓</a></header>
 <p id="notice" class="panel" style="margin:12px" role="status" hidden></p>
 <details id="skipped" class="panel" style="margin:12px" hidden><summary id="skippedtitle"></summary><ul id="skiplist"></ul></details>
-<main><aside class="panel"><canvas id="board" width="600" height="600"></canvas><h2 id="turn"></h2><div id="stats"></div><p class="muted">Pre-move position. Orange cross = move played. All network quantities are side-to-move relative, not always Black.</p><p class="muted">Diagnostic checkpoint replay, not a live tree trace. Complete top-ranked cells + recorded visit/move cells; live search also uses seeded exploration and independent proposals.</p><p class="muted">Blue = negative, orange = positive for signed maps. Other maps: dark → bright. Transparent checkerboard = not evaluated. Probability/visit pixels sum; exact features/logits average. Click an image to enlarge.</p><small id="provenance"></small></aside>
+<main><aside class="panel"><div class="board-stack"><div id="board"></div><svg id="played-overlay" viewBox="0 0 1000 1000" aria-label="Move played"><path id="played" fill="none" stroke="#ff701f" stroke-width="5"/></svg></div><p class="muted">Shared ContinuGo viewer · hover for groups, liberties and capture previews.</p><h2 id="turn"></h2><div id="stats"></div><p class="muted">Pre-move position. Orange cross = move played. All network quantities are side-to-move relative, not always Black.</p><p class="muted">Diagnostic checkpoint replay, not a live tree trace. Complete top-ranked cells + recorded visit/move cells; live search also uses seeded exploration and independent proposals.</p><p class="muted">Blue = negative, orange = positive for signed maps. Other maps: dark → bright. Transparent checkerboard = not evaluated. Probability/visit pixels sum; exact features/logits average. Click an image to enlarge.</p><small id="provenance"></small></aside>
 <section><h2>Hierarchical policy · coarse → exact → search</h2><div id="policy" class="gallery"></div></section>
 <section><h2>Critics & ownership · shared trunk input, separate heads</h2><div id="heads" class="gallery"></div></section>
 <div id="inputs"><section><h2 id="coarsetitle">Every coarse input plane</h2><div id="coarse" class="gallery"></div></section><section><h2>Every exact move input feature</h2><div id="exact" class="gallery"></div></section></div>
@@ -384,9 +386,15 @@ SCRIPT = r"""
 'use strict';
 const data=JSON.parse(document.getElementById('data').textContent), frames=data.frames;
 const $=id=>document.getElementById(id), fmt=(v,n=3)=>v==null?'unknown':Number(v).toFixed(n);
-let index=0;
+let index=0, viewer=null;
+const sgfText=new TextDecoder().decode(Uint8Array.from(atob(data.sgf.split(',')[1]),c=>c.charCodeAt(0)));
 function gallery(id,images){$(id).replaceChildren(...images.map(image=>{const f=document.createElement('figure'),img=document.createElement('img'),c=document.createElement('figcaption'),s=document.createElement('small');img.src=image.src;img.alt=image.name;c.textContent=image.name;s.textContent=`${fmt(image.low)} … ${fmt(image.high)} ${image.note}`;img.title=s.textContent;img.onclick=()=>{$('zoomtitle').textContent=image.name+' · '+s.textContent;$('zoomimage').src=image.src;$('zoom').showModal()};f.append(img,c,s);return f}))}
-function board(f){const c=$('board').getContext('2d'),scale=560/1000,xy=v=>20+v*scale;c.clearRect(0,0,600,600);c.strokeStyle='#6a5035';c.lineWidth=1;for(let i=0;i<=10;i++){c.beginPath();c.moveTo(xy(i*100),20);c.lineTo(xy(i*100),580);c.moveTo(20,xy(i*100));c.lineTo(580,xy(i*100));c.stroke()}for(const [x,y,color] of f.view.stones){c.beginPath();c.arc(xy(x),xy(y),f.diameter/2*scale,0,Math.PI*2);c.fillStyle=color?'#f3f4f7':'#10141b';c.fill();c.strokeStyle='#566';c.stroke()}if(f.view.action!==1000000){let x=xy(f.view.action%1000),y=xy(Math.floor(f.view.action/1000));c.strokeStyle='#ff701f';c.lineWidth=4;c.beginPath();c.moveTo(x-9,y);c.lineTo(x+9,y);c.moveTo(x,y-9);c.lineTo(x,y+9);c.stroke()}}
+function board(f){
+if(viewer)viewer.update({move:f.ply});
+else viewer=ContinugoViewer.mount($('board'),{sgf:sgfText,move:f.ply,showPolicy:false,hover:true});
+const action=f.view.action,x=action%1000,y=Math.floor(action/1000);
+$('played').setAttribute('d',action===1000000?'':`M${x-15} ${y}h30 M${x} ${y-15}v30`);
+}
 function show(i){if(!frames.length)return;index=Math.max(0,Math.min(frames.length-1,i));const f=frames[index];$('slider').value=index;$('prev').disabled=!index;$('next').disabled=index===frames.length-1;$('position').textContent=`Move ${f.ply+1} / ${data.moves||frames.length} · view ${index+1}/${frames.length}`;$('turn').textContent=`${f.player?'White':'Black'} to play ${f.move}${f.counterfactual?' · counterfactual NN':''}`;
 $('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points ${fmt(f.points_pct,1)}%`,`Score ${fmt(f.score)} · ${fmt(f.score_stones,1)} stones`,`Head utility ${fmt(f.utility)} (score weight ${f.score_weight})`,`Policy training ${f.train_policy?'enabled':'absent/masked'}`,`Final outcome ${fmt(f.outcome,0)} · score ${fmt(f.score_target)}`,`P(pass) coarse ${fmt(f.coarse_pass,5)} / final ${fmt(f.pass,5)}`,`Search visits ${f.visits} · pass ${f.pass_visits}`,`${f.resolution}² raster · size ${f.board_size} · inputs v${f.feature_schema||4}`,`${f.cells} cells · ${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
 $('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,f[name]);
@@ -399,16 +407,45 @@ document.addEventListener('keydown',e=>{if($('zoom').open||['INPUT','SELECT','TE
 """
 
 
-RATED_MODE = "rated-own-actor-v1"
+RATED_MODE = "rated-own-actor-v2"
 
 
-def _write_report(sgf, output, info, players, reasons, *, binary=None, rated=False):
+def viewer_script(bundle=None):
+    """Inline the shared viewer so reports remain usable offline and movable."""
+    path = Path(
+        bundle
+        or os.environ.get("CONTINUGO_VIEWER_BUNDLE")
+        or (
+            Path(__file__).resolve().parents[3]
+            / "continugo/frontend/viewer/dist/continugo-viewer.js"
+        )
+    )
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise OSError(
+            f"Cannot read viewer bundle {path}. Build it in ../continugo with "
+            "`mise run //frontend:build-viewer`, or set CONTINUGO_VIEWER_BUNDLE "
+            "(or --viewer-bundle)."
+        ) from error
+    return (
+        "<script>\n"
+        + re.sub(r"</script", r"<\\/script", source, flags=re.IGNORECASE)
+        + "\n</script>"
+    )
+
+
+def _write_report(
+    sgf, output, info, players, reasons, *, binary=None, rated=False, viewer_bundle=None
+):
     """Keep unsupported/random plies out of navigation, never substitute another net."""
+    bundle = viewer_script(viewer_bundle)
     output.parent.mkdir(parents=True, exist_ok=True)
     skipped = []
     with output.open("x", encoding="utf-8") as stream:
         try:
             stream.write(PAGE)
+            stream.write(bundle)
             stream.write('<script id="data" type="application/json">')
             schema = next(
                 (
@@ -492,7 +529,7 @@ def generate_rated(sgf, output, info, checkpoints, *, binary=None):
     return _write_report(Path(sgf), Path(output), info, players, reasons, binary=binary, rated=True)
 
 
-def generate(sgf, checkpoint, output, *, white_checkpoint=None, binary=None):
+def generate(sgf, checkpoint, output, *, white_checkpoint=None, binary=None, viewer_bundle=None):
     sgf, output = Path(sgf), Path(output)
     black = load_checkpoint(checkpoint)
     white = (
@@ -516,7 +553,9 @@ def generate(sgf, checkpoint, output, *, white_checkpoint=None, binary=None):
         if root.get(key) == "random-no-eye-fill-v1":
             players[color] = None
             reasons[color] = "Random bot has no neural network"
-    return _write_report(sgf, output, info, players, reasons, binary=binary)
+    return _write_report(
+        sgf, output, info, players, reasons, binary=binary, viewer_bundle=viewer_bundle
+    )
 
 
 def main(argv=None):
@@ -528,6 +567,7 @@ def main(argv=None):
     parser.add_argument("--white-checkpoint", type=Path)
     parser.add_argument("--output", type=Path, help="default: SGF path with .nn.html suffix")
     parser.add_argument("--feature-binary", type=Path)
+    parser.add_argument("--viewer-bundle", type=Path, help="built continugo-viewer.js")
     parser.add_argument("--threads", type=int, default=1)
     args = parser.parse_args(argv)
     if args.threads < 1:
@@ -540,6 +580,7 @@ def main(argv=None):
             args.output or args.sgf.with_suffix(".nn.html"),
             white_checkpoint=args.white_checkpoint,
             binary=args.feature_binary,
+            viewer_bundle=args.viewer_bundle,
         )
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"NN viewer: {error}\n")

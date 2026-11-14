@@ -1,7 +1,8 @@
 # Neural game microscope
 
 Generate a **single self-contained HTML file**, with embedded PNG images, inline
-JavaScript/CSS, and a downloadable embedded source SGF. Open it directly in a
+JavaScript/CSS (including the shared ContinuGo embedded viewer), and a downloadable
+embedded source SGF. Open it directly in a
 browser: no server, Internet, image directory or Python installation is needed to
 view it. Use **← / →**, Home/End, the slider, or the navigation buttons. Click any
 image to enlarge it. The dashboard targets a large desktop screen (1920×1080 or
@@ -61,11 +62,21 @@ because production ONNX exports omit ownership. Standalone native binaries find
 `CONTINUGO_PYTHON` / `CONTINUGO_FEATURE_BIN` if needed. The offline command also has
 `--feature-binary` and `--threads` (CPU, default one).
 
+Build the shared viewer once in `../continugo` with
+`mise run //frontend:build-viewer`. Generation embeds
+`../continugo/frontend/viewer/dist/continugo-viewer.js` inline; override its location
+with `CONTINUGO_VIEWER_BUNDLE` or the offline command's `--viewer-bundle PATH`.
+No bundle file is needed alongside the finished HTML.
+
 ## What is shown
 
 Each page is a **pre-move position**, relative to the player about to move:
 
-- Authoritatively replayed physical board, with a cross at the move played.
+- Shared embedded board viewer at the pre-move position, with a cross at the move
+  played and native hover inspection of groups, liberties and hypothetical captures.
+  Navigation uses original SGF plies, including passes and skipped analysis turns;
+  recorded policy overlays are disabled so they do not obscure diagnostic maps.
+  Rust replay remains authoritative for all diagnostic features and labels.
 - Every coarse input plane, named and scaled: twelve in either schema, with
   different meanings. Schema 5 shows antialiased occupancy, connected group
   size, both liberty-center and liberty-footprint unions, and borders. It has no

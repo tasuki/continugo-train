@@ -23,6 +23,7 @@ from continugo_train.nn_view import (
     json_safe,
     load_checkpoint,
     raster,
+    viewer_script,
 )
 from continugo_train.train import feature_spec
 
@@ -80,6 +81,11 @@ class NnViewerTests(unittest.TestCase):
         self.assertEqual(data["features"], list(MOVE_FEATURES))
         self.assertEqual(data["sgf_sha256"], hashlib.sha256(self.sgf.read_bytes()).hexdigest())
         self.assertEqual(base64.b64decode(data["sgf"].split(",")[1]), self.sgf.read_bytes())
+        self.assertIn("ContinugoViewer.mount", text)
+        self.assertIn("viewer.update({move:f.ply})", text)
+        self.assertIn('id="played-overlay"', text)
+        self.assertNotIn('<canvas id="board"', text)
+        self.assertNotIn('src="continugo-viewer.js"', text)
         self.assertIn("ArrowLeft", text)
         self.assertIn("ArrowRight", text)
         self.assertNotIn('src="http', text)
@@ -280,6 +286,15 @@ class NnViewerTests(unittest.TestCase):
             self.assertEqual(len(report["features"]), 10)
             self.assertEqual([len(f["features"]) for f in report["frames"]], [10, 11, 10])
             self.assertEqual([len(f["exact"]) for f in report["frames"]], [10, 11, 10])
+
+    def test_inline_viewer_bundle_safety_and_missing_bundle(self):
+        bundle = self.root / "viewer.js"
+        bundle.write_text('const text = "</ScRiPt><script>bad</script>";')
+        script = viewer_script(bundle)
+        self.assertEqual(script.lower().count("</script>"), 1)
+        self.assertIn(r"<\/script>", script)
+        with self.assertRaisesRegex(OSError, "build-viewer"):
+            viewer_script(self.root / "missing.js")
 
     def test_png_rgba_transparency_binning_and_safe_json(self):
         image = heatmap("test", np.array([[0.0, np.nan], [1.0, 0.5]]), limits=(0, 1))
