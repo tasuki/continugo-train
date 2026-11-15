@@ -58,6 +58,22 @@ def runtime_path():
     return min(libraries).resolve()
 
 
+def _assert_parity(output, reference, *, spatial=False, logits=False):
+    # Fused FP32 convolutions accumulate roundoff, including cancellation near
+    # zero in unbounded logits. Critics retain the stricter absolute tolerance.
+    atol = 1e-4 if logits else (5e-5 if spatial else 1e-5)
+    np.testing.assert_allclose(output, reference, rtol=1e-4, atol=atol, equal_nan=False)
+    if logits:
+        def probabilities(values):
+            weights = np.exp(values - values.max(axis=-1, keepdims=True))
+            return weights / weights.sum(axis=-1, keepdims=True)
+
+        np.testing.assert_allclose(
+            probabilities(output), probabilities(reference), rtol=1e-4, atol=1e-5,
+            equal_nan=False,
+        )
+
+
 def verify(model, directory):
     """Check dynamic batch/spatial/action axes against eager FP32 PyTorch."""
     import onnxruntime as ort
@@ -94,8 +110,10 @@ def verify(model, directory):
             actual += scorer.run(
                 None, {"spatial": actual[0], "exact": exact.numpy(), "actions": actions.numpy()}
             )
-            for reference, output in zip(expected, actual, strict=True):
-                np.testing.assert_allclose(output, reference.numpy(), rtol=1e-4, atol=1e-5)
+            for index, (reference, output) in enumerate(zip(expected, actual, strict=True)):
+                _assert_parity(
+                    output, reference.numpy(), spatial=index == 0, logits=index in (1, 3, 5)
+                )
                 maximum = max(maximum, float(np.max(np.abs(output - reference.numpy()))))
     return maximum
 
