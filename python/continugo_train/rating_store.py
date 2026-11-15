@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from . import nn_view, ratings
+from . import joint_ratings, nn_view, ratings
 from .evaluation import EvaluationConfig
 from .paths import ROOT
 from .saved_models import saved_sources
@@ -20,9 +20,9 @@ GAME_NAME = re.compile(
 def refresh(store, config, cache=None, *, visualize=True):
     """The checkpoint cache is disposable: delete it to replay the SGFs exactly.
 
-    Color-swapped games with a shared seed form a simultaneous Glicko batch.
-    File paths/stat signatures only accelerate the unchanged prefix; no results
-    are duplicated into a CSV/JSON game ledger.
+    All games are fitted jointly on every refresh. File paths/stat signatures
+    cache validated SGF parsing, never sequential rating states. The cache is
+    disposable and is not a second authoritative game ledger.
     """
     store = Path(store).resolve()
     sources = saved_sources(store)
@@ -64,23 +64,17 @@ def refresh(store, config, cache=None, *, visualize=True):
     cache = cache or {}
     previous = cache.get("groups", [])
     reusable = (
-        cache.get("protocol") == settings
+        cache.get("method") == "joint-bt-v2"
+        and cache.get("protocol") == settings
         and previous == groups[: len(previous)]
         and len(previous) <= len(groups)
     )
-    tables = ratings.Tables()
-    tables.ensure_reference()
-    for name, source in by_name.items():
-        parent = f"{source['family']}-r{source['round'] - 1:04d}"
-        tables.networks[name] = {"parent": parent if parent in by_name else ""}
-    if reusable:
-        tables.states = cache["states"]
-    else:
+    records = list(cache["records"]) if reusable else []
+    if not reusable:
         previous = []
     # Validate already-cached files too when their missing microscope needs repair.
     infos = {}
     for group in groups[len(previous) :]:
-        records = []
         for relative, _size, _mtime in group["files"]:
             path = store / relative
             record = ratings._inspect(path, settings, names, config.feature_binary)
@@ -95,10 +89,10 @@ def refresh(store, config, cache=None, *, visualize=True):
             ):
                 raise ValueError(f"SGF filename disagrees with its contents: {path}")
             infos[relative] = record["info"]
-            records.append({**record, "black": black, "white": white})
-        ratings._rate(tables, records, config.rating_binary)
+            records.append({"black": black, "white": white, "result": record["result"]})
+    states = joint_ratings.fit(records)
     summary = {}
-    for name, state in tables.states.items():
+    for name, state in states.items():
         public_name = "random" if name == ratings.REFERENCE_ID else name
         summary[public_name] = {key: state[key] for key in COLUMNS if key != "network"}
     directory = store / "ratings"
@@ -134,7 +128,13 @@ def refresh(store, config, cache=None, *, visualize=True):
                 nn_view.generate_rated(
                     path, output, info, checkpoints, binary=config.feature_binary
                 )
-    return {"protocol": settings, "groups": groups, "states": tables.states}, summary
+    return {
+        "method": "joint-bt-v2",
+        "protocol": settings,
+        "groups": groups,
+        "records": records,
+        "states": states,
+    }, summary
 
 
 def main(argv=None):

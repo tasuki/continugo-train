@@ -96,6 +96,22 @@ class ChampionTests(helpers.LoopHarness):
     def saved_state(self):
         return torch.load(self.store / "ratings/evaluator.pt", weights_only=True)
 
+    def test_joint_fit_cache_and_legacy_cache_match_full_rebuild(self):
+        self.evaluate()
+        config = EvaluationConfig.from_config(self.saved_state()["config"])
+        cache, expected = rating_store.refresh(self.store, config, visualize=False)
+        # Cached states are presentation only, never the input to the joint fit.
+        cache["states"][self.ids[0]]["rating"] = -99999
+        _, cached = rating_store.refresh(self.store, config, cache, visualize=False)
+        self.assertEqual(cached, expected)
+        legacy = {
+            "protocol": cache["protocol"],
+            "groups": cache["groups"],
+            "states": cache["states"],
+        }
+        _, rebuilt = rating_store.refresh(self.store, config, legacy, visualize=False)
+        self.assertEqual(rebuilt, expected)
+
     def test_only_every_fifth_round_gets_any_evaluation(self):
         rate_saved.POLICY.update(evaluation_every=5, challenge_every=5)
         self.run_loop(self.campaign, resume=True, extra=["--iterations", "5"])
@@ -181,7 +197,8 @@ class ChampionTests(helpers.LoopHarness):
         (self.store / "ratings").mkdir(exist_ok=True)
         rate_saved.POLICY.update(evaluation_every=5, challenge_every=5)
         state = rate_saved.initialize(
-            self.store, rate_saved.parse_args(["--model-store", str(self.store), "--family", "test1"])
+            self.store,
+            rate_saved.parse_args(["--model-store", str(self.store), "--family", "test1"]),
         )
         state["candidates"] = self.ids[:1]
         state["models"] = {self.ids[0]: state["models"][self.ids[0]]}
@@ -304,7 +321,10 @@ class ChampionTests(helpers.LoopHarness):
                 self.jobs.interrupt_kind = "reference"
             return play(runner, registry, candidate, opponent, kind, games)
 
-        with patch.object(rate_saved, "play_match", interrupt), self.assertRaises(KeyboardInterrupt):
+        with (
+            patch.object(rate_saved, "play_match", interrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
             self.evaluate()
         registry = rate_saved.load_champions(self.store)
         self.assertEqual(registry["champion"], self.ids[1])
@@ -313,8 +333,11 @@ class ChampionTests(helpers.LoopHarness):
         self.evaluate(resume=True)
         self.assertEqual(before, {p: p.read_bytes() for p in before})
         self.assertEqual(rate_saved.load_champions(self.store)["champion"], self.ids[-1])
-        references = [j for j in self.saved_state()["matches"].values()
-                      if j["kind"] == "reference" and j["candidate_name"] == self.ids[1]]
+        references = [
+            j
+            for j in self.saved_state()["matches"].values()
+            if j["kind"] == "reference" and j["candidate_name"] == self.ids[1]
+        ]
         self.assertEqual(len(references), 1)
         self.assertEqual(len(references[0]["reference"]["attempts"]), 2)
 
