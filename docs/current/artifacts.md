@@ -3,7 +3,7 @@
 Keep three separate top-level locations:
 
 - **`runs/`**: continuing training campaigns, including bootstrap data, self-play,
-  checkpoints, optimizer/RNG state, replay, exports, metrics and resumable controls.
+  checkpoints, optimizer/RNG state, training/validation windows, exports, metrics and resumable controls.
 - **`scratch/`**: standalone tests, audits, benchmarks, profiling and debugging.
   Short experimental training sanity checks belong here too.
 - **`models/`**: selected tenth-round model snapshots plus shared ratings and
@@ -28,10 +28,10 @@ New campaigns automatically save and rate each tenth round under
 `models/<campaign>-rNNNN/`. Backfill existing campaigns with
 `mise run save-models -- --runs runs`; select another completed round with
 `--loop PATH/TO/LOOP --iteration N`. Minimal snapshots contain checkpoint, both
-ONNX graphs and JSON provenance, but no training replay.
+ONNX graphs and JSON provenance, but no training/validation window games.
 
 Use `mise run retain-model -- --loop runs/CAMPAIGN/loop` only when deliberately
-preserving a full checkpoint/replay recovery pack before deleting its campaign. Otherwise deleting a run removes its
+preserving a full checkpoint/window recovery pack before deleting its campaign. Otherwise deleting a run removes its
 unretained models from future evaluation pools; rating history and evidence stay
 in `models/`. See [model storage](model-store.md).
 

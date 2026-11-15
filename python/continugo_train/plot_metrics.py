@@ -216,7 +216,7 @@ def plot(jobs, output, title):
     figure.text(
         0.5,
         0.01,
-        "Saved epochs only • Replay changes between rounds • Loss is not playing strength",
+        "Saved epochs only • Training/validation windows change between rounds • Loss is not playing strength",
         ha="center",
         fontsize=9,
     )
@@ -326,7 +326,9 @@ def main(argv=None):
         return 1
     count = sum(len(job.epochs) for job in jobs)
     print(f"Plotted {count} saved epochs across {len(jobs)} jobs: {output}")
-    print("Replay corpora change between rounds; these are not fixed-dataset learning curves.")
+    print(
+        "Training/validation windows change between rounds; these are not fixed-dataset learning curves."
+    )
     return 0
 
 

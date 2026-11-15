@@ -1,4 +1,4 @@
-"""Restartable native self-play -> bounded replay -> warm-start -> ONNX loop.
+"""Restartable self-play -> training/validation windows -> warm-start -> ONNX loop.
 
 SGFs remain the game records. loop.pt is an atomic orchestration checkpoint, not
 an alternate game format. Training, experimental actors and accepted networks
@@ -23,7 +23,7 @@ from pathlib import Path
 import torch
 
 from . import archive, plot_metrics, promote
-from .data import inspect_corpus, scan_corpus
+from .data import assign_splits, inspect_corpus, merge_split_assignments, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
@@ -59,8 +59,9 @@ class LoopConfig:
     inference_threads: int = 1
     feature_threads: int = 6
     cache_positions: int = 64
-    replay_iterations: int = 4
-    replay_games: int = 256
+    window_iterations: int = 4
+    window_games: int = 256
+    training_window_fraction: float = 1 / 3
     train_epochs: int = 1
     steps_per_epoch: int = 20
     positions_per_game: int = 8
@@ -86,6 +87,13 @@ class LoopConfig:
         if self.feature_cache not in MODES:
             raise ValueError(f"feature_cache must be one of {MODES}")
         weighted_sizes(self.sizes, self.size_weights)
+        if (
+            not math.isfinite(self.training_window_fraction)
+            or not 0 <= self.training_window_fraction <= 1
+        ):
+            raise ValueError(
+                "training-window-fraction must be in 0..1 (0 uses legacy fixed windows)"
+            )
         if not self.sizes or any(size not in range(9, 20) for size in self.sizes):
             raise ValueError("sizes must be nonempty and in 9..19")
         if not 1 <= self.games_per_iteration < 2**32 or not 1 <= self.simulations < 2**32:
@@ -108,14 +116,14 @@ class LoopConfig:
             "proposal_attempts",
             "inference_threads",
             "feature_threads",
-            "replay_iterations",
+            "window_iterations",
             "train_epochs",
             "batch_size",
             "threads",
         ]
-        if any(getattr(self, name) <= 0 for name in positive) or self.replay_games < 2:
+        if any(getattr(self, name) <= 0 for name in positive) or self.window_games < 2:
             raise ValueError(
-                "positive game/search/training/thread limits and replay-games >= 2 required"
+                "positive game/search/training/thread limits and window-games >= 2 required"
             )
         nonnegative = [
             "seed",
@@ -216,8 +224,12 @@ class LoopConfig:
 
 
 def training_config(config):
-    """Read legacy campaign settings without the removed evaluation controls."""
+    """Read compatible campaign settings without removed evaluation controls."""
     names = {field.name for field in fields(LoopConfig)}
+    if any(name.startswith("replay_") for name in config):
+        raise ValueError(
+            "obsolete replay configuration; migrate to training/validation window settings"
+        )
     return {name: value for name, value in config.items() if name in names}
 
 
@@ -388,6 +400,30 @@ def select_replay(records, limit, size_weights=DEFAULT_SIZE_WEIGHTS):
         if not buckets[size]:
             del buckets[size]
     return selected
+
+
+def select_growing_replay(
+    records,
+    splits,
+    cumulative_training_games,
+    fraction,
+    validation_fraction,
+    size_weights=DEFAULT_SIZE_WEIGHTS,
+):
+    """Select training/validation windows separately; holdouts do not count in the budget."""
+    train_limit = max(1, math.ceil(cumulative_training_games * fraction))
+    train = select_replay(
+        [r for r in records if splits.get(r["game_id"]) == "train"], train_limit, size_weights
+    )
+    validation_limit = max(
+        1, math.ceil(len(train) * validation_fraction / (1 - validation_fraction))
+    )
+    validation = select_replay(
+        [r for r in records if splits.get(r["game_id"]) == "validation"],
+        validation_limit,
+        size_weights,
+    )
+    return train + validation, train_limit
 
 
 class LoopRunner:
@@ -719,43 +755,92 @@ class LoopRunner:
 
     def replay(self, iteration, parent):
         options = self.config.training_options(parent, iteration["number"])
+        history = checkpoint_splits(parent)
         if iteration["replay"] is None:
+            growing = self.config.training_window_fraction > 0
             recent = self.state["iterations"][
-                max(0, iteration["number"] - self.config.replay_iterations) : iteration["number"]
+                0
+                if growing
+                else max(0, iteration["number"] - self.config.window_iterations) : iteration[
+                    "number"
+                ]
             ]
             candidates = [record for previous in reversed(recent) for record in previous["games"]]
-            selected = select_replay(
-                [*candidates, *self.state["bootstrap"]],
-                self.config.replay_games,
-                self.config.size_weights,
-            )
+            candidates.extend(self.state["bootstrap"])
+            if growing:
+                # Pool assignments include unselected games but are not counted as
+                # cumulative training evidence until selected into a checkpoint.
+                splits = merge_split_assignments(history, parent.get("replay_pool_splits", {}))
+                splits = merge_split_assignments(splits, self.state.get("replay_pool_splits", {}))
+                unseen = select_replay(
+                    [r for r in candidates if r["game_id"] not in splits],
+                    len(candidates),
+                    self.config.size_weights,
+                )
+                if unseen:
+                    games, _ = inspect_corpus(
+                        [str(self.check(r)) for r in unseen],
+                        options.samples_per_diameter,
+                        self.config.feature_binary,
+                    )
+                    _, _, splits = assign_splits(
+                        games, options.seed, options.validation_fraction, splits
+                    )
+                cumulative = sum(split == "train" for split in history.values())
+                selected, target = select_growing_replay(
+                    candidates,
+                    splits,
+                    cumulative,
+                    self.config.training_window_fraction,
+                    options.validation_fraction,
+                    self.config.size_weights,
+                )
+                self.state["replay_pool_splits"] = splits
+                iteration["replay_pool_splits"] = splits
+                iteration["replay_splits"] = {r["game_id"]: splits[r["game_id"]] for r in selected}
+                iteration["replay_budget"] = {
+                    "cumulative_training_games": cumulative,
+                    "training_target": target,
+                    "training_selected": sum(splits[r["game_id"]] == "train" for r in selected),
+                    "validation_selected": sum(
+                        splits[r["game_id"]] == "validation" for r in selected
+                    ),
+                }
+                self.log(
+                    f"iteration {iteration['number']}: training/validation window budget {iteration['replay_budget']}"
+                )
+            else:
+                selected = select_replay(
+                    candidates, self.config.window_games, self.config.size_weights
+                )
         else:
             selected = iteration["replay"]
+        history.update(iteration.get("replay_splits", {}))
         paths = [str(self.check(record)) for record in selected]
         if not paths:
-            raise ValueError("no eligible replay games")
+            raise ValueError("no eligible training/validation window games")
         corpus = scan_corpus(
             paths,
             options.samples_per_diameter,
             options.seed,
             options.validation_fraction,
             self.config.feature_binary,
-            split_history=checkpoint_splits(parent),
+            split_history=history,
         )
         expected_hashes = {str(self.check(r)): r["sha256"] for r in selected}
         if any(expected_hashes[g.path] != g.file_sha256 for g in corpus.train + corpus.validation):
-            raise ValueError("replay changed during selection")
+            raise ValueError("training/validation window changed during selection")
         if (
             iteration["replay"] is not None
             and iteration["corpus_fingerprint"] != corpus.fingerprint
         ):
-            raise ValueError("frozen replay corpus/split changed")
+            raise ValueError("frozen training/validation window corpus/split changed")
         if iteration["replay"] is None:
             iteration["replay"] = selected
             iteration["corpus_fingerprint"] = corpus.fingerprint
             self.save()
             self.log(
-                f"iteration {iteration['number']}: replay {len(selected)} unique games; train={len(corpus.train)} validation={len(corpus.validation)}"
+                f"iteration {iteration['number']}: training window={len(corpus.train)} games; validation window={len(corpus.validation)} games; {len(selected)} unique total"
             )
         return options
 
@@ -771,6 +856,9 @@ class LoopRunner:
                 }
             ),
         }
+        if iteration.get("replay_splits"):
+            expected["split_history"] = iteration["replay_splits"]
+            expected["replay_pool_splits"] = iteration["replay_pool_splits"]
         path = self.path(f"iteration-{iteration['number']:04d}/generation-progress.pt")
         if iteration.get("generated_data"):
             self.check(iteration["generated_data"])
@@ -795,6 +883,9 @@ class LoopRunner:
         expected_progress["data_positions"] = iteration["data_positions"]
         generated = torch.load(self.generation_progress(iteration), weights_only=True)
         expected_data_ids = data_history(parent, ancestral_splits) | set(generated["game_ids"])
+        expected_pool = merge_split_assignments(
+            parent.get("replay_pool_splits", {}), generated.get("replay_pool_splits", {})
+        )
         for number, path in enumerate(snapshots, 1):
             saved = load_training(path)
             history = checkpoint_splits(saved)
@@ -818,6 +909,14 @@ class LoopRunner:
                 or saved["run_id"] == parent["run_id"]
                 or any(
                     history.get(identity) != split for identity, split in ancestral_splits.items()
+                )
+                or any(
+                    saved.get("replay_pool_splits", {}).get(identity) != split
+                    for identity, split in expected_pool.items()
+                )
+                or any(
+                    history.get(identity) != split
+                    for identity, split in iteration.get("replay_splits", {}).items()
                 )
                 or run_id is not None
                 and saved["run_id"] != run_id
@@ -1034,7 +1133,13 @@ def parse_args(argv=None):
                 if field.default is None
                 else type(field.default)
             )
-            parser.add_argument(name, type=kind, help=f"default: {field.default}")
+            parser.add_argument(
+                name,
+                dest=field.name,
+                type=kind,
+                metavar=field.name.upper(),
+                help=f"default: {field.default}",
+            )
     return parser.parse_args(argv)
 
 
@@ -1078,6 +1183,8 @@ def run_loop(args):
                 # Preserve frozen generation settings of older campaigns.
                 if field.name == "save_model_every":
                     state["config"].setdefault(field.name, 10)
+                if field.name == "training_window_fraction":
+                    state["config"].setdefault(field.name, 0.0)
                 if field.name in {"policy_simulations", "policy_search_probability"}:
                     state["config"].setdefault(
                         field.name,

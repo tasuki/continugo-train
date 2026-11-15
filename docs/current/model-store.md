@@ -1,6 +1,6 @@
 # Artifact storage
 
-Training owns its checkpoints, replay and intermediate exports under `runs/`.
+Training owns its checkpoints, training/validation windows and intermediate exports under `runs/`.
 The durable store is **`artifacts/`**, not the former `models/` root.
 For this evaluation, only **cg5** is included; cg1–4 remain outside the active store.
 
@@ -55,7 +55,7 @@ mise run save-models -- --loop runs/20261108-154636-schema5-scratch/loop --every
 
 `--save-model-every 0` disables automatic saving. Saving does not register ratings,
 run games, change champion or publish a model. Minimal saved models do not copy
-training replay; keep the source run for exact recovery.
+training/validation window games; keep the source run for exact recovery.
 
 ## Ratings and SGFs
 
@@ -74,7 +74,7 @@ change the training actor. Publication remains a separate explicit user decision
 its future presentation/UI is not defined by the ratings storage layout.
 
 The existing explicit retention/publication tools remain separate, opt-in recovery
-operations. Their sealed full-recovery bundles include replay and authorization;
+operations. Their sealed full-recovery bundles include window games and authorization;
 no such bundles or publications are created by saving or rating cg5.
 
 ## Recovery and backups

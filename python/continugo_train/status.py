@@ -28,7 +28,7 @@ def inspect_loop(output):
     elif not all(current["games"]):
         stage = "self-play"
     elif current["replay"] is None:
-        stage = "replay selection"
+        stage = "training/validation window selection"
     elif current["checkpoint"] is None:
         stage = "training"
     elif current["model"] is None:

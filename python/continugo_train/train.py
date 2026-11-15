@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from .data import batches, scan_corpus
+from .data import batches, merge_split_assignments, scan_corpus
 from .features import (
     COARSE_PLANES,
     MOVE_FEATURES,
@@ -460,6 +460,7 @@ def train(args):
         raise ValueError("not an offline-training checkpoint")
     history = checkpoint_splits(saved) if saved is not None else {}
     known_data = data_history(saved, history)
+    pool_splits = merge_split_assignments(history, (saved or {}).get("replay_pool_splits", {}))
     generated = None
     if args.generated_data is not None:
         generated = torch.load(args.generated_data, map_location="cpu", weights_only=True)
@@ -470,6 +471,8 @@ def train(args):
         ):
             raise ValueError("incompatible generation progress metadata")
         known_generated = data_history({"data_game_ids": generated.get("game_ids")}, {})
+        pool_splits = merge_split_assignments(pool_splits, generated.get("split_history", {}))
+        pool_splits = merge_split_assignments(pool_splits, generated.get("replay_pool_splits", {}))
         if args.data_positions is not None and args.data_positions != generated["data_positions"]:
             raise ValueError("--data-positions disagrees with generation progress metadata")
         args.data_positions = generated["data_positions"]
@@ -630,6 +633,7 @@ def train(args):
             options.validation_fraction,
             binary,
             split_history=history,
+            split_assignments=pool_splits,
         )
         if resuming and corpus.fingerprint != saved["corpus_fingerprint"]:
             raise ValueError("eligible SGF corpus/targets changed since checkpoint")
@@ -708,6 +712,7 @@ def train(args):
                 "progress": dict(progress),
                 "data_game_ids": sorted(all_data_ids),
                 "split_history": corpus.split_history,
+                "replay_pool_splits": merge_split_assignments(pool_splits, corpus.split_history),
                 "epoch": epoch + 1,
                 "global_step": step,
                 "model": model.state_dict(),

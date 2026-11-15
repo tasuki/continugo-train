@@ -120,12 +120,21 @@ class FakeJobs:
             value = getattr(args, field.name)
             if value is not None:
                 setattr(options, field.name, value)
+        generated = (
+            torch.load(args.generated_data, weights_only=True) if args.generated_data else None
+        )
+        history = trainer.checkpoint_splits(parent)
+        pool_splits = {
+            **parent.get("replay_pool_splits", {}),
+            **(generated or {}).get("replay_pool_splits", {}),
+        }
         corpus = scan_corpus(
             args.data,
             options.samples_per_diameter,
             options.seed,
             options.validation_fraction,
-            split_history=trainer.checkpoint_splits(parent),
+            split_history=history,
+            split_assignments=pool_splits,
         )
         completed = state["epoch"] if args.resume else 0
         if not args.resume:
@@ -158,6 +167,7 @@ class FakeJobs:
             corpus_fingerprint=corpus.fingerprint,
             manifest=corpus.manifest(),
             split_history=corpus.split_history,
+            replay_pool_splits={**pool_splits, **corpus.split_history},
             data_game_ids=sorted(all_data_ids),
         )
         for epoch in range(completed + 1, args.epochs + 1):
@@ -268,9 +278,11 @@ class LoopHarness(unittest.TestCase):
                 "1",
                 "--validation-positions-per-game",
                 "1",
-                "--replay-games",
+                "--training-window-fraction",
+                "0",
+                "--window-games",
                 "16",
-                "--replay-iterations",
+                "--window-iterations",
                 "1",
                 "--threads",
                 "1",
@@ -371,6 +383,29 @@ class LoopTests(LoopHarness):
         self.assertEqual(len(state["iterations"]), 3)
         self.assertTrue(state["iterations"][-1]["completed"])
 
+    def test_growing_replay_pins_separate_pools_and_survives_resume(self):
+        output = self.root / "growing"
+        state = self.run_loop(output, extra=["--training-window-fraction", "0.3333333333333333"])
+        first = state["iterations"][0]
+        parent = loop.load_training(output / first["parent_checkpoint"]["path"])
+        count = sum(s == "train" for s in trainer.checkpoint_splits(parent).values())
+        self.assertEqual(first["replay_budget"]["training_target"], max(1, (count + 2) // 3))
+        self.assertGreater(first["replay_budget"]["validation_selected"], 0)
+        pins = dict(state["replay_pool_splits"])
+        first_saved = loop.load_training(output / first["checkpoint"]["path"])
+        self.assertEqual(pins, first_saved["replay_pool_splits"])
+        expected_used = set(trainer.checkpoint_splits(parent)) | set(first["replay_splits"])
+        self.assertEqual(set(trainer.checkpoint_splits(first_saved)), expected_used)
+        state = self.run_loop(output, resume=True, extra=["--iterations", "2"])
+        self.assertTrue(all(state["replay_pool_splits"][k] == v for k, v in pins.items()))
+        second = state["iterations"][1]
+        saved = loop.load_training(output / second["checkpoint"]["path"])
+        for game in saved["manifest"]:
+            self.assertEqual(game["split"], state["replay_pool_splits"][game["game_id"]])
+        frozen = second["corpus_fingerprint"]
+        resumed = self.run_loop(output, resume=True)
+        self.assertEqual(resumed["iterations"][1]["corpus_fingerprint"], frozen)
+
     def test_two_iterations_handoff_replay_window_and_idempotent_resume(self):
         output = self.root / "loop"
         state = self.run_loop(output)
@@ -407,7 +442,7 @@ class LoopTests(LoopHarness):
 
     def test_generated_rows_outside_replay_are_known_to_future_offline_imports(self):
         output = self.root / "small-replay"
-        state = self.run_loop(output, extra=["--replay-games", "2"])
+        state = self.run_loop(output, extra=["--window-games", "2"])
         iteration = state["iterations"][0]
         checkpoint = output / iteration["checkpoint"]["path"]
         saved = loop.load_training(checkpoint)
@@ -473,7 +508,7 @@ class LoopTests(LoopHarness):
         output = self.root / "lost-history"
         self.jobs.fault = "epoch_gap"
         with self.assertRaises(KeyboardInterrupt):
-            self.run_loop(output, extra=["--train-epochs", "2", "--replay-games", "4"])
+            self.run_loop(output, extra=["--train-epochs", "2", "--window-games", "4"])
         path = next(output.rglob("epoch-0001.pt"))
         saved = loop.load_training(path)
         current_ids = {g["game_id"] for g in saved["manifest"]}
@@ -686,9 +721,9 @@ class LoopTests(LoopHarness):
             "0",
             "--threads",
             "1",
-            "--replay-iterations",
+            "--window-iterations",
             "1",
-            "--replay-games",
+            "--window-games",
             "64",
         ]
         # Interrupt a real supervisor after native SGFs start appearing. Its
@@ -735,12 +770,19 @@ class LoopTests(LoopHarness):
                 iteration["parent_checkpoint"]["sha256"],
             )
             self.assertEqual(saved["epoch"], 1)
-            self.assertTrue(iteration["model"])
+            self.assertEqual(
+                iteration["replay_budget"]["training_selected"],
+                sum(game["split"] == "train" for game in saved["manifest"]),
+            )
             self.assertTrue(
                 all(
-                    r["path"].startswith((f"iteration-{number:04d}/", "bootstrap/"))
-                    for r in iteration["replay"]
+                    saved["replay_pool_splits"][game["game_id"]] == game["split"]
+                    for game in saved["manifest"]
                 )
+            )
+            self.assertTrue(iteration["model"])
+            self.assertTrue(
+                all(r["path"].startswith(("iteration-", "bootstrap/")) for r in iteration["replay"])
             )
 
 

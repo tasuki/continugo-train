@@ -988,7 +988,7 @@ strict fixed-corpus `--resume` is unchanged. Warm-start copies weights/BatchNorm
 resets SGD momentum by default (optional explicit `keep`), and starts fresh
 run/epoch/step/best-loss/RNG state. Checkpoints retain source SHA-256 provenance
 and ancestral game-level split assignments, including games absent from the current
-window. See [training.md](current/training.md#warm-start-on-a-changing-replay-corpus).
+window. See [training.md](current/training.md#warm-start-with-changing-trainingvalidation-windows).
 
 A real CUDA smoke run used the earlier **epoch-2 / step-40** offline checkpoint
 as source, with the unchanged 80,099-parameter network and schema-4 features.

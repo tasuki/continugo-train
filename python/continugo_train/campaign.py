@@ -173,7 +173,10 @@ def prepare(root, run, recipe):
     derived = run / "parent.pt"
     expected = fork_checkpoint(parent, recipe["family"], parent_path, recipe["parent_sha256"])
     atomic_checkpoint(derived, expected)
-    config = dict(loop.training_config(state["config"]), **recipe["overrides"])
+    config = dict(loop.training_config(state["config"]))
+    # A new fork adopts today's window policy, not an ancestor's legacy window.
+    config["training_window_fraction"] = loop.LoopConfig().training_window_fraction
+    config.update(recipe["overrides"])
     config.update(
         selfplay_binary=str(run / "bin/continugo-train"),
         feature_binary=str(run / "bin/features"),
@@ -205,7 +208,7 @@ def prepare(root, run, recipe):
 
 
 def campaign_runner(run, receipt):
-    """Shared replay ordering/cache propagation and optional boundary ratings."""
+    """Shared window ordering/cache propagation and optional boundary ratings."""
     from . import loop
     from .feature_cache import sidecar_path
 

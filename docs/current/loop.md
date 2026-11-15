@@ -1,6 +1,6 @@
 # Restartable experimental neural self-play loop
 
-`mise run loop` runs native self-play → bounded SGF replay → warm-start training →
+`mise run loop` runs native self-play → growing training/validation windows → warm-start training →
 ONNX export, with run-owned recovery. **Training does not run rating matches.**
 It saves each tenth model for separate evaluation under `artifacts/ratings/`.
 It never automatically promotes a network; accepted publication follows the
@@ -23,7 +23,7 @@ no actor gate or evaluation verdict. Approval changes neither training nor actor
 The accepted head is only read at startup and iteration boundaries.
 
 For a unified, repo-tracked launcher with per-campaign recipes, frozen code/binaries
-and inherited replay, use the [campaign runner](campaigns.md). The commands below expose the
+and inherited window games, use the [campaign runner](campaigns.md). The commands below expose the
 lower-level loop directly.
 
 ## Start, resume, inspect
@@ -32,7 +32,7 @@ Requires a full training checkpoint and the CPU/CUDA setup in [inference](infere
 The supervisor requires POSIX process groups and `flock`.
 
 ```sh
-mise run loop -- --checkpoint PATH/TO/checkpoint.pt --bootstrap-data PATH/TO/replay --iterations 2 --games-per-iteration 10 --train-epochs 1 --steps-per-epoch 20
+mise run loop -- --checkpoint PATH/TO/checkpoint.pt --bootstrap-data PATH/TO/window-games --iterations 2 --games-per-iteration 10 --train-epochs 1 --steps-per-epoch 20
 # Use the dated path printed by the first command:
 mise run loop -- --output runs/YYYYMMDD-HHMMSS-loop --resume
 # Increase the TOTAL iteration target, not an additional count:
@@ -72,7 +72,7 @@ and evaluation-enabling flags are no longer loop options.
 
 `--save-model-every 10` saves independent checkpoint and ONNX copies in
 `artifacts/models/<family>/rNNNN/`, alongside small portable `metadata.json`. Original campaign files stay
-intact. No replay copy, hardlink, approval or rating match is created. Saving is
+intact. No window-game copy, hardlink, approval or rating match is created. Saving is
 idempotent; resume repairs a missed save after a state-commit interruption without
 retraining. `--save-model-every 0` disables it.
 
@@ -114,7 +114,7 @@ Existing loops missing these settings resume with randomization disabled. Budget
 remain frozen. Legacy/bootstrap games retain their original policy supervision.
 See [randomized search](inference.md#randomized-policy-search-caps).
 
-## Training and replay
+## Training and validation windows
 
 `--warm-start-optimizer keep` is the default. SGD settings, architecture, feature
 density and clipping inherit from the training parent; `--lr` may override learning
@@ -126,16 +126,41 @@ The trainer's `best.pt` is a within-job diagnostic. The loop exports the **lates
 completed epoch**, not a loss-selected promotion. Training always starts from the
 latest candidate.
 
-`--replay-iterations` (default 4) admits current/previous N−1 generated rounds.
-`--replay-games` (default 256) limits unique labeled games, including older bootstrap
-fallback data. Newest copies win duplicate canonical identities; weighted round-robin
-chooses sizes. Supply `--bootstrap-data` explicitly; source manifests do not import
-an original corpus. Ancestral train/validation assignments remain pinned across
-windows. The selected corpus must contain both splits. Truncations are excluded;
+New loops and new campaign forks default to **`--training-window-fraction 0.3333333333333333`**.
+Each round selects the newest `ceil(parent cumulative unique training games / 3)`
+training games, using the same ancestral split ledger as the ratings chart's x-axis
+(not generated-game counts or repeated epochs). The minimum is one; the window is
+capped at the available eligible training pool. All earlier local rounds and explicit
+bootstrap games are candidates, not just the last few rounds. Board-size selection
+remains weighted round-robin, newest-first within each size; canonical duplicates
+count once. Legacy fixed-window limits `--window-games` and `--window-iterations` do not cap this mode.
+
+**Validation is separate.** New identities get a permanent split before window selection.
+From the validation-only pool, select the newest `ceil(selected training games *
+validation_fraction / (1-validation_fraction))` games (at least one, capped by availability).
+Changing window size or random seed never moves a held-out identity into training.
+Pool pins survive checkpoint continuation/forks, including assigned-but-unselected
+games. These extra pins are stored separately from the used-game ledger: unselected
+training games do not inflate the ratings chart's cumulative training count. Selected
+corpora, budgets and splits are frozen per round for restartability. Validation
+subsets may change, so validation loss is not a fixed-cohort benchmark.
+
+`--training-window-fraction 0` restores legacy fixed windows: `--window-iterations`
+(default 4) admits current/previous N−1 generated rounds, and `--window-games`
+(default 256) limits the combined train/validation corpus. CLI flags, recipes and
+saved configuration use only `training_window_fraction`, `window_games` and
+`window_iterations` (hyphenated on the CLI). There are no aliases for the old
+replay-setting names; older saved configurations must be explicitly migrated.
+cg9's saved configuration is migrated and upgraded starting with round 36,
+without changing completed rounds or automatically resuming it.
+
+Supply `--bootstrap-data` explicitly; source manifests do not import an original
+corpus. Missing ancestral SGFs cannot be sampled merely because their identities
+appear in a checkpoint. The selected corpus must contain both splits. Truncations are excluded;
 each generation round needs a completed policy-labeled game. Rust validates moves,
 policy, score and job/model identity. See [training](training.md).
 
-Default `--sizes 9,13,19 --size-weights 9:2,13:2,19:1` drives generation, replay and
+Default `--sizes 9,13,19 --size-weights 9:2,13:2,19:1` drives generation, window selection and
 training/validation samples. The smooth generation cycle is `9,13,19,9,13`, continued
 across boundaries; ten games are 4/4/2. Tiny budgets round, missing sizes renormalize
 and insufficient data may prevent exact proportions. `samples_by_size` reports
@@ -160,5 +185,5 @@ never interpreted as publication permission.
 Ctrl-C interrupts the child process group and waits/escalates for cleanup. Inherited
 OS locks prevent racing a live child. Never unlink `.loop.lock` or a live/malformed
 `.train.lock` to bypass it. This is process-interruption safety, not end-to-end
-power-loss or bitwise GPU reproducibility. Replay limits bound active selection,
+power-loss or bitwise GPU reproducibility. Window limits bound active selection,
 not total disk use or the ancestral holdout ledger.

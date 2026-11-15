@@ -119,6 +119,7 @@ def scan_corpus(
     binary=None,
     *,
     split_history: dict[str, str] | None = None,
+    split_assignments: dict[str, str] | None = None,
 ) -> Corpus:
     if not 0 < validation_fraction < 1:
         raise ValueError("validation fraction must be between 0 and 1")
@@ -126,6 +127,49 @@ def scan_corpus(
     if any(split not in ("train", "validation") for split in history.values()):
         raise ValueError("invalid split history")
     eligible, skipped = inspect_corpus(inputs, density, binary)
+    pinned = merge_split_assignments(history, split_assignments or {})
+    train, validation, assigned = assign_splits(eligible, seed, validation_fraction, pinned)
+    # Pool assignments are not evidence of use. Only selected games join the
+    # checkpoint ledger counted by the ratings chart.
+    history.update({game.game_id: assigned[game.game_id] for game in eligible})
+    if not train or not validation:
+        raise ValueError(
+            "need unique completed MCTS games, including at least two in one resolution bucket, for train/validation; inherited split assignments cannot be reassigned"
+        )
+    # Relocating an unchanged corpus is allowed; changing targets/content is not.
+    identity = [
+        {"game_id": g.game_id, "file_sha256": g.file_sha256, "plies": g.plies, "split": split}
+        for split, games in [("train", train), ("validation", validation)]
+        for g in games
+    ]
+    fingerprint = hashlib.sha256(
+        json.dumps(sorted(identity, key=lambda g: g["game_id"]), sort_keys=True).encode()
+    ).hexdigest()
+    return Corpus(train, validation, skipped, fingerprint, history)
+
+
+def merge_split_assignments(history, assignments):
+    """Merge durable pool pins without allowing ancestral holdouts to change."""
+    if not isinstance(assignments, dict):
+        raise TypeError("invalid window split history")
+    merged = dict(history)
+    for identity, split in assignments.items():
+        if (
+            not isinstance(identity, str)
+            or len(identity) != 64
+            or any(c not in "0123456789abcdef" for c in identity)
+            or split not in ("train", "validation")
+        ):
+            raise ValueError("invalid window split assignment")
+        if identity in merged and merged[identity] != split:
+            raise ValueError("window split conflicts with ancestral holdout")
+        merged[identity] = split
+    return merged
+
+
+def assign_splits(eligible, seed, validation_fraction, history):
+    """Assign unseen identities once, before selecting training/validation windows."""
+    history = dict(history)
     buckets = defaultdict(list)
     for game in eligible:
         buckets[game.resolution].append(game)
@@ -147,20 +191,7 @@ def scan_corpus(
         # Preserve shuffled order on both the first scan and subsequent resumes.
         validation.extend(game for game in games if history[game.game_id] == "validation")
         train.extend(game for game in games if history[game.game_id] == "train")
-    if not train or not validation:
-        raise ValueError(
-            "need unique completed MCTS games, including at least two in one resolution bucket, for train/validation; inherited split assignments cannot be reassigned"
-        )
-    # Relocating an unchanged corpus is allowed; changing targets/content is not.
-    identity = [
-        {"game_id": g.game_id, "file_sha256": g.file_sha256, "plies": g.plies, "split": split}
-        for split, games in [("train", train), ("validation", validation)]
-        for g in games
-    ]
-    fingerprint = hashlib.sha256(
-        json.dumps(sorted(identity, key=lambda g: g["game_id"]), sort_keys=True).encode()
-    ).hexdigest()
-    return Corpus(train, validation, skipped, fingerprint, history)
+    return train, validation, history
 
 
 @dataclass

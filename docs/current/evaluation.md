@@ -152,6 +152,6 @@ Champion promotion remains a separate decision, unaffected by the rating fit.
 rating scale (random=100). All evaluated rounds are connected in order; champion
 lineage checkpoints are solid circles in their campaign colour and non-champions are same-sized, grayer dots at 40% opacity. Error bars show **± rating
 deviation, not a 95% confidence interval**. Validation games are excluded from the
-x-axis, and replay/epochs do not count a game twice. Only models with actual evidence are plotted; skipped rounds do not receive invented
+x-axis, and repeated training-window selection/epochs do not count a game twice. Only models with actual evidence are plotted; skipped rounds do not receive invented
 ratings or dots. Existing results remain plotted, including completed games from
 an abandoned partial batch, with uncertainty reflecting their actual evidence.

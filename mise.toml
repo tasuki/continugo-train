@@ -50,7 +50,7 @@ description = "Build native self-play and authoritative feature binaries"
 run = "cargo build --locked --release --bin continugo-train --bin features"
 
 [tasks.loop]
-description = "Restartable neural self-play, bounded replay, warm-start and export loop"
+description = "Restartable neural self-play, training/validation windows, warm-start and export loop"
 depends = ["build-loop"]
 run = ".venv/bin/python -m continugo_train.loop"
 
@@ -80,7 +80,7 @@ depends = ["build-ratings"]
 run = ".venv/bin/python -m continugo_train.rate_saved"
 
 [tasks.retain-model]
-description = "Explicitly retain one campaign model with its checkpoint, replay and inference graphs"
+description = "Explicitly retain one campaign model with its checkpoint, window games and inference graphs"
 run = ".venv/bin/python -m continugo_train.retain"
 
 [tasks.promote]

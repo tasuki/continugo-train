@@ -122,7 +122,7 @@ reset/keep. Readable names such as `cg1-b4c32-s1248000-d550347` identify:
 For standalone training, `d` counts eligible imported rows from previously unseen
 canonical game IDs; copying or reintroducing ancestral games does not count again.
 The loop instead tracks each planned generation job once, including completed
-repeated games and games evicted from replay. It supplies frozen totals/game IDs
+repeated games and games outside the training/validation windows. It supplies frozen totals/game IDs
 in `generation-progress.pt` via `--generated-data`; this is orchestration metadata,
 not a game-record sidecar. Checkpoints retain `data_game_ids` even for generated
 games never selected for training, separately from the holdout ledger, so later
@@ -134,7 +134,7 @@ This counter is not the number of unique
 board positions, raw played moves, or all rows ever generated outside the lineage.
 
 Strict resume preserves the family/data total and advances `s` only for newly
-completed training epochs. Rejection, optimizer reset, and replay eviction cannot
+completed training epochs. Rejection, optimizer reset, and window eviction cannot
 reset these totals. Older checkpoints lacking counters produce names such as
 `cg1-b4c32-sunknown-dunknown`; continuation does not invent ancestral totals.
 
@@ -252,18 +252,18 @@ model.eval()
 
 Resume refuses incompatible feature definitions.
 
-## Warm-start on a changing replay corpus
+## Warm-start with changing training/validation windows
 
 Use `--warm-start`, **not** `--resume`, when adding/removing self-play games or
-changing replay targets. It initializes a new run from an existing offline-training
+changing training-window targets. It initializes a new run from an existing offline-training
 checkpoint; it does not weaken fixed-corpus resume checks.
 
 ```sh
 mise run train -- --data runs/bootstrap scratch/neural-001 --warm-start runs/train-001/best.pt --output runs/train-002 --epochs 3 --device cuda
 # Explicitly retain the source's SGD momentum instead of resetting it:
-mise run train -- --data runs/replay-003 --warm-start runs/train-002/latest.pt --warm-start-optimizer keep --output runs/train-003 --epochs 2
+mise run train -- --data runs/window-003 --warm-start runs/train-002/latest.pt --warm-start-optimizer keep --output runs/train-003 --epochs 2
 # Continue this new run with its corpus unchanged:
-mise run train -- --data runs/replay-003 --resume runs/train-003/latest.pt --epochs 3
+mise run train -- --data runs/window-003 --resume runs/train-003/latest.pt --epochs 3
 ```
 
 `--warm-start` and `--resume` are mutually exclusive. Warm-start uses a **new/empty**
@@ -306,7 +306,7 @@ The new run gets its own lock, log, epoch snapshots, `latest.pt` and `best.pt`.
 ### Continuing with a leaky value head
 
 ```sh
-mise run train -- --data PATH/TO/REPLAY --warm-start PATH/TO/PARENT.pt --warm-start-optimizer keep --value-activation leaky_relu --output runs/leaky-recovery --epochs 1
+mise run train -- --data PATH/TO/WINDOW-GAMES --warm-start PATH/TO/PARENT.pt --warm-start-optimizer keep --value-activation leaky_relu --output runs/leaky-recovery --epochs 1
 ```
 
 This retains the learned policy/trunk, value weights, BatchNorm and SGD momentum;
@@ -318,13 +318,13 @@ new self-play loop. Historical checkpoints/graphs still evaluate with ReLU unles
 an explicit warm-start changes their activation. Features and natural-outcome
 labels are unchanged.
 
-### Holdout safety across replay windows
+### Holdout safety across training/validation windows
 
 Blindly re-splitting overlapping data would put previously trained games into
 validation. Checkpoints therefore carry a canonical-game-ID `split_history` ledger:
 
 - All ancestral train/validation assignments stay pinned, including games absent
-  from the current replay window. A removed game keeps its split when reintroduced.
+  from the current training/validation windows. A removed game keeps its split when reintroduced.
 - New games are assigned deterministically with the selected seed, trying to fill
   the validation-fraction target per resolution after inherited holdouts. Existing
   assignments take precedence over that fraction; it is not an exact quota.
@@ -338,7 +338,7 @@ validation. Checkpoints therefore carry a canonical-game-ID `split_history` ledg
 - Older offline checkpoints without `split_history` are supported by deriving
   assignments from their embedded manifest. Invalid/conflicting history is
   rejected. The ledger stores IDs/splits, not tensors; it grows with the lineage's
-  unique games and is not pruned when the replay window shrinks.
+  unique games and is not pruned when the training/validation windows shrink.
 
 The current corpus/split manifest and fingerprint still describe only this run's
 selected eligible games. A warm-started run's own `--resume` rejects changed data
@@ -346,9 +346,9 @@ and retains the same split, optimizer/RNG state and completed-epoch semantics.
 Holdout losses remain diagnostics/model-selection metrics, not playing-strength
 measurements or a fully untouched benchmark.
 
-The standalone trainer does **not** generate games, select a replay window or
+The standalone trainer does **not** generate games, select training/validation windows or
 export a model. The separate [`mise run loop` supervisor](loop.md) orchestrates
-these stages with frozen replay selection and interruption recovery. Keep each
+these stages with frozen window selection and interruption recovery. Keep each
 job's SGF inputs immutable; changing the corpus is allowed **between** warm-start
 runs, not while a job is loading it.
 
@@ -372,7 +372,7 @@ The default output is `RUN/metrics.png`; `.svg` and `.pdf` are also supported.
 For loops/campaigns, the command also writes `draws.png` (or the chosen format)
 beside the loss plot. `--draws-output PATH` overrides its location. Draw proportions
 come from an atomic read-only `loop.pt` snapshot, counting actual generated games,
-not deduplicated replay. Only fully recorded self-play batches are included;
+not deduplicated window games. Only fully recorded self-play batches are included;
 fast-finishing draws otherwise bias partial iterations. Reference/arena games are
 excluded. The denominator includes all games in a batch; truncations are unknown,
 never counted as draws, and plotted separately when present.
@@ -386,8 +386,8 @@ counting repeated epochs twice. It does not load checkpoints or alter training.
 The command can also manually regenerate the automatically maintained plots.
 
 Epochs are stitched across jobs, with round labels/boundaries and separate line
-segments at replay changes. Missing/unlogged epochs or jobs cannot be recovered
-from logs alone. These are not fixed-corpus learning curves: changing replay can
+segments at window changes. Missing/unlogged epochs or jobs cannot be recovered
+from logs alone. These are not fixed-corpus learning curves: changing training/validation windows can
 change loss without a change in playing strength.
 
 ## Measurements
