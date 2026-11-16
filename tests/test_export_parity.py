@@ -9,6 +9,13 @@ class ExportParityTests(unittest.TestCase):
     def test_fp32_intermediate_roundoff_is_accepted(self):
         _assert_parity(np.array([0.018247247]), np.array([0.018224359]), spatial=True)
 
+    def test_intermediate_headroom_does_not_relax_downstream_checks(self):
+        _assert_parity(np.array([0.0003]), np.array([0.0]), spatial=True)
+        with self.assertRaises(AssertionError):
+            _assert_parity(np.array([0.0003]), np.array([0.0]))
+        with self.assertRaises(AssertionError):
+            _assert_parity(np.array([[0.0003, 0.0]]), np.zeros((1, 2)), logits=True)
+
     def test_near_zero_logit_roundoff_is_accepted(self):
         _assert_parity(
             np.array([[0.016541481, -30.0]]),
