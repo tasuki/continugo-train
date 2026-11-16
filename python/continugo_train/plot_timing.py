@@ -2,11 +2,14 @@
 
 import argparse
 import ast
+import fcntl
 import json
 import math
+import os
 import re
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -195,6 +198,8 @@ def plot(rounds, output, title="Iteration timing"):
 
 def update(run):
     run = Path(run)
+    if (run / "loop/loop.pt").is_file():
+        run = run / "loop"
     try:
         rows = collect(run)
         plot(rows, run / "timing.png", f"Iteration timing — {run.resolve().name}")
@@ -205,13 +210,61 @@ def update(run):
         print(f"WARNING: timing plot not updated: {error}", file=sys.stderr)
 
 
+def watch(run, pid, interval=30):
+    """Refresh charts until the supervising process exits, without changing training.
+
+    A lock prevents duplicate watchers. Normal campaign runtimes record stages and
+    update plots directly; this is an explicitly invoked plotting-tool operation.
+    """
+    if pid <= 0 or not math.isfinite(interval) or interval <= 0:
+        raise ValueError("watch PID and interval must be positive")
+    run = Path(run).resolve()
+    root = run / "loop" if (run / "loop/loop.pt").is_file() else run
+    with (root / ".timing-watch.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return  # An existing watcher already owns this output.
+        previous = None
+        while True:
+            control = (root / "loop.pt").stat()
+            signature = (
+                control.st_mtime_ns,
+                control.st_size,
+                tuple(
+                    (p.parent.name, p.stat().st_mtime_ns)
+                    for p in sorted(root.glob("iteration-*/timing.jsonl"))
+                ),
+            )
+            if signature != previous:
+                update(root)
+                previous = signature
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                update(root)
+                return
+            time.sleep(interval)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--measured-only", action="store_true", help="omit historical estimates")
+    parser.add_argument(
+        "--watch-pid", type=int, help="refresh both campaign images until this supervisor exits"
+    )
+    parser.add_argument(
+        "--interval", type=float, default=30, help="watch polling interval in seconds"
+    )
     args = parser.parse_args(argv)
+    if args.watch_pid is not None and (args.output is not None or args.measured_only):
+        parser.error("--watch-pid cannot be combined with --output or --measured-only")
     try:
+        if args.watch_pid is not None:
+            watch(args.run, args.watch_pid, args.interval)
+            return
         rows = collect(args.run, estimates=not args.measured_only)
         output = args.output or args.run / "timing.png"
         plot(rows, output, f"Iteration timing — {args.run.resolve().name}")

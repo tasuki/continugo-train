@@ -3,7 +3,8 @@
 import math
 from collections import Counter
 
-DEFAULT_SIZE_WEIGHTS = "9:2,13:2,19:1"
+# DEFAULT_SIZE_WEIGHTS = "9:2,13:2,19:1"  # Mixed-board option: 40%/40%/20%.
+DEFAULT_SIZE_WEIGHTS = "9:1,13:0,19:0"  # Size 9 only: 100%/0%/0%.
 
 
 def parse_weights(text):

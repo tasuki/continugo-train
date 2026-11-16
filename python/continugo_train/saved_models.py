@@ -113,7 +113,7 @@ def save_round(root, state, job, store=None):
     return destination
 
 
-def save_campaign(root, every=10, *, store=None, iteration=None):
+def save_campaign(root, every=1, *, store=None, iteration=None):
     if every <= 0:
         raise ValueError("save interval must be positive")
     root = Path(root).resolve()
@@ -197,7 +197,7 @@ def main(argv=None):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--loop", type=Path)
     source.add_argument("--runs", type=Path)
-    parser.add_argument("--every", type=int, default=10)
+    parser.add_argument("--every", type=int, default=1)
     parser.add_argument("--iteration", type=int)
     parser.add_argument("--model-store", type=Path, default=ROOT / "artifacts")
     args = parser.parse_args(argv)

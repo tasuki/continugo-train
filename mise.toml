@@ -75,7 +75,7 @@ description = "Read-only training, experimental actor, accepted identity and liv
 run = ".venv/bin/python -m continugo_train.status"
 
 [tasks.save-models]
-description = "Save independent model snapshots every tenth campaign round, including historical runs"
+description = "Save independent model snapshots every campaign round, including historical runs"
 run = ".venv/bin/python -m continugo_train.saved_models"
 
 [tasks.rate-saved]
@@ -104,7 +104,7 @@ description = "Native ONNX-guided MCTS (CUDA by default; --device cpu for CPU)"
 run = ".venv/bin/python -m continugo_train.runtime selfplay"
 
 [tasks.arena]
-description = "Paired-color candidate/incumbent evaluation (40/40/20 board mix)"
+description = "Paired-color candidate/incumbent evaluation (size 9 by default)"
 run = ".venv/bin/python -m continugo_train.runtime arena"
 
 [tasks.build-ratings]

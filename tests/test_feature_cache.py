@@ -132,7 +132,9 @@ class FeatureCacheTests(unittest.TestCase):
         results = []
         for mode, model in [("off", first), ("require", second)]:
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-            options = trainer.Options(seed=3, workers=0, batch_size=2, feature_cache=mode)
+            options = trainer.Options(
+                seed=3, workers=0, batch_size=2, feature_cache=mode, size_weights="uniform"
+            )
             for epoch in range(2):
                 random.seed(7)
                 results.append(
@@ -145,8 +147,10 @@ class FeatureCacheTests(unittest.TestCase):
         self.assertEqual(results[0]["loss"], results[2]["loss"])
         self.assertEqual(results[1]["loss"], results[3]["loss"])
 
-    def test_auto_is_default_and_builds_once_without_live_fallback(self):
-        self.assertEqual(trainer.Options().feature_cache, "auto")
+    def test_require_is_default_and_explicit_auto_builds_once_without_live_fallback(self):
+        self.assertEqual(trainer.Options().feature_cache, "require")
+        with cache.SampleReader() as reader, self.assertRaises(FileNotFoundError):
+            reader.load(self.sgf, 0)
         self.assertEqual(trainer.parse_args(["--data", str(self.sgf)]).feature_cache, None)
         games, _ = data.inspect_corpus([str(self.sgf)], 4)
         self.assertEqual(cache.ensure_caches(games, workers=2), 1)
@@ -169,7 +173,11 @@ class FeatureCacheTests(unittest.TestCase):
             )
         # Concurrent first access builds once, even when plans share a game.
         cache.sidecar_path(self.sgf).unlink()
-        samples = list(data._parallel_samples([(games[0], [0]), (games[0], [1])], 4, 2, None))
+        samples = list(
+            data._parallel_samples(
+                [(games[0], [0]), (games[0], [1])], 4, 2, None, feature_cache="auto"
+            )
+        )
         self.assertEqual([s.ply for s in samples], [0, 1])
         self.assertTrue(cache.sidecar_path(self.sgf).is_file())
         self.sgf.write_text(self.sgf.read_text() + "\n")

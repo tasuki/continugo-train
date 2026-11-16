@@ -67,6 +67,8 @@ For existing frozen campaigns, generate an ad-hoc chart without stopping trainin
 
 ```sh
 mise run plot-timing -- --run runs/20261114-cg9-geometry
+# Explicitly keep an older running campaign's two images refreshed:
+mise run plot-timing -- --run runs/20261114-cg9-geometry --watch-pid SUPERVISOR_PID
 # Exclude reconstructed historical estimates:
 mise run plot-timing -- --run runs/EXAMPLE --measured-only
 ```
@@ -78,18 +80,28 @@ and between-process gaps are omitted. They are not exact total wall-clock times.
 Filesystem birth times must be available (GNU `stat`); unknown spans are omitted.
 Faded bars indicate partial measured rounds. The current cg9 chart is generated
 this way; its already-running frozen supervisor is not modified or interrupted.
+An explicitly launched external plot watcher refreshes both cg9 images on control
+state changes, polling every 30 seconds, and exits with its supervisor. It is not
+part of the campaign launcher. Newly frozen campaigns use the normal measured
+stage hooks and automatically update both images after each iteration, including
+interrupted/failed iterations.
 
 ## cg9
 
 `cg9.json` forks cg8 round 5 (the latest completed round) with current code/binaries,
 including default schema-5 `geometry-v2-frontier` proposals (budget 16).
 It retains cg8's size-9, 100 games/round, 1,000-game combined training/validation window, exhaustive one-epoch
-training, D4, batch size 2, jigo-as-loss and randomized 100/400 search (25% expensive
-policy positions). It uses seed 99100000, saves every round and requests a shared
+training, D4, jigo-as-loss and randomized 100/400 search (25% expensive policy
+positions). Rounds 1–54 used inherited batch size 2; following the user's explicit
+stop/change request, round 55 onward uses the shared default batch size **32**.
+The unfinished round-55 epoch restarts from round 54 with momentum and its selected
+corpus preserved. See the [batch-size adoption record](../history/2026-11-16-cg9-batch32.md).
+It uses seed 99100000, saves every round and requests a shared
 champion challenge every fifth round. Initial target: 20 rounds. No historical
 campaign is modified by preparing a new fork.
 
 For continuation after completed round 35, cg9's runtime/config is explicitly
 upgraded to the one-third cumulative training-window policy. Round 36 onward uses
 separate, permanently pinned training/validation pools; completed round corpora are
-unchanged. The run remains paused after round 35 until explicitly resumed.
+unchanged. The campaign subsequently resumed; its current total target is 60 rounds.
+The later batch-32 adoption does not change this window policy.

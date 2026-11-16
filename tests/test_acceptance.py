@@ -140,28 +140,31 @@ class ArenaJobs(helpers.FakeJobs):
 
 
 class SamplingTests(unittest.TestCase):
-    def test_default_schedule_and_evaluation_pairs_are_40_40_20(self):
-        self.assertEqual(weighted_sizes((9, 13, 19)), [9, 13, 19, 9, 13])
-        self.assertEqual(Counter(weighted_sizes((9, 13, 19))), {9: 2, 13: 2, 19: 1})
-        config = EvaluationConfig(gate_games=20)
+    def test_default_schedule_and_evaluation_pairs_are_size9_only(self):
+        self.assertEqual(weighted_sizes((9, 13, 19)), [9])
+        self.assertEqual(Counter(weighted_sizes((9, 13, 19))), {9: 1})
         self.assertEqual(
-            Counter(gate.plan(config, 1, i)[1] for i in range(20)), {9: 8, 13: 8, 19: 4}
+            position_quotas({9: 100, 13: 100, 19: 900}, DEFAULT_SIZE_WEIGHTS), {9: 100}
         )
+        config = EvaluationConfig(gate_games=20)
+        self.assertEqual(Counter(gate.plan(config, 1, i)[1] for i in range(20)), {9: 20})
         for index in range(0, 20, 2):
             first, second = gate.plan(config, 1, index), gate.plan(config, 1, index + 1)
             self.assertEqual(first[1:3], second[1:3])
             self.assertNotEqual(first[3], second[3])
 
-    def test_surplus_long_board_positions_are_not_extracted(self):
+    def test_explicit_mixed_board_positions_are_downsampled(self):
+        mixed = "9:2,13:2,19:1"
+        self.assertEqual(weighted_sizes((9, 13, 19), mixed), [9, 13, 19, 9, 13])
         self.assertEqual(
-            position_quotas({9: 100, 13: 100, 19: 900}, DEFAULT_SIZE_WEIGHTS),
+            position_quotas({9: 100, 13: 100, 19: 900}, mixed),
             {9: 100, 13: 100, 19: 50},
         )
         games = [
             data.GameEntry(str(size), f"{size:064x}", "hash", size, 1, size, tuple(range(count)))
             for size, count in [(9, 100), (13, 100), (19, 900)]
         ]
-        plans = data._plans(games, 0, 0, True, 0, DEFAULT_SIZE_WEIGHTS, 2)
+        plans = data._plans(games, 0, 0, True, 0, mixed, 2)
         self.assertEqual(Counter(game.board_size for game, _ in plans), {9: 100, 13: 100, 19: 50})
         self.assertEqual(Counter(game.board_size for game, _ in plans[:20]), {9: 8, 13: 8, 19: 4})
         self.assertEqual(len({(game.game_id, plies[0]) for game, plies in plans}), 250)
@@ -175,9 +178,11 @@ class SamplingTests(unittest.TestCase):
                 for result in [*["B+1.0"] * wins, *["W+1.0"] * losses, *[None] * truncated]
             ]
 
-        for counts, bounds in [((6, 0, 4), (0.6, 1.0)),
-                               ((0, 7, 3), (0.0, 0.3)),
-                               ((2, 4, 4), (0.2, 0.6))]:
+        for counts, bounds in [
+            ((6, 0, 4), (0.6, 1.0)),
+            ((0, 7, 3), (0.0, 0.3)),
+            ((2, 4, 4), (0.2, 0.6)),
+        ]:
             report = gate.summarize(records(*counts))
             self.assertEqual(report["planned_score_bounds"], bounds)
             self.assertEqual(report["draws"], 0)
@@ -186,7 +191,9 @@ class SamplingTests(unittest.TestCase):
 
     def test_zero_weights_and_unavailable_sizes_are_renormalized(self):
         self.assertEqual(weighted_sizes((9, 13, 19), "9:2,13:2,19:0"), [9, 13])
-        self.assertEqual(position_quotas({13: 17}, DEFAULT_SIZE_WEIGHTS), {13: 17})
+        self.assertEqual(position_quotas({13: 17}, "9:2,13:2,19:1"), {13: 17})
+        with self.assertRaisesRegex(ValueError, "positive"):
+            position_quotas({13: 17}, DEFAULT_SIZE_WEIGHTS)
         for text in ["9:-1", "9:2,9:3", "broken"]:
             with self.assertRaises(ValueError):
                 weighted_sizes((9, 13, 19), text)
@@ -328,6 +335,10 @@ class AcceptanceTests(EvaluationHarness):
             extra=[
                 "--sizes",
                 "9,13,19",
+                "--size-weights",
+                "9:2,13:2,19:1",
+                "--feature-cache",
+                "auto",
                 "--games-per-iteration",
                 "5",
                 "--simulations",
@@ -374,6 +385,8 @@ class AcceptanceTests(EvaluationHarness):
                             *inputs,
                             "--resume",
                             str(copied),
+                            "--feature-cache",
+                            "off",
                             "--epochs",
                             "2",
                             "--device",

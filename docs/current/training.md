@@ -46,7 +46,7 @@ otherwise CPU; `--device cpu` forces CPU. Inspect options with
 `mise run train -- --help`. Architecture options include `--channels`, `--blocks`, `--policy-hidden`,
 `--value-hidden`, and `--chunk-size`. Defaults are the existing 32-channel/4-block
 network, FP32 eager mode, SGD lr 0.01 / momentum 0.9 / weight decay 1e-4, gradient
-norm clipping at 5, batch size 32, and six feature workers. Execution is FP32 eager;
+norm clipping at 5, batch size 64, and six feature workers. Execution is FP32 eager;
 memory use depends on batch size, feature buffers, and resolution. `--workers`
 remains configurable; checkpoint-based runs retain saved worker settings unless
 explicitly overridden.
@@ -71,16 +71,18 @@ unchanged; transforms happen after decoding. Use `--augmentation none` to disabl
 Resuming an older checkpoint without this option preserves its unaugmented recipe;
 resuming a newer one restores its saved setting.
 
-### Board mixture: 40% / 40% / 20%
+### Board mixture: size 9 only
 
-New training/warm-start runs default to `--size-weights 9:2,13:2,19:1`, emphasizing
-9/13 equivalents while retaining 20% for size 19. This controls **actual positions**:
-a long 19 game cannot dominate merely by providing many more plies. Surplus
+New training/warm-start runs default to `--size-weights 9:1,13:0,19:0`: **100% size
+9**, excluding sizes 13 and 19. The former 40%/40%/20% mix
+(`9:2,13:2,19:1`) remains commented out in source and can be explicitly selected.
+Weights control **actual positions**, not just loss multipliers. Surplus
 positions are downsampled without replacement before extracting selected-cell
 features, and homogeneous batches follow the weighted schedule. There are no
 extra loss multipliers, duplicate synthetic samples or conditional action softmaxes.
 
-The default cycle is 9,13,19,9,13. Very small budgets round; unavailable sizes
+The default cycle is just `[9]`; the former mixed cycle is `9,13,19,9,13`.
+For explicit mixtures, very small budgets round; unavailable sizes
 renormalize and tiny buckets retain coverage where possible. Zero weight excludes
 a size, and unlisted supported sizes have weight one. At least one positive-weight
 size is required in both train and validation. Actual `samples_by_size` is saved
@@ -92,7 +94,7 @@ can revisit a worker's game snapshot more often than contiguous uniform loading;
 worker queues remain bounded. `uniform` retains the original exhaustive ordering
 and dense shuffle-buffer behavior. Strict resume freezes this sampling option;
 legacy checkpoints without it restore `uniform`, rather than silently changing an
-old experiment. Warm-start/new runs use `9:2,13:2,19:1` unless otherwise specified.
+old experiment. Warm-start/new runs use `9:1,13:0,19:0` unless otherwise specified.
 
 **Random SGFs have no MCTS policy labels.** They are not silently assigned played-
 move targets. The joint policy/value trainer uses only positions with
@@ -177,10 +179,11 @@ SGFs stay the primary game records. The Rust `features --inspect` command emits
 metadata only. `features --serve` accepts local JSON request lines containing a
 path, ply, density and expected file hash; replies are status-u8 / length-u64
 framed CGFEAT02 tensors or UTF-8 errors. These are ephemeral IPC commands/tensors,
-not JSONL game records. [Binary feature sidecars](feature-cache.md) are built and
-used by default (`--feature-cache auto`): missing caches for all selected training
-and held-out games are prepared before epoch 1. `--feature-cache off` opts out;
-`prefer` and `require` provide explicit fallback/strict-read policies. Stale or corrupt
+not JSONL game records. [Binary feature sidecars](feature-cache.md) are required
+by default (`--feature-cache require`) for all selected training and held-out
+games. Self-play builds them; imported corpora need an explicit cache build or
+`--feature-cache auto` to prepare missing caches before epoch 1.
+`--feature-cache off` opts out; `prefer` allows missing-cache live fallback. Stale or corrupt
 caches fail clearly rather than being silently replaced. The target packet contract
 changed; input feature meanings did not.
 

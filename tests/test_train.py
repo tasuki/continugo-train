@@ -143,6 +143,7 @@ class OfflineDataTests(unittest.TestCase):
             positions_per_game=0,
             steps_per_epoch=0,
             size_weights="uniform",
+            feature_cache="off",
         )
         result = trainer.run_phase(
             model, optimizer, games, options, 0, torch.device("cpu"), None, True
@@ -271,6 +272,10 @@ class OfflineTrainerTests(unittest.TestCase):
             "cpu",
             "--threads",
             "1",
+            "--feature-cache",
+            "auto",
+            "--size-weights",
+            "uniform",
         ]
         if resume:
             arguments += ["--resume", str(resume)]
@@ -302,7 +307,7 @@ class OfflineTrainerTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             return train(parse_args([*arguments, *extra]))
 
-    def test_new_jobs_auto_cache_all_games_even_after_an_uncached_parent(self):
+    def test_explicit_auto_caches_all_games_even_after_an_uncached_parent(self):
         from continugo_train.feature_cache import CacheReader, sidecar_path
 
         source = self.run_training(self.root / "uncached", extra=["--feature-cache", "off"])

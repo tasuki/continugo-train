@@ -110,8 +110,8 @@ def joint_loss(
     score_targets,
     ownership_targets,
     *,
-    score_weight=0.25,
-    ownership_weight=0.25,
+    score_weight=0.5,
+    ownership_weight=0.5,
     policy_weights=None,
 ):
     base = hierarchical_policy_value_loss(

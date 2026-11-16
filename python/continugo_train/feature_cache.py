@@ -2,7 +2,7 @@
 
 SGFs remain authoritative. Caches contain existing CGFEAT02 packets, independently
 zlib-compressed per eligible ply; no model, split, or sampler state is stored.
-Self-play and training build missing sidecars by default. Explicit builds use
+Self-play builds sidecars by default; training requires them by default. Explicit builds use
 python -m continugo_train.feature_cache --data DIR ... .
 """
 
@@ -175,7 +175,7 @@ class CacheReader:
 class SampleReader:
     """Bounded per-worker open-file LRU; Rust is started only for live extraction."""
 
-    def __init__(self, binary=None, *, cache="auto", profile=False):
+    def __init__(self, binary=None, *, cache="require", profile=False):
         if cache not in MODES:
             raise ValueError(f"feature cache mode must be one of {MODES}")
         self.binary, self.cache, self.profile = binary, cache, profile

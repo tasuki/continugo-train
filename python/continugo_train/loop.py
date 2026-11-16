@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class LoopConfig:
     sizes: tuple[int, ...] = (9, 13, 19)
     size_weights: str = DEFAULT_SIZE_WEIGHTS
-    games_per_iteration: int = 10
+    games_per_iteration: int = 100
     seed: int = 0
     simulations: int = 100
     policy_simulations: int = 400
@@ -53,8 +53,8 @@ class LoopConfig:
     proposal_attempts: int = 128
     independent_exploration: float = 0.25
     score_weight: float = 0.5
-    concurrent_games: int = 32
-    inference_batch_size: int = 32
+    concurrent_games: int = 12
+    inference_batch_size: int = 12
     inference_batch_wait_ms: int = 2
     inference_threads: int = 1
     feature_threads: int = 6
@@ -63,10 +63,10 @@ class LoopConfig:
     window_games: int = 256
     training_window_fraction: float = 1 / 3
     train_epochs: int = 1
-    steps_per_epoch: int = 20
-    positions_per_game: int = 8
-    validation_positions_per_game: int = 4
-    batch_size: int = 32
+    steps_per_epoch: int = 0
+    positions_per_game: int = 0
+    validation_positions_per_game: int = 0
+    batch_size: int = Options().batch_size
     workers: int = Options().workers
     shuffle_buffer: int = 8
     feature_cache: str = Options().feature_cache
@@ -78,7 +78,7 @@ class LoopConfig:
     selfplay_binary: str = str(ROOT / "target/release/continugo-train")
     feature_binary: str = str(ROOT / "target/release/features")
     ort_library: str | None = None
-    save_model_every: int = 10
+    save_model_every: int = 1
     model_store: str = str(ROOT / "artifacts")
 
     def validate(self):

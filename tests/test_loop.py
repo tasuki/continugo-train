@@ -250,8 +250,12 @@ class LoopHarness(unittest.TestCase):
                 str(self.corpus),
                 "--model-store",
                 str(self.root / "models"),
+                "--save-model-every",
+                "0",
                 "--sizes",
                 "13",
+                "--size-weights",
+                "uniform",
                 "--games-per-iteration",
                 "4",
                 "--seed",
@@ -310,7 +314,7 @@ class LoopTests(LoopHarness):
             (100, 400, 0.25),
         )
         defaults.validate()
-        self.assertEqual(defaults.feature_cache, "auto")
+        self.assertEqual(defaults.feature_cache, "require")
         output = self.root / "randomized"
         state = self.run_loop(
             output, extra=["--simulations", "32", "--policy-search-probability", "0.25"]
@@ -328,7 +332,7 @@ class LoopTests(LoopHarness):
         with self.assertRaisesRegex(ValueError, "conflicting override"):
             self.run_loop(output, resume=True, extra=["--policy-search-probability", "0"])
         saved = loop.load_training(output / iteration["checkpoint"]["path"])
-        self.assertEqual(saved["options"]["feature_cache"], "auto")
+        self.assertEqual(saved["options"]["feature_cache"], "require")
         generation = next(c for c in self.jobs.calls if "--engine" in c)
         self.assertEqual(generation[generation.index("--feature-cache-density") + 1], "4")
         self.assertNotIn("--no-feature-cache", generation)
@@ -460,6 +464,10 @@ class LoopTests(LoopHarness):
                         str(output / "iteration-0001/selfplay"),
                         "--output",
                         str(self.root / "offline-import"),
+                        "--feature-cache",
+                        "auto",
+                        "--size-weights",
+                        "uniform",
                         "--epochs",
                         "1",
                         "--device",
@@ -638,7 +646,7 @@ class LoopTests(LoopHarness):
             {"game_id": "d", "board_size": 19, "eligible": True},
             {"game_id": "e", "board_size": 19, "eligible": False},
         ]
-        selected = loop.select_replay(records, 4)
+        selected = loop.select_replay(records, 4, "9:2,13:2,19:1")
         self.assertEqual([r["game_id"] for r in selected], ["a", "c", "d", "b"])
         self.assertEqual(selected[0]["version"], "new")
 
@@ -690,6 +698,10 @@ class LoopTests(LoopHarness):
             str(self.root / "real-models"),
             "--sizes",
             "9,13,19",
+            "--size-weights",
+            "9:2,13:2,19:1",
+            "--feature-cache",
+            "auto",
             "--games-per-iteration",
             "6",
             "--seed",

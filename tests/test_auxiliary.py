@@ -88,7 +88,7 @@ class AuxiliaryTests(unittest.TestCase):
             *outputs, torch.zeros(2, 1, dtype=torch.int64), torch.ones(2, 1), outcome, score, owned
         )
         torch.testing.assert_close(
-            loss.total, loss.policy + loss.value + 0.25 * loss.score + 0.25 * loss.ownership
+            loss.total, loss.policy + loss.value + 0.5 * loss.score + 0.5 * loss.ownership
         )
         expected = ((outputs[3] - owned).square() * ownership_weights(n)).sum((-2, -1)).mean()
         torch.testing.assert_close(loss.ownership, expected)
@@ -182,8 +182,8 @@ class AuxiliaryTests(unittest.TestCase):
 
     def test_new_target_contract_and_loss_options_are_validated(self):
         self.assertEqual(feature_spec(4)["targets"], "final-area-v1")
-        self.assertEqual(Options().score_loss_weight, 0.25)
-        self.assertEqual(Options().ownership_loss_weight, 0.25)
+        self.assertEqual(Options().score_loss_weight, 0.5)
+        self.assertEqual(Options().ownership_loss_weight, 0.5)
         for weight in (-1, math.inf, math.nan):
             with self.assertRaises(ValueError):
                 Options(score_loss_weight=weight).validate()

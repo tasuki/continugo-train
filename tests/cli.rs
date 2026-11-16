@@ -114,7 +114,7 @@ fn default_mix_and_truncation_warnings_are_explicit() {
             sgf::decode_record(&fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
         *sizes.entry(board_from_sgf(&record).size()).or_insert(0) += 1;
     }
-    assert_eq!(sizes, [(9, 2), (13, 2), (19, 1)].into_iter().collect());
+    assert_eq!(sizes, [(9, 5)].into_iter().collect());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(stderr.matches("WARNING TRUNCATED").count(), 5);
     assert!(stderr.contains("draws=0 truncated=5"));
@@ -162,6 +162,8 @@ fn stdout_previews_use_the_main_repo_sgf_codec() {
                 "random",
                 "--sizes",
                 &size.to_string(),
+                "--size-weights",
+                "uniform",
                 "--max-moves",
                 "2",
             ])
@@ -209,6 +211,8 @@ fn saved_sgf_replays_and_metadata_preserves_sparse_visits_and_truncation() {
             "8",
             "--sizes",
             "19",
+            "--size-weights",
+            "uniform",
             "--output",
         ])
         .arg(&directory.0)
@@ -267,6 +271,8 @@ fn saved_random_games_do_not_pass_prematurely() {
         .args([
             "--engine",
             "random",
+            "--size-weights",
+            "uniform",
             "--games",
             "3",
             "--seed",
@@ -314,6 +320,8 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
         .args([
             "--sizes",
             "19",
+            "--size-weights",
+            "uniform",
             "--seed",
             "1",
             "--simulations",

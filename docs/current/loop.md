@@ -2,7 +2,7 @@
 
 `mise run loop` runs native self-play → growing training/validation windows → warm-start training →
 ONNX export, with run-owned recovery. **Training does not run rating matches.**
-It saves each tenth model for separate evaluation under `artifacts/ratings/`.
+It saves every round's model for separate evaluation under `artifacts/ratings/`.
 It never automatically promotes a network; accepted publication follows the
 [approval procedure](model-store.md#approval-operation).
 
@@ -44,9 +44,12 @@ New loops reserve `runs/YYYYMMDD-HHMMSS-loop` (UTC, collision-safe). Explicit
 `--output` paths are literal; resume must name the existing output. Status is
 read-only and reports roles, cumulative progress, metrics, phase, disk and live logs.
 
-Use `mise run loop -- --help` for defaults. New loops default to twelve concurrent
-games / batch limit twelve / collection wait two ms; active slots are capped by
-`--games-per-iteration` (default ten). See [inference batching](inference.md#cross-game-batching).
+Use `mise run loop -- --help` or the [constants and formulas inventory](constants.md)
+for defaults. New loops default to 12 concurrent games / batch limit 12 /
+collection wait two ms; active slots are capped by `--games-per-iteration`
+(default 100). Training batch size is 64; position and step caps default to zero
+(all eligible positions, exhaustive one-epoch training and validation). Feature
+caches are required by default. See [inference batching](inference.md#cross-game-batching).
 `--device cpu` selects CPU. Play, training and export are separate supervised
 processes; export verification uses CPU.
 
@@ -70,7 +73,7 @@ and evaluation-enabling flags are no longer loop options.
 
 ## Milestone saving, separate ratings
 
-`--save-model-every 10` saves independent checkpoint and ONNX copies in
+`--save-model-every 1` (the default) saves independent checkpoint and ONNX copies in
 `artifacts/models/<family>/rNNNN/`, alongside small portable `metadata.json`. Original campaign files stay
 intact. No window-game copy, hardlink, approval or rating match is created. Saving is
 idempotent; resume repairs a missed save after a state-commit interruption without
@@ -160,11 +163,12 @@ appear in a checkpoint. The selected corpus must contain both splits. Truncation
 each generation round needs a completed policy-labeled game. Rust validates moves,
 policy, score and job/model identity. See [training](training.md).
 
-Default `--sizes 9,13,19 --size-weights 9:2,13:2,19:1` drives generation, window selection and
-training/validation samples. The smooth generation cycle is `9,13,19,9,13`, continued
-across boundaries; ten games are 4/4/2. Tiny budgets round, missing sizes renormalize
-and insufficient data may prevent exact proportions. `samples_by_size` reports
-actual counts. `uniform` restores literal cycling; zero weights exclude a size.
+Default `--sizes 9,13,19 --size-weights 9:1,13:0,19:0` uses **size 9 only** for
+generation, window selection and training/validation samples: 100 games per round.
+The former 40%/40%/20% mix (`9:2,13:2,19:1`) remains an explicit option and a
+commented-out default in source. `samples_by_size` reports actual counts.
+`uniform` restores literal cycling; zero weights exclude a size. Explicitly
+selecting a different size also requires a positive weight for it.
 
 ## Operating safeguards and interruption
 

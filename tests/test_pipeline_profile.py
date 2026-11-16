@@ -18,11 +18,7 @@ from continugo_train.train import parse_args as parse_train_args
 
 
 class PipelineProfileTests(unittest.TestCase):
-    def test_six_worker_defaults_allow_explicit_and_saved_settings(self):
-        self.assertEqual(Options().batch_size, 32)
-        self.assertEqual(LoopConfig().batch_size, 32)
-        self.assertEqual(Options().workers, 6)
-        self.assertEqual(LoopConfig().workers, 6)
+    def test_worker_overrides_preserve_saved_settings(self):
         for count in (0, 2, 6):
             args = ["--workers", str(count)]
             self.assertEqual(parse_train_args(["--data", "unused", *args]).workers, count)
@@ -35,16 +31,17 @@ class PipelineProfileTests(unittest.TestCase):
         required = ["--positions", "unused", "--model", "unused", "--checkpoint", "unused"]
         defaults = LoopConfig()
         profile = parse_profile_args(required)
-        for name, expected in (
-            ("concurrent_games", 32),
-            ("inference_batch_size", 32),
-            ("batch_size", 32),
-            ("inference_batch_wait_ms", 2),
+        for name in (
+            "concurrent_games",
+            "inference_batch_size",
+            "batch_size",
+            "inference_batch_wait_ms",
         ):
-            self.assertEqual(getattr(defaults, name), expected)
-            self.assertEqual(getattr(profile, name), expected)
+            self.assertEqual(getattr(profile, name), getattr(defaults, name))
             self.assertIsNone(getattr(parse_loop_args([]), name))
         overrides = [
+            "--batch-size",
+            "7",
             "--concurrent-games",
             "6",
             "--inference-batch-size",
@@ -53,6 +50,7 @@ class PipelineProfileTests(unittest.TestCase):
             "0",
         ]
         for args in (parse_profile_args([*required, *overrides]), parse_loop_args(overrides)):
+            self.assertEqual(args.batch_size, 7)
             self.assertEqual(args.concurrent_games, 6)
             self.assertEqual(args.inference_batch_size, 8)
             self.assertEqual(args.inference_batch_wait_ms, 0)
@@ -131,7 +129,13 @@ class PipelineProfileTests(unittest.TestCase):
                         model,
                         optimizer,
                         corpus.train,
-                        Options(batch_size=2, workers=0, steps_per_epoch=1, feature_cache="off"),
+                        Options(
+                            batch_size=2,
+                            workers=0,
+                            steps_per_epoch=1,
+                            feature_cache="off",
+                            size_weights="uniform",
+                        ),
                         0,
                         torch.device("cpu"),
                         None,

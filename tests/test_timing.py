@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import torch
 
-from continugo_train import plot_timing, timing
+from continugo_train import loop, plot_timing, timing
 
 
 class TimingTests(unittest.TestCase):
@@ -101,6 +101,80 @@ class TimingTests(unittest.TestCase):
                 "arena game 1/10: moves=50 elapsed=999.000s\n"
             )
             self.assertEqual(dict(plot_timing.arena_history(root, "cg9")), {10: 12.3})
+
+    def test_update_refreshes_both_campaign_images_from_either_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            root = run / "loop"
+            root.mkdir()
+            (root / "loop.pt").touch()
+            (run / "launch.json").write_text("{}")
+            for entrypoint in (run, root):
+                with (
+                    patch.object(plot_timing, "collect", return_value=["row"]) as collect,
+                    patch.object(plot_timing, "plot") as plot,
+                ):
+                    plot_timing.update(entrypoint)
+                collect.assert_called_once_with(root)
+                self.assertEqual(
+                    [call.args[1] for call in plot.call_args_list],
+                    [root / "timing.png", run / "timing.png"],
+                )
+
+    def test_normal_loop_refreshes_timing_after_success_or_interruption(self):
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                state = {
+                    "config": {},
+                    "initial_model": {},
+                    "training": {},
+                    "actor": {},
+                    "target_iterations": 1,
+                    "iterations": [{"number": 1, "completed": False}],
+                }
+                runner = loop.LoopRunner(root, state, None)
+                with (
+                    patch.object(runner, "verify_committed"),
+                    patch.object(runner, "save"),
+                    patch.object(runner, "log"),
+                    patch.object(
+                        runner,
+                        "finish_iteration",
+                        side_effect=KeyboardInterrupt if interrupted else None,
+                    ),
+                    patch.object(loop.archive, "initialize_store"),
+                    patch.object(loop.promote, "accepted_head"),
+                    patch.object(plot_timing, "update") as update,
+                ):
+                    if interrupted:
+                        with self.assertRaises(KeyboardInterrupt):
+                            runner.run()
+                    else:
+                        runner.run()
+                update.assert_called_once_with(root)
+
+    def test_watch_refreshes_on_state_changes_and_exits_with_supervisor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            control = root / "loop.pt"
+            control.touch()
+
+            # Change the file between polls, without sleeping in the test.
+            def advance(_seconds):
+                control.write_text("changed")
+
+            with (
+                patch.object(plot_timing, "update") as update,
+                patch.object(plot_timing.os, "kill", side_effect=[None, ProcessLookupError]),
+                patch.object(plot_timing.time, "sleep", side_effect=advance),
+            ):
+                plot_timing.watch(root, 1234, 0.01)
+            self.assertEqual(update.call_count, 3)
+            self.assertTrue(all(call.args == (root,) for call in update.call_args_list))
+            for pid, interval in [(0, 1), (1, 0), (1, float("nan"))]:
+                with self.assertRaises(ValueError):
+                    plot_timing.watch(root, pid, interval)
 
     def test_invalid_durations_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

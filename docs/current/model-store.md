@@ -48,7 +48,7 @@ against the training source. There are no hardlinks. Saved files are read-only t
 resist accidents; owners can explicitly make them writable for maintenance.
 
 ```sh
-# The loop saves every tenth round by default, without evaluating it.
+# The loop saves every round by default, without evaluating it.
 # Explicitly save every completed round of cg5 for the retrospective ladder:
 mise run save-models -- --loop runs/20261108-154636-schema5-scratch/loop --every 1
 ```

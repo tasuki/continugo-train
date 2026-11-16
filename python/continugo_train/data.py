@@ -312,7 +312,7 @@ def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_si
     return ordered
 
 
-def _serial_samples(plans, density, binary, feature_profile=None, feature_cache="auto"):
+def _serial_samples(plans, density, binary, feature_profile=None, feature_cache="require"):
     with SampleReader(binary, cache=feature_cache, profile=feature_profile is not None) as client:
         for game, plies in plans:
             for ply in plies:
@@ -354,7 +354,9 @@ def _serial_samples(plans, density, binary, feature_profile=None, feature_cache=
                     raise ValueError(f"{game.path} ply {ply}: {error}") from error
 
 
-def _parallel_samples(plans, density, workers, binary, feature_profile=None, feature_cache="auto"):
+def _parallel_samples(
+    plans, density, workers, binary, feature_profile=None, feature_cache="require"
+):
     if not plans:
         return
     if not workers:
@@ -418,7 +420,7 @@ def batches(
     binary=None,
     size_weights="uniform",
     feature_profile=None,
-    feature_cache="auto",
+    feature_cache="require",
     augmentation="d4",
 ):
     """Bounded, deterministic shuffling and homogeneous-resolution batches.

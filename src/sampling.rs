@@ -1,7 +1,8 @@
 //! Board-budget scheduling, not game rules. Matches Python sampling.py.
 use std::collections::BTreeMap;
 
-pub const DEFAULT_SIZE_WEIGHTS: &str = "9:2,13:2,19:1";
+// pub const DEFAULT_SIZE_WEIGHTS: &str = "9:2,13:2,19:1"; // Mixed-board: 40%/40%/20%.
+pub const DEFAULT_SIZE_WEIGHTS: &str = "9:1,13:0,19:0"; // Size 9 only: 100%/0%/0%.
 
 pub fn weighted_sizes(sizes: &[i32], text: &str) -> Result<Vec<i32>, String> {
     if sizes.is_empty() || sizes.iter().any(|s| !(9..=19).contains(s)) {
@@ -76,11 +77,12 @@ mod tests {
     fn default_mix_and_legacy_cycles() {
         assert_eq!(
             weighted_sizes(&[9, 13, 19], DEFAULT_SIZE_WEIGHTS).unwrap(),
-            vec![9, 13, 19, 9, 13]
+            vec![9]
         );
+        assert!(weighted_sizes(&[13], DEFAULT_SIZE_WEIGHTS).is_err());
         assert_eq!(
-            weighted_sizes(&[13], DEFAULT_SIZE_WEIGHTS).unwrap(),
-            vec![13]
+            weighted_sizes(&[9, 13, 19], "9:2,13:2,19:1").unwrap(),
+            vec![9, 13, 19, 9, 13]
         );
         assert_eq!(
             weighted_sizes(&[9, 13, 19], "uniform").unwrap(),

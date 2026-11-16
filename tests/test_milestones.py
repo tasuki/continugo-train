@@ -73,7 +73,7 @@ class MilestoneTests(helpers.LoopHarness):
 
     def test_milestones_only_save_models_without_evaluation(self):
         output = self.root / "automatic"
-        state = self.run_loop(output, extra=["--iterations", "10"])
+        state = self.run_loop(output, extra=["--iterations", "10", "--save-model-every", "1"])
         store = Path(state["config"]["model_store"])
         self.assertTrue((store / "models/test1/r0010/metadata.json").is_file())
         self.assertFalse((store / "ratings/ratings.png").exists())
@@ -84,7 +84,7 @@ class MilestoneTests(helpers.LoopHarness):
         self.assertTrue(all("gate" not in job for job in state["iterations"]))
 
     def test_defaults_and_legacy_protocol_round_trip(self):
-        self.assertEqual(loop.LoopConfig().save_model_every, 10)
+        self.assertEqual(loop.LoopConfig().save_model_every, 1)
         settings = ratings.protocol(EvaluationConfig(), legacy=True)
         self.assertEqual(settings["version"], 1)
         self.assertNotIn("score_weight", settings["search"])

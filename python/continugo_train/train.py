@@ -45,7 +45,7 @@ from .sampling import DEFAULT_SIZE_WEIGHTS, parse_weights
 
 @dataclass
 class Options:
-    batch_size: int = 32
+    batch_size: int = 64
     workers: int = 6
     shuffle_buffer: int = 8
     samples_per_diameter: int = 4
@@ -59,9 +59,9 @@ class Options:
     weight_decay: float = 1e-4
     grad_clip: float = 5.0
     size_weights: str = DEFAULT_SIZE_WEIGHTS
-    score_loss_weight: float = 0.25
-    ownership_loss_weight: float = 0.25
-    feature_cache: str = "auto"
+    score_loss_weight: float = 0.5
+    ownership_loss_weight: float = 0.5
+    feature_cache: str = "require"
     augmentation: str = "d4"
 
     def validate(self):
@@ -478,7 +478,7 @@ def train(args):
         args.data_positions = generated["data_positions"]
     restored_options = dict(saved["options"]) if saved is not None else {}
     # Old fixed-corpus checkpoints retain their original exhaustive ordering.
-    # New jobs/warm-starts use the new 40/40/20 default unless explicitly set.
+    # New jobs/warm-starts use the current size-9-only default unless explicitly set.
     if resuming and "size_weights" not in restored_options:
         restored_options["size_weights"] = "uniform"
     if resuming and "augmentation" not in restored_options:

@@ -51,11 +51,20 @@ Schema-4 inference and schema-5 checkpoint/ONNX feature metadata both require
   legality mask, life/death rule, pass proof or handcrafted search reward.
 
 ```
-loss = policy_CE + outcome_MSE + 0.25*score_MSE + 0.25*ownership_MSE
+loss = policy_CE + outcome_MSE + 0.5*score_MSE + 0.5*ownership_MSE
 ```
 
 `--score-loss-weight` and `--ownership-loss-weight` configure the last two factors
-and are saved in training options. Ownership MSE is weighted by physical cell
+and are saved in training options. Both fresh-training defaults are **0.5**.
+Per the user's instruction, cg9 keeps its inherited score coefficient **1.0** and
+ownership coefficient **0.25**. For identical errors, cg9 gives score loss twice
+and ownership loss half the influence of the new defaults. These ratios describe
+the individual loss terms and their gradients, not the total loss/gradient.
+Targets and predictions keep the same normalized scale. This is independent of
+search's `score_weight=0.5` below; raw loss scales and shared-trunk gradient
+interactions matter, so no coefficient is automatically better.
+
+Ownership MSE is weighted by physical cell
 area within each position and then averaged across positions. Report raw losses
 separately; the logged total includes the configured factors. Saved metrics also
 include score MAE/bias, score-versus-integrated-ownership discrepancy and prediction

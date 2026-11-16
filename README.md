@@ -27,7 +27,7 @@ Experimental actors may advance independently, but accepted networks require
 and convincing strength against the reference. The [loop](docs/current/loop.md)
 never promotes automatically.
 
-Training saves each tenth-round model but runs **no rating matches**. Evaluate saved
+Training saves every round's model but runs **no rating matches**. Evaluate saved
 models separately with `mise run rate-saved -- --family cg5`, or resume with
 `mise run rate-saved -- --resume`. [Ratings](docs/current/evaluation.md) belong under
 `artifacts/ratings/`, and games under `artifacts/sgfs/YYYY-MM-DD/`,
@@ -91,8 +91,9 @@ mise run rate-models -- --help
 
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
 Completed MCTS/neural games also get compressed `features/*.cfeat` sidecars by default.
-Training automatically builds missing sidecars and uses them; see
-[feature caching](docs/current/feature-cache.md) for opt-outs and cache validation.
+Training requires sidecars by default; explicitly build imported corpora's caches
+or use `--feature-cache auto`. See [feature caching](docs/current/feature-cache.md)
+for opt-outs and cache validation.
 
 To see what the network sees, use the [neural game microscope](docs/current/nn-viewer.md):
 `mise run nn-view` for existing training/rated SGFs, or add
@@ -110,6 +111,7 @@ See [artifact organization](docs/current/artifacts.md).
 ## Documentation
 
 - [Current implementation and operating instructions](docs/current/)
+- [Constants, defaults and budget formulas](docs/current/constants.md)
 - [Artifact organization](docs/current/artifacts.md)
 - [Representative pipeline profiling](docs/current/profiling.md)
 - [Benchmarks](docs/benchmarks.md)
