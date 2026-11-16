@@ -49,6 +49,36 @@ frozen evaluation protocol. Resume after termination with the same command; do n
 run an old campaign launcher concurrently. Logs/status are under the recipe's
 output directory, including `run.pid`, `status.json`, `loop/loop.log` and stage logs.
 
+## Iteration timing
+
+New campaigns automatically maintain **`timing.png`** beside `metrics.png` (both
+under the campaign directory and `loop/`). Stacked bars show self-play and feature
+caches, window preparation, training including validation/checkpoints, arena games,
+evaluation/reporting, export, model saving, and other orchestration overhead.
+Arena is subtracted from the evaluator total, so it is not counted twice; reporting
+includes joint rating fits, plots and neural-viewer generation.
+
+Stage durations are appended to `loop/iteration-NNNN/timing.jsonl` using monotonic
+clocks. Failed/interrupted work counts; downtime between resumes does not. Timing
+is diagnostic, not a training checkpoint or game ledger. No command/recipe option
+is needed to enable it. A newly frozen runtime includes the recorder automatically.
+
+For existing frozen campaigns, generate an ad-hoc chart without stopping training:
+
+```sh
+mise run plot-timing -- --run runs/20261114-cg9-geometry
+# Exclude reconstructed historical estimates:
+mise run plot-timing -- --run runs/EXAMPLE --measured-only
+```
+
+Old rounds without journals are **hatched estimates**, using process-log birth and
+last-write timestamps plus native arena-game durations from the shared evaluator
+log. They can include pauses within a reused log; unknown setup/selection/saving
+and between-process gaps are omitted. They are not exact total wall-clock times.
+Filesystem birth times must be available (GNU `stat`); unknown spans are omitted.
+Faded bars indicate partial measured rounds. The current cg9 chart is generated
+this way; its already-running frozen supervisor is not modified or interrupted.
+
 ## cg9
 
 `cg9.json` forks cg8 round 5 (the latest completed round) with current code/binaries,

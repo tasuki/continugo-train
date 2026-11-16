@@ -209,7 +209,7 @@ def prepare(root, run, recipe):
 
 def campaign_runner(run, receipt):
     """Shared window ordering/cache propagation and optional boundary ratings."""
-    from . import loop
+    from . import loop, plot_timing, timing
     from .feature_cache import sidecar_path
 
     class CampaignLoop(loop.LoopRunner):
@@ -248,21 +248,28 @@ def campaign_runner(run, receipt):
 
             if complete():
                 return
-            self.execute(
-                [
-                    sys.executable,
-                    "-m",
-                    "continugo_train.rate_saved",
-                    "--resume",
-                    "--model-store",
-                    str(store),
-                    "--include-family",
-                    receipt["family"],
-                    "--family-evaluation-every",
-                    str(every),
-                ],
-                self.path(f"iteration-{number:04d}/ratings.log"),
-            )
+            journal = timing.journal(self.root, number)
+            try:
+                with timing.measure(journal, "evaluation"):
+                    self.execute(
+                        [
+                            sys.executable,
+                            "-m",
+                            "continugo_train.rate_saved",
+                            "--resume",
+                            "--model-store",
+                            str(store),
+                            "--include-family",
+                            receipt["family"],
+                            "--family-evaluation-every",
+                            str(every),
+                        ],
+                        self.path(f"iteration-{number:04d}/ratings.log"),
+                        dict(os.environ, **{timing.ENVIRONMENT: str(journal)}),
+                    )
+            finally:
+                if self._timing_iteration is None:
+                    plot_timing.update(self.root)
             if not complete():
                 raise ValueError(f"Champion evaluation not complete: {name}")
 

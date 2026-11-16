@@ -293,6 +293,7 @@ class LoopHarness(unittest.TestCase):
         with (
             patch.object(loop, "run_process", self.jobs),
             patch.object(loop, "verify_export", self.jobs.bundle),
+            patch.object(loop.plot_timing, "update"),
             redirect_stdout(io.StringIO()),
         ):
             return loop.run_loop(self.args(output, resume, extra))

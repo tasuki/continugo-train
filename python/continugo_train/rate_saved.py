@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 
-from . import archive, gate, plot_ratings, rating_store, ratings
+from . import archive, gate, plot_ratings, rating_store, ratings, timing
 from .evaluation import EvaluationConfig, EvaluationRunner
 from .loop import atomic_bytes
 from .paths import ROOT, utc_now
@@ -82,6 +82,13 @@ def save_champions(store, registry):
 
 
 class ArtifactRunner(EvaluationRunner):
+    def execute(self, command, logfile, environment=None):
+        journal = os.environ.get(timing.ENVIRONMENT)
+        if journal:
+            with timing.measure(journal, "arena"):
+                return super().execute(command, logfile, environment)
+        return super().execute(command, logfile, environment)
+
     def save(self):
         atomic_checkpoint(self.root / "ratings/evaluator.pt", self.state)
 

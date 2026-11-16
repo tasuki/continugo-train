@@ -16,13 +16,13 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict, deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 import torch
 
-from . import archive, plot_metrics, promote
+from . import archive, plot_metrics, plot_timing, promote, timing
 from .data import assign_splits, inspect_corpus, merge_split_assignments, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
@@ -430,6 +430,7 @@ class LoopRunner:
     def __init__(self, root, state, lock_fd):
         self.root, self.state, self.lock_fd = root, state, lock_fd
         self.config = LoopConfig(**training_config(state["config"]))
+        self._timing_iteration = None
 
     def save(self):
         atomic_checkpoint(self.root / "loop.pt", self.state)
@@ -995,8 +996,48 @@ class LoopRunner:
         if self.config.save_model_every and iteration["number"] % self.config.save_model_every == 0:
             from .saved_models import save_round
 
-            destination = save_round(self.root, self.state, iteration)
-            self.log(f"SAVED MODEL: {destination}")
+            measurement = (
+                timing.measure(timing.journal(self.root, iteration["number"]), "saving")
+                if self._timing_iteration == iteration["number"]
+                else nullcontext()
+            )
+            with measurement:
+                destination = save_round(self.root, self.state, iteration)
+                self.log(f"SAVED MODEL: {destination}")
+
+    def finish_iteration(self, iteration):
+        number = iteration["number"]
+        journal = timing.journal(self.root, number)
+        parent = load_training(self.check(iteration["parent_checkpoint"]))
+        with timing.measure(journal, "selfplay"):
+            self.selfplay(iteration)
+        plot_metrics.update(self.root)
+        with timing.measure(journal, "window"):
+            options = self.replay(iteration, parent)
+        with timing.measure(journal, "training"):
+            self.training(iteration, parent, options)
+        plot_metrics.update(self.root)
+        self.state["training"] = {"checkpoint": iteration["checkpoint"]}
+        self.save()
+        if iteration["model"] is None:
+            with timing.measure(journal, "export"):
+                iteration["model"] = self.export(
+                    iteration["checkpoint"], f"iteration-{number:04d}/model"
+                )
+                self.save()
+        self.state["actor"] = {
+            "checkpoint": iteration["checkpoint"],
+            "model": iteration["model"],
+        }
+        iteration["actor_updated"] = True
+        iteration["completed"] = True
+        self.state["accepted"] = promote.accepted_head(self.config.model_store)
+        self.save()
+        self.save_milestone(iteration)
+        self.log(
+            f"iteration {number} complete: experimental actor advanced; "
+            f"training progress retained at {iteration['checkpoint']['path']}; no automatic promotion"
+        )
 
     def run(self, stop_after_iteration=None):
         self.verify_committed()
@@ -1044,35 +1085,29 @@ class LoopRunner:
                 self.save()
             iteration = self.state["iterations"][number - 1]
             if iteration["completed"]:
-                self.save_milestone(iteration)
-                continue
-            parent = load_training(self.check(iteration["parent_checkpoint"]))
-            self.selfplay(iteration)
-            plot_metrics.update(self.root)
-            options = self.replay(iteration, parent)
-            self.training(iteration, parent, options)
-            plot_metrics.update(self.root)
-            self.state["training"] = {"checkpoint": iteration["checkpoint"]}
-            self.save()
-            if iteration["model"] is None:
-                iteration["model"] = self.export(
-                    iteration["checkpoint"], f"iteration-{number:04d}/model"
+                # Training is committed before a campaign's arena evaluation.
+                # Finish an interrupted evaluation's timing envelope on resume.
+                journal = timing.journal(self.root, number)
+                events = plot_timing.read_events(journal)
+                unfinished_timing = events and not any(
+                    e["phase"] == "iteration" and e["completed"] for e in events
                 )
-                self.save()
-            self.state["actor"] = {
-                "checkpoint": iteration["checkpoint"],
-                "model": iteration["model"],
-            }
-            iteration["actor_updated"] = True
-            iteration["completed"] = True
-            # Reading an approved publication never switches training or actors.
-            self.state["accepted"] = promote.accepted_head(self.config.model_store)
-            self.save()
-            self.save_milestone(iteration)
-            self.log(
-                f"iteration {number} complete: experimental actor advanced; "
-                f"training progress retained at {iteration['checkpoint']['path']}; no automatic promotion"
-            )
+                if unfinished_timing:
+                    try:
+                        with timing.measure(journal, "iteration"):
+                            self.save_milestone(iteration)
+                    finally:
+                        plot_timing.update(self.root)
+                else:
+                    self.save_milestone(iteration)
+                continue
+            self._timing_iteration = number
+            try:
+                with timing.measure(timing.journal(self.root, number), "iteration"):
+                    self.finish_iteration(iteration)
+            finally:
+                self._timing_iteration = None
+                plot_timing.update(self.root)
         if stop < self.state["target_iterations"]:
             self.log(
                 f"loop paused after iteration {stop}; total target remains {self.state['target_iterations']}; "

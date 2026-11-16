@@ -58,6 +58,10 @@ run = ".venv/bin/python -m continugo_train.loop"
 description = "Plot saved training/validation losses from a campaign, loop or offline job"
 run = ".venv/bin/python -m continugo_train.plot_metrics"
 
+[tasks.plot-timing]
+description = "Plot per-iteration self-play, training, arena and overhead timings"
+run = ".venv/bin/python -m continugo_train.plot_timing"
+
 [tasks.plot-ratings]
 description = "Plot global ratings against cumulative training games (log x from 100, random at 0)"
 run = ".venv/bin/python -m continugo_train.plot_ratings"
