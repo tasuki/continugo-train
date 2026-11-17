@@ -9,7 +9,7 @@ inputs and scaling. See the [current feature contract](features.md#current-contr
 
 ## Architecture
 
-`PolicyValueNet` defaults to 32 channels and four BatchNorm/ReLU residual blocks.
+`PolicyValueNet` defaults to 64 channels and eight BatchNorm/ReLU residual blocks.
 One set of weights handles multiple spatial resolutions; batches group matching
 resolutions. The value head globally pools the trunk and predicts side-to-move
 outcome in [-1,1]. Pass also uses global pooling.
@@ -56,9 +56,9 @@ area integration or raster dilation. This is a learned geometric input, not an
 explicit eye reward or proof of life. Exact features are never interpolated. Pass is always
 available. Legacy schema-4 models retain ten exact features.
 
-With default widths and schema-6 inputs, the network has **82,310 trainable
-parameters**: trunk 78,336; policy branches including pass 1,251; outcome 1,089;
-score 1,089; ownership 545.
+With default widths and schema-6 inputs, the network has **607,654 trainable
+parameters**: trunk 600,064; policy branches including pass 2,307; outcome 2,113;
+score 2,113; ownership 1,057.
 Region indices are shared within a position; exact captured-survivor indices use
 a bounded cache. See the [feature definition](features.md#binary-splitting-predicate)
 and [replacement costs](../history/2026-11-08-friendly-region-splitting.md).

@@ -60,8 +60,8 @@ def local_log_probs(scores: Tensor, actions: Tensor, legal: Tensor, resolution: 
 class NetworkConfig:
     input_planes: int = len(COARSE_PLANES)
     move_features: int = len(MOVE_FEATURES)
-    channels: int = 32
-    blocks: int = 4
+    channels: int = 64
+    blocks: int = 8
     policy_hidden: int = 16
     value_hidden: int = 32
     score_hidden: int = 32
