@@ -238,7 +238,7 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertNotIn("spans_and_capturability", stages)
             self.assertEqual(stages["liberty_spans"]["calls"], stages["groups"])
             self.assertEqual(stages["capturability"]["calls"], 0)
-            self.assertEqual(stages["liberty_area"]["calls"], 0)
+            self.assertEqual(stages["liberty_area"]["calls"], stages["groups"])
             if value_only:
                 self.assertEqual(report["stats"]["scorer_batches"], 0)
             plain = self.infer(source, [1000000], value_only=value_only)

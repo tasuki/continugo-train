@@ -275,7 +275,7 @@ See [features](features.md), [network](network.md) and [auxiliary targets](auxil
 | One-axis cell owner for coordinate `x` | Integer `(x*(R-1)+499)//999`; cell ID `cx + R*cy` |
 | Count transform | `ln(1+count)/ln(1+1,000,000)`, without clipping |
 | Border transform | Distance from permitted stone-center boundary / diameter, clipped to `[0,4]`, then divided by 4 |
-| Group bridge radius | `0.30 * stone_radius` (representation only, not game geometry) |
+| Group bridge radius | `0.40 * stone_radius` (representation only, not game geometry) |
 | Group/footprint antialias samples per pixel axis | `min(8, max(1, 1024//R))`; normally 8×8 |
 | Physical occupancy / liberty-center coverage | Analytic disc coverage / exact integer-center cell coverage; not the 8×8 approximation |
 | Friendly-region splitting | Binary; at least 2 remaining nonempty components; exact 8-neighbour integer connectivity |

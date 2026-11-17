@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import math
 import struct
 import tempfile
 import unittest
@@ -103,8 +104,13 @@ class NnViewerTests(unittest.TestCase):
         self.assertEqual(data["frames"][1]["view"]["stones"], [[200, 200, 0]])
         self.assertEqual(data["frames"][0]["view"]["action"], 200200)
         self.assertEqual(data["frames"][1]["coarse"][5]["high"], 1)
-        self.assertEqual(data["frames"][1]["coarse"][5]["name"], "enemy_liberty_centers")
-        self.assertEqual(data["frames"][1]["coarse"][7]["name"], "enemy_liberty_footprints")
+        self.assertEqual(data["frames"][1]["coarse"][5]["name"], "enemy_group_liberty_area")
+        self.assertEqual(data["frames"][1]["coarse"][7]["name"], "enemy_liberty_centers")
+        self.assertEqual(data["frames"][1]["coarse"][9]["name"], "enemy_liberty_footprints")
+        for index in (2, 3, 4, 5):
+            note = data["frames"][1]["coarse"][index]["note"]
+            self.assertIn("saturates at 100", note)
+            self.assertIn("bridge radius 0.40 stone radii", note)
         with self.assertRaises(FileExistsError):
             generate(self.sgf, self.checkpoint, output)
         self.assertEqual(output.read_text(), text)
@@ -139,7 +145,9 @@ class NnViewerTests(unittest.TestCase):
             self.assertTrue(all(left <= right for _, left, right in group["liberty_spans"]))
             legacy = client.load(self.sgf, 3, cells=[], feature_schema=4)
             self.assertAlmostEqual(group["liberty_area_stones"], float(legacy.coarse[5].max()))
-            self.assertAlmostEqual(group["size_feature"], float(legacy.coarse[3].max()))
+            self.assertAlmostEqual(
+                group["size_feature"], math.log1p(len(group["members"])) / math.log(101)
+            )
             self.assertIn("server_coarse_seconds", client.last_profile)
             client.load(self.sgf, 3, cells=[], view=True)
             self.assertNotIn("groups", client.last_view)  # no unread geometry trailer
@@ -284,8 +292,8 @@ class NnViewerTests(unittest.TestCase):
             generate(self.sgf, old, mixed, white_checkpoint=self.checkpoint)
             _, report = report_data(mixed)
             self.assertEqual(len(report["features"]), 10)
-            self.assertEqual([len(f["features"]) for f in report["frames"]], [10, 11, 10])
-            self.assertEqual([len(f["exact"]) for f in report["frames"]], [10, 11, 10])
+            self.assertEqual([len(f["features"]) for f in report["frames"]], [10, 9, 10])
+            self.assertEqual([len(f["exact"]) for f in report["frames"]], [10, 9, 10])
 
     def test_inline_viewer_bundle_safety_and_missing_bundle(self):
         bundle = self.root / "viewer.js"

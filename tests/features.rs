@@ -9,6 +9,66 @@ fn action(x: i32, y: i32) -> Action {
 }
 
 #[test]
+fn counts_and_liberty_areas_saturate_at_one_hundred() {
+    use continugo_train::features::scalar_feature;
+    assert_eq!(count_feature(0), 0.0);
+    assert_eq!(count_feature(100), 1.0);
+    assert_eq!(count_feature(101), 1.0);
+    assert_eq!(count_feature(1_000_000), 1.0);
+    assert_eq!(scalar_feature(100.0), 1.0);
+    assert_eq!(scalar_feature(1e6), 1.0);
+    assert!(scalar_feature(0.5) > 0.0);
+    assert!(scalar_feature(0.5) < count_feature(1));
+    for n in 0..100 {
+        assert!(count_feature(n) < count_feature(n + 1));
+    }
+}
+
+#[test]
+fn group_liberty_area_is_per_group_not_the_colour_union() {
+    use continugo_train::features::scalar_feature;
+    for size in [9, 13, 19] {
+        let board = Board::new(size).unwrap();
+        let r = board.stone_radius();
+        let game = Game::new(board)
+            .play(Spot { x: r, y: r })
+            .unwrap()
+            .pass()
+            .unwrap()
+            .play(Spot { x: 500, y: 500 })
+            .unwrap()
+            .pass()
+            .unwrap();
+        let features = FeatureExtractor::new(&game, 4).unwrap();
+        let area = features.resolution.pow(2);
+        assert!(
+            features.coarse[5 * area..6 * area]
+                .iter()
+                .all(|&x| x == 0.0)
+        );
+        let legacy = FeatureExtractor::with_schema(&game, 4, 4).unwrap();
+        let mut values = Vec::new();
+        for group in game.position().groups(Color::Black) {
+            let spot = game.position().stones()[group[0]].spot;
+            let cell =
+                continugo_train::cells::cell(action(spot.x, spot.y).index(), features.resolution);
+            let expected = scalar_feature(f64::from(legacy.coarse[4 * area + cell]));
+            assert!(expected > 0.0);
+            values.push(expected);
+            assert!((features.coarse[4 * area + cell] - expected).abs() < 1e-6);
+        }
+        assert_ne!(values[0], values[1]);
+        let record = game.record();
+        let white = Game::from_record_on(board, &record[..record.len() - 1]).unwrap();
+        let enemy = FeatureExtractor::new(&white, 4).unwrap();
+        assert_eq!(
+            &features.coarse[4 * area..5 * area],
+            &enemy.coarse[5 * area..6 * area]
+        );
+    }
+}
+
+#[test]
 fn empty_positions_have_real_borders_and_legal_masks_across_sizes() {
     for (size, resolution) in [(9, 38), (13, 54), (19, 78)] {
         let game = Game::new(Board::new(size).unwrap());
@@ -19,14 +79,14 @@ fn empty_positions_have_real_borders_and_legal_masks_across_sizes() {
             COARSE_PLANES.len() * resolution * resolution
         );
         assert!(
-            features.coarse[..8 * resolution * resolution]
+            features.coarse[..10 * resolution * resolution]
                 .iter()
                 .all(|&v| v == 0.0)
         );
         let actions = [action(0, 0), action(500, 500), action(999, 999)];
         let moves = features.moves(&actions).unwrap();
         assert_eq!(moves.legal, vec![0, 1, 0]);
-        assert_eq!(moves.exact[MOVE_FEATURES.len() + 5], count_feature(1));
+        assert_eq!(moves.exact[MOVE_FEATURES.len()], 0.0);
         assert!(features.moves(&[Action::PASS]).is_err());
     }
 }
@@ -56,7 +116,7 @@ fn profiled_coarse_features_preserve_bits_and_count_work() {
         assert_eq!(profile.preparation.calls, 1);
         assert_eq!(profile.liberty_spans.calls, 2);
         assert_eq!(profile.capturability.calls, 0);
-        assert_eq!(COARSE_PLANES.len(), 12);
+        assert_eq!(COARSE_PLANES.len(), 14);
         assert!(
             COARSE_PLANES
                 .iter()
@@ -65,13 +125,32 @@ fn profiled_coarse_features_preserve_bits_and_count_work() {
         let (legacy, legacy_profile) = FeatureExtractor::profiled_with_schema(&game, 4, 4).unwrap();
         assert_eq!(legacy_profile.capturability.calls, 2);
         let area = ordinary.resolution.pow(2);
-        assert_eq!(&ordinary.coarse[8 * area..], &legacy.coarse[8 * area..]);
-        assert_eq!(profile.liberty_area.calls, 0);
+        assert_eq!(&ordinary.coarse[10 * area..], &legacy.coarse[8 * area..]);
+        assert_eq!(profile.liberty_area.calls, 2);
+        assert_eq!(profile.raster.group_canvas_allocation.calls, 2);
+        assert_eq!(profile.raster.group_shared_shapes.calls, 2);
+        assert_eq!(profile.raster.group_reduce.calls, 2);
+        assert_eq!(profile.raster.group_liberty_reduce.calls, 2);
         assert_eq!(profile.painting.calls, 5); // allocation, two groups, antialiasing, borders
         let mut total = continugo_train::features::CoarseProfile::default();
         total.merge(&profile);
         total.merge(&profile);
         assert_eq!(total.groups, 4);
+        assert_eq!(total.raster.group_canvas_allocation.calls, 4);
+        assert_eq!(total.raster.group_shared_shapes.calls, 4);
+        assert_eq!(total.raster.group_liberty_reduce.calls, 4);
+        assert_eq!(
+            total.raster.group_canvas_allocation.seconds,
+            2.0 * profile.raster.group_canvas_allocation.seconds
+        );
+        assert_eq!(
+            total.raster.group_shared_shapes.seconds,
+            2.0 * profile.raster.group_shared_shapes.seconds
+        );
+        assert_eq!(
+            total.raster.group_liberty_reduce.seconds,
+            2.0 * profile.raster.group_liberty_reduce.seconds
+        );
         assert_eq!(
             total.liberty_area.seconds,
             2.0 * profile.liberty_area.seconds
@@ -87,7 +166,7 @@ fn parallel_move_features_match_serial_bits_and_action_order() {
         .num_threads(4)
         .build()
         .unwrap();
-    for (size, schema) in [(9, 4), (13, 4), (19, 4), (9, 5), (13, 5), (19, 5)] {
+    for (size, schema) in [(9, 4), (13, 4), (19, 4), (9, 6), (13, 6), (19, 6)] {
         let board = Board::new(size).unwrap();
         let r = board.stone_radius();
         let game = Game::new(board).play(Spot { x: r, y: r }).unwrap();
@@ -222,10 +301,9 @@ fn exact_features_distinguish_touching_connections_captures_and_suicide() {
         .moves(&[action(275, 200), action(276, 200), action(500, 500)])
         .unwrap();
     assert_eq!(moves.legal, vec![0, 1, 1]);
+    assert_eq!(moves.exact[MOVE_FEATURES.len()], count_feature(1));
     assert_eq!(moves.exact[MOVE_FEATURES.len() + 1], count_feature(1));
-    assert_eq!(moves.exact[MOVE_FEATURES.len() + 2], count_feature(1));
-    assert_eq!(moves.exact[MOVE_FEATURES.len() + 5], count_feature(2));
-    assert_eq!(moves.exact[2 * MOVE_FEATURES.len() + 1], 0.0);
+    assert_eq!(moves.exact[2 * MOVE_FEATURES.len()], 0.0);
     let fixture = include_str!("../../continugo/fixtures/rules/capture-four.txt");
     let record = fixture
         .lines()
@@ -235,8 +313,8 @@ fn exact_features_distinguish_touching_connections_captures_and_suicide() {
     let features = FeatureExtractor::new(&game, 4).unwrap();
     let moves = features.moves(&[action(839, 240)]).unwrap();
     assert_eq!(moves.legal, vec![1]);
-    assert_eq!(moves.exact[4], count_feature(4));
-    assert_eq!(moves.exact[3], count_feature(1));
+    assert_eq!(moves.exact[3], count_feature(4));
+    assert_eq!(moves.exact[2], count_feature(1));
     let impossible = Game::new(Board::new(1).unwrap());
     assert_eq!(
         FeatureExtractor::new(&impossible, 4)
@@ -264,16 +342,21 @@ fn friendly_region_splitting_is_binary_and_preserves_legacy_fields() {
         assert_eq!(current.legal, [1, 0]);
         for (row, old) in current
             .exact
-            .as_chunks::<11>()
+            .as_chunks::<9>()
             .0
             .iter()
             .zip(legacy.exact.as_chunks::<10>().0)
         {
-            assert_eq!(&row[..6], &old[..6]);
-            assert_eq!(&row[7..], &old[6..]);
+            for i in 0..4 {
+                let count = (f64::from(old[i + 1]) * 1_000_001_f64.ln())
+                    .exp_m1()
+                    .round() as usize;
+                assert_eq!(row[i], count_feature(count));
+            }
+            assert_eq!(&row[5..], &old[6..]);
         }
-        assert_eq!(current.exact[17], 0.0);
-        current.exact[6]
+        assert_eq!(current.exact[13], 0.0);
+        current.exact[4]
     }
     let empty = Game::default();
     let spot = Spot { x: 500, y: 500 };
@@ -351,8 +434,8 @@ fn the_bootstrap_eye_filter_is_not_a_neural_legality_rule() {
     assert!(attack_features.coarse[7 * area..8 * area].contains(&1.0));
     let attack = attack_features.moves(&[action(166, 166)]).unwrap();
     assert_eq!(attack.legal, vec![1]);
-    assert_eq!(attack.exact[3], count_feature(1));
-    assert_eq!(attack.exact[4], count_feature(8));
+    assert_eq!(attack.exact[3], 1_f32.ln_1p() / 1_000_000_f32.ln_1p());
+    assert_eq!(attack.exact[4], 8_f32.ln_1p() / 1_000_000_f32.ln_1p());
     let one_liberty = attack_position.pass().unwrap();
     let features = FeatureExtractor::with_schema(&one_liberty, 4, 4).unwrap();
     let area = features.resolution.pow(2);
@@ -380,7 +463,7 @@ fn antialiased_occupancy_preserves_disc_area_and_other_features() {
                     .iter()
                     .all(|&v| v == 0.0 || v == 1.0)
             );
-            assert_eq!(&aa.coarse[8 * area..], &hard.coarse[8 * area..]);
+            assert_eq!(&aa.coarse[10 * area..], &hard.coarse[8 * area..]);
             assert!(
                 aa.coarse
                     .iter()
@@ -405,16 +488,21 @@ fn antialiased_occupancy_preserves_disc_area_and_other_features() {
             assert_eq!(a.legal, b.legal);
             for (new, old) in a
                 .exact
-                .as_chunks::<11>()
+                .as_chunks::<9>()
                 .0
                 .iter()
                 .zip(b.exact.as_chunks::<10>().0)
             {
-                assert_eq!(&new[..6], &old[..6]);
-                assert_eq!(&new[7..], &old[6..]);
-                assert!(new[6] >= 0.0 && new[6].is_finite());
-                if new[0] == 0.0 {
-                    assert_eq!(new[6], 0.0);
+                for i in 0..4 {
+                    let count = (f64::from(old[i + 1]) * 1_000_001_f64.ln())
+                        .exp_m1()
+                        .round() as usize;
+                    assert_eq!(new[i], count_feature(count));
+                }
+                assert_eq!(&new[5..], &old[6..]);
+                assert!(new[4] == 0.0 || new[4] == 1.0);
+                if old[0] == 0.0 {
+                    assert_eq!(&new[..5], &[0.0; 5]);
                 }
             }
         }

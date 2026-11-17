@@ -1,12 +1,16 @@
-//! Spatial group/liberty maps for finalized schema 5. Rules provide membership,
+//! Spatial group/liberty maps for schema 6. Rules provide membership,
 //! adjacency and exact integer liberty spans; this module only rasterizes them.
 use continugo_rules::{Board, LibertySpan, Spot, Stone};
+
+#[cfg(test)]
+#[path = "spatial/shared_tests.rs"]
+mod shared_tests;
 
 /// Normal training grids use 8×8 midpoint samples per pixel for unions of discs
 /// and bridges/capsules. Bound the intermediate canvas on unusually dense grids.
 const SUBSAMPLES: usize = 8;
 const MAX_SAMPLE_AXIS: usize = 1024;
-const BRIDGE_RADIUS_FRACTION: f64 = 0.30;
+const BRIDGE_RADIUS_FRACTION: f64 = 0.40;
 
 pub(super) struct Grid<'a> {
     edges: &'a [f64],
@@ -41,20 +45,35 @@ impl<'a> Grid<'a> {
         self.axis.partition_point(|&p| p < low)..self.axis.partition_point(|&p| p <= high)
     }
 
-    fn disc(&self, canvas: &mut [f32], centre: Spot, radius: f64, value: f32) {
+    fn disc<const N: usize>(
+        &self,
+        canvases: &mut [&mut [f32]; N],
+        centre: Spot,
+        radius: f64,
+        values: [f32; N],
+    ) {
         let (cx, cy) = (f64::from(centre.x), f64::from(centre.y));
         let xs = self.indices(cx - radius, cx + radius);
         for y in self.indices(cy - radius, cy + radius) {
             for x in xs.clone() {
                 if (self.axis[x] - cx).powi(2) + (self.axis[y] - cy).powi(2) <= radius * radius {
-                    let pixel = &mut canvas[y * self.axis.len() + x];
-                    *pixel = pixel.max(value);
+                    let index = y * self.axis.len() + x;
+                    for (canvas, value) in canvases.iter_mut().zip(values) {
+                        canvas[index] = canvas[index].max(value);
+                    }
                 }
             }
         }
     }
 
-    fn bridge(&self, canvas: &mut [f32], a: Spot, b: Spot, radius: f64, value: f32) {
+    fn bridge<const N: usize>(
+        &self,
+        canvases: &mut [&mut [f32]; N],
+        a: Spot,
+        b: Spot,
+        radius: f64,
+        values: [f32; N],
+    ) {
         let (a, b) = if (a.x, a.y) <= (b.x, b.y) {
             (a, b)
         } else {
@@ -70,14 +89,45 @@ impl<'a> Grid<'a> {
                 let (px, py) = (self.axis[x] - ax, self.axis[y] - ay);
                 let t = ((px * dx + py * dy) / squared).clamp(0.0, 1.0);
                 if (px - t * dx).powi(2) + (py - t * dy).powi(2) <= radius * radius {
-                    let pixel = &mut canvas[y * self.axis.len() + x];
-                    *pixel = pixel.max(value);
+                    let index = y * self.axis.len() + x;
+                    for (canvas, value) in canvases.iter_mut().zip(values) {
+                        canvas[index] = canvas[index].max(value);
+                    }
                 }
             }
         }
     }
 
-    pub fn group(
+    /// Evaluate each disc/bridge coverage predicate once, then independently
+    /// max-reduce each group's scalar into its own canvas. In particular, size
+    /// and liberty area must not share the winning group where shapes overlap.
+    pub fn group_values<const N: usize>(
+        &self,
+        canvases: &mut [&mut [f32]; N],
+        board: Board,
+        stones: &[Stone],
+        members: &[usize],
+        values: [f32; N],
+    ) {
+        let radius = f64::from(board.stone_radius());
+        for (i, &a) in members.iter().enumerate() {
+            self.disc(canvases, stones[a].spot, radius, values);
+            for &b in &members[i + 1..] {
+                if board.adjacent(stones[a].spot, stones[b].spot) {
+                    self.bridge(
+                        canvases,
+                        stones[a].spot,
+                        stones[b].spot,
+                        radius * BRIDGE_RADIUS_FRACTION,
+                        values,
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn group(
         &self,
         canvas: &mut [f32],
         board: Board,
@@ -85,21 +135,7 @@ impl<'a> Grid<'a> {
         members: &[usize],
         value: f32,
     ) {
-        let radius = f64::from(board.stone_radius());
-        for (i, &a) in members.iter().enumerate() {
-            self.disc(canvas, stones[a].spot, radius, value);
-            for &b in &members[i + 1..] {
-                if board.adjacent(stones[a].spot, stones[b].spot) {
-                    self.bridge(
-                        canvas,
-                        stones[a].spot,
-                        stones[b].spot,
-                        radius * BRIDGE_RADIUS_FRACTION,
-                        value,
-                    );
-                }
-            }
-        }
+        self.group_values(&mut [canvas], board, stones, members, [value]);
     }
 
     pub fn reduce(&self, canvas: &[f32]) -> Vec<f32> {

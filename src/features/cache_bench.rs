@@ -37,7 +37,7 @@ fn fine_profile(
     let mut p = FineProfile::default();
     let tick = Instant::now();
     let mut out = MoveFeatures {
-        exact: vec![0.0; actions.len() * MOVE_FEATURES.len()],
+        exact: vec![0.0; actions.len() * 11],
         legal: vec![0; actions.len()],
     };
     p.allocation.record(tick);

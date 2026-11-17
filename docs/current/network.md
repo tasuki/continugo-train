@@ -1,5 +1,12 @@
 # PyTorch policy/value network
 
+**Current inputs are schema 6: 14 coarse planes and 9 exact fields.** Group size
+and total per-group liberty area use capped log scaling, saturating at 100.
+Exact legality and resulting group size are removed; the separate legality mask
+is unchanged. Both spatial liberty representations and exact splitting remain.
+Schema 5 is rejected; start fresh training. Schema-4 inference keeps its original
+inputs and scaling. See the [current feature contract](features.md#current-contract).
+
 ## Architecture
 
 `PolicyValueNet` defaults to 32 channels and four BatchNorm/ReLU residual blocks.
@@ -34,14 +41,14 @@ options `--top-cells` and `--exploration-cells` (both positive). Exploration use
 the game's search RNG seed and position, independent of batching/cache order.
 Thus different games can explore different cells even at the same opening.
 
-Default schema-5 inference uses the [geometry proposal policy](geometry-proposals.md)
+Default schema-6 inference uses the [geometry proposal policy](geometry-proposals.md)
 to choose coordinates inside selected cells; only those coordinates receive
 exact move analysis. It reuses the same encoder/scorer without changing the
 training contract. Legacy schema-4 models and `infer --complete-cells` analyze
 every integer coordinate inside selected cells. No overlapping windows or full-board exact scan. Within each cell,
 the coordinate scorer bilinearly samples 16-channel projected coarse context,
-adds a shared linear projection of eleven exact features, applies ReLU, and reads
-out a scalar. Schema-5 column 6 is binary `splits_friendly_region`: using actual
+adds a shared linear projection of nine exact features, applies ReLU, and reads
+out a scalar. Schema-6 column 4 is binary `splits_friendly_region`: using actual
 child survivors, does placing the new stone split one friendly-bounded
 available-center region into at least two nonempty components? Exact integer
 scanline connectivity retains narrow splitting moves; there is no per-candidate
@@ -49,9 +56,9 @@ area integration or raster dilation. This is a learned geometric input, not an
 explicit eye reward or proof of life. Exact features are never interpolated. Pass is always
 available. Legacy schema-4 models retain ten exact features.
 
-With default widths and schema-5 inputs, the network has **81,766 trainable
-parameters**: trunk 77,760; policy branches including pass 1,283; outcome 1,089;
-score 1,089; ownership 545. The added exact input contributes 16 weights.
+With default widths and schema-6 inputs, the network has **82,310 trainable
+parameters**: trunk 78,336; policy branches including pass 1,251; outcome 1,089;
+score 1,089; ownership 545.
 Region indices are shared within a position; exact captured-survivor indices use
 a bounded cache. See the [feature definition](features.md#binary-splitting-predicate)
 and [replacement costs](../history/2026-11-08-friendly-region-splitting.md).
@@ -114,14 +121,11 @@ estimating their partition function. Coverage and playing strength require valid
 Checkpoint and ONNX metadata require policy version **`cells-v1`**. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. New training uses feature
-schema 5 with twelve coarse planes: antialiased occupancy, connected group
-size, spatial liberty centers/footprints and borders; no scalar liberty area or
-capturability flags. Schema-4 score/ownership inference and viewing explicitly preserve all
-twelve original coarse inputs and ten exact fields. Earlier draft-schema-5
-checkpoints with different planes, exact features or ordering are incompatible;
-fresh training with the current splitting contract is required. The user
-explicitly reopened unused schema 5 for this replacement; old footprint feature
-metadata is not accepted.
+schema 6 with fourteen coarse planes: antialiased occupancy, connected group
+size, spatial liberty centers/footprints, per-group total liberty area and borders;
+no capturability flags. Schema-4 score/ownership inference and viewing explicitly preserve all
+twelve original coarse inputs and ten exact fields. Schema-5 checkpoints and derived tensors are incompatible;
+fresh schema-6 training is required. Old feature metadata is not accepted.
 See [features](features.md).
 The pass-preserving normalization correction changes native execution only, not
 weights, features, graph outputs, or the training objective. Current exports additionally require `targets: final-area-v1`; old policy/value-only

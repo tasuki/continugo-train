@@ -57,7 +57,7 @@ class RealFeatureTests(unittest.TestCase):
         self.assertEqual(first.exact.shape, (3, len(MOVE_FEATURES)))
         self.assertEqual(first.actions.tolist(), [200200, 0, 276200])
         self.assertEqual(first.legal.tolist(), [True, False, True])
-        self.assertEqual(first.coarse[:8].count_nonzero(), 0)
+        self.assertEqual(first.coarse[:10].count_nonzero(), 0)
         self.assertEqual(first.policy_targets()[0].tolist(), [0, 3])
         self.assertEqual(first.visits.tolist(), [7, 1])
         self.assertEqual(first.outcome, 1)
@@ -69,14 +69,14 @@ class RealFeatureTests(unittest.TestCase):
         self.assertEqual(white.legal.tolist(), [False, True])
         self.assertEqual(white.coarse[0].count_nonzero(), 0)
         self.assertGreater(white.coarse[1].count_nonzero(), 0)
-        self.assertGreater(white.coarse[5].sum().item(), 0)  # Enemy liberty-center coverage.
+        self.assertGreater(white.coarse[7].sum().item(), 0)  # Enemy liberty-center coverage.
         self.assertTrue(((white.coarse >= 0) & (white.coarse <= 1)).all())
-        self.assertGreater(white.coarse[7].sum().item(), white.coarse[5].sum().item())
+        self.assertGreater(white.coarse[9].sum().item(), white.coarse[7].sum().item())
         self.assertEqual(white.policy_targets()[0].tolist(), [2])
         black = self.load(2, actions=[276200])
         self.assertEqual(black.outcome, 1)
         self.assertGreater(black.coarse[0].count_nonzero(), 0)
-        torch.testing.assert_close(black.coarse[4], white.coarse[5])
+        torch.testing.assert_close(black.coarse[6], white.coarse[7])
         with self.assertRaises(ValueError):
             black.policy_targets()  # No fabricated targets for an unannotated node.
 
@@ -104,30 +104,31 @@ class RealFeatureTests(unittest.TestCase):
         actions = [200200, 0, 276200]
         current = self.load(actions=actions)
         legacy = self.load(actions=actions, feature_schema=4)
-        self.assertEqual(MOVE_FEATURES[6], "splits_friendly_region")
-        self.assertEqual(MOVE_FEATURES[7:], LEGACY_MOVE_FEATURES[6:])
-        self.assertEqual(current.exact.shape, (3, 11))
-        without_split = torch.cat((current.exact[:, :6], current.exact[:, 7:]), dim=1)
-        torch.testing.assert_close(without_split, legacy.exact, rtol=0, atol=0)
-        self.assertEqual(current.exact[:, 6].tolist(), [0, 0, 0])  # Open board; illegal row zero.
+        self.assertEqual(MOVE_FEATURES[4], "splits_friendly_region")
+        self.assertEqual(MOVE_FEATURES[5:], LEGACY_MOVE_FEATURES[6:])
+        self.assertNotIn("legal", MOVE_FEATURES)
+        self.assertNotIn("resulting_group_size", MOVE_FEATURES)
+        self.assertEqual(current.exact.shape, (3, 9))
+        torch.testing.assert_close(current.exact[:, 5:], legacy.exact[:, 6:], rtol=0, atol=0)
+        self.assertEqual(current.exact[:, 4].tolist(), [0, 0, 0])  # Open board; illegal row zero.
         with FeatureClient(self.binary) as client:
             empty = client.load(self.sgf, 0, cells=[])
-        self.assertEqual(empty.exact.shape, (0, 11))
+        self.assertEqual(empty.exact.shape, (0, 9))
         model = PolicyValueNet()
-        self.assertEqual(model.policy_exact.in_features, 11)
+        self.assertEqual(model.policy_exact.in_features, 9)
 
     def test_area_antialiasing_is_versioned_and_preserves_other_planes(self):
         with FeatureClient(self.binary) as client:
             aa = client.load(self.sgf, 1, cells=[])
             hard = client.load(self.sgf, 1, cells=[], feature_schema=4)
-            self.assertEqual(aa.feature_schema, 5)
-            self.assertEqual(len(COARSE_PLANES), 12)
-            self.assertFalse(
-                any("capturable" in name or "liberty_area" in name for name in COARSE_PLANES)
-            )
+            self.assertEqual(aa.feature_schema, 6)
+            self.assertEqual(len(COARSE_PLANES), 14)
+            self.assertFalse(any("capturable" in name for name in COARSE_PLANES))
             self.assertEqual(
-                COARSE_PLANES[4:8],
+                COARSE_PLANES[4:10],
                 (
+                    "friendly_group_liberty_area",
+                    "enemy_group_liberty_area",
                     "friendly_liberty_centers",
                     "enemy_liberty_centers",
                     "friendly_liberty_footprints",
@@ -137,12 +138,14 @@ class RealFeatureTests(unittest.TestCase):
             self.assertEqual(hard.feature_schema, 4)
             self.assertTrue(((aa.coarse[1] > 0) & (aa.coarse[1] < 1)).any())
             self.assertTrue(((hard.coarse[1] == 0) | (hard.coarse[1] == 1)).all())
-            torch.testing.assert_close(aa.coarse[8:], hard.coarse[8:], rtol=0, atol=0)
-            explicit = client.load(self.sgf, 1, cells=[], feature_schema=5)
-            self.assertEqual(explicit.coarse.shape[0], 12)
+            torch.testing.assert_close(aa.coarse[10:], hard.coarse[8:], rtol=0, atol=0)
+            self.assertEqual(aa.coarse[4].count_nonzero(), 0)
+            self.assertGreater(aa.coarse[5].sum().item(), 0)
+            explicit = client.load(self.sgf, 1, cells=[], feature_schema=6)
+            self.assertEqual(explicit.coarse.shape[0], 14)
             torch.testing.assert_close(aa.coarse, explicit.coarse, rtol=0, atol=0)
             with self.assertRaisesRegex(ValueError, "schema"):
-                client.load(self.sgf, 1, cells=[], feature_schema=6)
+                client.load(self.sgf, 1, cells=[], feature_schema=5)
             import math
 
             covered = (aa.coarse[1] * ownership_weights(aa.resolution)).sum().item()
@@ -300,7 +303,7 @@ class RealFeatureTests(unittest.TestCase):
             255,
         )
         mutations.append(bytes(illegal_byte))
-        splitting_offset = HEADER.size + len(COARSE_PLANES) * resolution**2 * 4 + 6 * 4
+        splitting_offset = HEADER.size + len(COARSE_PLANES) * resolution**2 * 4 + 4 * 4
         for value in (-1.0, 0.5, 2.0, 3.0, float("nan"), float("inf")):
             bad_split = bytearray(packet)
             struct.pack_into("<f", bad_split, splitting_offset, value)

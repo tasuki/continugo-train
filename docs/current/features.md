@@ -1,4 +1,77 @@
-# Real neural features — schema version 5
+# Real neural features — schema version 6
+
+## Current contract
+
+Fresh training/extraction uses **schema 6: 14 coarse planes and 9 exact fields**.
+Schema 4 remains supported with its original inputs and normalization. Schema 5
+is rejected: regenerate derived tensors and start fresh checkpoints/exports;
+validated source SGFs remain usable. Packet dimensions and schema are checked in
+Rust/Python, and checkpoint/ONNX feature names must match. The user reordered
+unused schema 6 to place group liberty area immediately after group size.
+Discard earlier derived schema-6 packets with the previous ordering: their
+headers do not fingerprint channel names. Source SGFs remain usable.
+
+All inputs are relative to the pre-move player. Current coarse channel order:
+
+| Channels | Contents |
+|---|---|
+| 0–1 | Friendly/enemy physical stone-disc area coverage |
+| 2–3 | Friendly/enemy group stone count on connected group shapes |
+| 4–5 | Friendly/enemy total per-group liberty area on connected group shapes |
+| 6–7 | Friendly/enemy exact liberty-center union coverage |
+| 8–9 | Friendly/enemy liberty-footprint union coverage |
+| 10–13 | Left/right/top/bottom border distances |
+
+Stone counts and scalar liberty areas use
+`log1p(min(value, 100)) / log(101)`. Thus 100 and any larger value encode as 1;
+fractional areas remain fractional before transformation. Spatial center/footprint
+coverage planes remain coverage fractions, not clipped area scalars.
+
+**Per-group total liberty area** is the continuous union of physical-radius discs
+swept over that group's exact integer liberty spans, divided by one stone-disc's
+area. It uses the existing numerical integration in `src/liberty_area.rs`, not
+raw integer-center count, a sum over overlapping alternatives, a local candidate
+area, or a capture-in-one flag. Compute it once per existing group, transform it,
+and paint it on the same member discs and adjacency bridges as group size.
+Current bridge radius is **0.40 × stone radius** (widened from 0.30 for visibility);
+occupancy remains physical discs only. This supersedes the historical bridge
+width below. Regenerate earlier schema-6 tensors/previews after this input change.
+At shape overlaps the larger transformed value wins before pixel averaging. Groups
+of one colour retain their own scalar areas; these are not the colour-union area.
+Extraction still does no opposing capture-witness search. Profiling now records
+one `liberty_area` call per group, rather than zero.
+
+Exact rows are `[N, 9]`, in caller coordinate order:
+
+| Column | Contents |
+|---|---|
+| 0 | Number of friendly groups connected |
+| 1 | Total stones in those connected friendly groups |
+| 2 | Number of enemy groups captured |
+| 3 | Number of enemy stones captured |
+| 4 | Binary `splits_friendly_region` |
+| 5–8 | Left/right/top/bottom border distances |
+
+Columns 0–3 use the capped logarithmic transform above. **Legality remains the
+separate authoritative boolean mask, not a neural input column. Resulting group
+size is removed; connected-stone count is retained.** Illegal rows have zero
+columns 0–4 and retain border geometry. Python validates these invariants.
+No previous-pass/history input was added. Splitting is unchanged and remains
+exact-only; the coarse selector learns the geometry from spatial inputs.
+
+Raster resolution, analytic occupancy antialiasing, connected group bridges,
+both spatial liberty maps, borders, splitting semantics, target labels, complete
+training cells, and geometry proposals are otherwise unchanged from the reference
+below. All tensors remain float32. CGFEAT02's header layout is unchanged, but its
+schema is 6, coarse-plane count 14 and exact width 9; payload shapes are
+`[14,H,W]` and `[N,9]`. Schema-4 payloads remain `[12,H,W]` and `[N,10]`.
+
+## Historical schema-5 reference
+
+**The remainder records the previous schema-5 contract and shared geometry,
+labels and transport details. Its schema numbers, widths, channel indices,
+uncapped count scaling, and statements that group-area integration is absent
+are superseded by the current contract above.**
 
 **On 2026-11-08 the user explicitly reopened unused schema 5 and replaced the
 local-liberty-footprint scalar with binary `splits_friendly_region`.** There are

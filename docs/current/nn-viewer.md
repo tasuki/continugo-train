@@ -77,21 +77,25 @@ Each page is a **pre-move position**, relative to the player about to move:
   Navigation uses original SGF plies, including passes and skipped analysis turns;
   recorded policy overlays are disabled so they do not obscure diagnostic maps.
   Rust replay remains authoritative for all diagnostic features and labels.
-- Every coarse input plane, named and scaled: twelve in either schema, with
-  different meanings. Schema 5 shows antialiased occupancy, connected group
-  size, both liberty-center and liberty-footprint unions, and borders. It has no
-  scalar liberty-area or capturable-in-one planes. Legacy schema 4 keeps its actual
-  point-sampled inputs and flags; its uncapped scalar liberty area is shown in raw
-  stone-disc units, not clipped to one.
+- Every coarse input plane, named and scaled: schema 6 has fourteen, ordered
+  as friendly/enemy occupancy (0–1), group size (2–3), per-group total liberty
+  area (4–5), liberty centers (6–7), liberty footprints (8–9), then four borders
+  (10–13). Size and group area use capped logarithmic scaling, saturating at 100;
+  their connected shapes carry scalar-valued bridges of radius 0.40 stone radii.
+  Occupancy remains physical discs only. All schema-6 maps use fixed [0,1] scales.
+  Legacy schema 4 keeps its twelve original point-sampled inputs and flags;
+  its uncapped scalar liberty area is shown in raw stone-disc units, not clipped
+  to one. Schema-5 checkpoints are rejected, not silently reinterpreted.
 - Coarse cell logits and global softmax probabilities, plus separate pass mass.
 - Diagnostic selected-cell coverage, exact legal raw logits, conditional
   `P(move | cell)`, and redistributed final placement probabilities.
-- All 11 schema-5 exact coordinate input features, including legality,
-  connections, captures, resulting group size, binary friendly-region splitting,
-  then border geometry. Splitting uses actual child captures and exact integer
-  connectivity, displayed on a fixed [0,1] scale (display pixels average inputs).
-  Legacy schema-4
-  models retain their original 10 fields. Action-table columns follow each
+- All nine schema-6 exact coordinate input features: connection group/stone
+  counts, capture group/stone counts, binary friendly-region splitting, then four
+  border distances. Legality remains a separate mask; redundant neural legality
+  and resulting group size columns are removed. Splitting uses actual child
+  captures and exact integer connectivity, displayed on a fixed [0,1] scale
+  (display pixels average inputs). Legacy schema-4 models retain their original
+  ten fields. Action-table columns follow each
   frame's schema, including reports containing different actors.
 - Outcome value, expected points percentage, normalized score and stone-unit
   score, their score-weighted head utility, final labels when available, and

@@ -128,11 +128,12 @@ def coarse_plane_image(name, values, index, schema):
     else:
         notes = (
             "Area-antialiased",
-            "Connected groups; log size",
+            "Connected groups; log size; saturates at 100; bridge radius 0.40 stone radii",
+            "Connected groups; log liberty area in stone-discs; saturates at 100; bridge radius 0.40 stone radii",
             "Liberty-center union coverage",
             "Liberty-footprint union coverage",
         )
-        note = notes[index // 2] if index < 8 else ""
+        note = notes[index // 2] if index < 10 else ""
     return heatmap(name, values, limits=limits, note=note)
 
 

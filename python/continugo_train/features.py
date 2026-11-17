@@ -20,9 +20,9 @@ import numpy as np
 import torch
 from torch import Tensor
 
-# User reopened unused schema 5 on 2026-11-08: binary friendly-region splitting.
-# Checkpoint/export feature names must match; old footprint metadata is rejected.
-SCHEMA_VERSION = 5
+# Schema 6 adds per-group liberty area and capped scalars, removes redundant
+# exact columns. Schema 5 packets/weights must not be silently reinterpreted.
+SCHEMA_VERSION = 6
 POINT_SAMPLED_SCHEMA = 4
 LEGACY_COARSE_PLANES = (
     "friendly_stones",
@@ -43,6 +43,8 @@ COARSE_PLANES = (
     "enemy_stones",
     "friendly_group_size",
     "enemy_group_size",
+    "friendly_group_liberty_area",
+    "enemy_group_liberty_area",
     "friendly_liberty_centers",
     "enemy_liberty_centers",
     "friendly_liberty_footprints",
@@ -73,7 +75,7 @@ LEGACY_MOVE_FEATURES = (
     "bottom_border",
 )
 MOVE_FEATURES = (
-    *LEGACY_MOVE_FEATURES[:6],
+    *LEGACY_MOVE_FEATURES[1:5],
     "splits_friendly_region",
     *LEGACY_MOVE_FEATURES[6:],
 )
@@ -254,9 +256,10 @@ def decode_sample(
         or not np.isfinite(exact).all()
         or (raw_legal > 1).any()
         or (actions >= PASS).any()
-        or not np.array_equal(exact[:, 0], raw_legal)
-        or (version == SCHEMA_VERSION and ((exact[:, 6] != 0) & (exact[:, 6] != 1)).any())
-        or (version == SCHEMA_VERSION and (exact[raw_legal == 0, 6] != 0).any())
+        or (version == POINT_SAMPLED_SCHEMA and not np.array_equal(exact[:, 0], raw_legal))
+        or (version == SCHEMA_VERSION and ((exact < 0) | (exact > 1)).any())
+        or (version == SCHEMA_VERSION and (exact[raw_legal == 0, :5] != 0).any())
+        or (version == SCHEMA_VERSION and ((exact[:, 4] != 0) & (exact[:, 4] != 1)).any())
     ):
         raise ValueError(
             "nonfinite features, invalid capture flags/actions or inconsistent legality"

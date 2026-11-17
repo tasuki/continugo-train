@@ -160,17 +160,17 @@ fn benchmark_region_splitting() {
                 if mode == 1 {
                     positive = out
                         .exact
-                        .as_chunks::<11>()
+                        .as_chunks::<9>()
                         .0
                         .iter()
-                        .filter(|r| r[6] == 1.0)
+                        .filter(|r| r[4] == 1.0)
                         .count();
                     assert!(
                         out.exact
-                            .as_chunks::<11>()
+                            .as_chunks::<9>()
                             .0
                             .iter()
-                            .all(|r| r[6] == 0.0 || r[6] == 1.0)
+                            .all(|r| r[4] == 0.0 || r[4] == 1.0)
                     );
                     let cache = extractor.splitting.captures.lock().unwrap();
                     memory =
@@ -188,10 +188,19 @@ fn benchmark_region_splitting() {
             for (a, b) in old
                 .exact
                 .chunks_exact(fields)
-                .zip(new.exact.as_chunks::<11>().0)
+                .zip(new.exact.as_chunks::<9>().0)
             {
-                crate::features::cache_bench::bits_equal(&a[..6], &b[..6]);
-                crate::features::cache_bench::bits_equal(&a[borders..], &b[7..]);
+                for i in 0..4 {
+                    let expected = if no_feature_baseline {
+                        let count =
+                            (f64::from(a[i + 1]) * 1_000_001_f64.ln()).exp_m1().round() as usize;
+                        crate::features::count_feature(count)
+                    } else {
+                        a[i + 1]
+                    };
+                    assert_eq!(expected, b[i]);
+                }
+                crate::features::cache_bench::bits_equal(&a[borders..], &b[5..]);
             }
             samples.push(seconds);
         }

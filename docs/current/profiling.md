@@ -87,10 +87,19 @@ native measurements. SGFs remain the only primary game records.
   `group_construction` stage and combined `spans_and_capturability` field are gone.
   These subtotals sit **inside** `coarse_seconds`. They exclude flattening and
   instrumentation/bookkeeping overhead. `coarse_stages.raster` further splits
-  `painting` into allocation, group shapes, occupancy, liberty union, group
-  reduction, liberty centers, liberty footprints and borders (schema 5; legacy
-  painting is not fully subdivided). These are nested subtotals, not additional
-  coarse work. For concurrent extraction, subtotals
+  `painting` into output allocation, group-canvas allocation/zeroing
+  (`group_canvas_allocation`), shared size/area shape coverage and painting
+  (`group_shared_shapes`), occupancy, liberty union, separate size/area reductions
+  (`group_reduce` / `group_liberty_reduce`), liberty centers, liberty footprints
+  and borders (schema 6; legacy painting is not fully subdivided).
+  Shape coverage is evaluated once and updates both independently max-reduced
+  scalar canvases; the former `group_shapes` / `group_liberty_shapes` split is
+  replaced by that shared stage. The area integration itself is
+  `coarse_stages.liberty_area`, outside painting. Area integration and its own
+  reduction are specific to planes 4–5; canvas allocation and shape painting are
+  shared with size planes 2–3 and must not be counted twice. Span preparation and
+  colour-union construction are also shared inputs, not independent per-plane
+  costs. These are nested subtotals, not additional coarse work. For concurrent extraction, subtotals
   sum worker wall times and may exceed elapsed batch time; never add them
   to the batch total. Counts include only extractions on cache misses, after
   deduplicating identical batch positions, and exclude diagnostic warmup.

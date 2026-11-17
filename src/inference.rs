@@ -254,7 +254,10 @@ impl OnnxEvaluator {
             return Err("geometry budget must be in 1..=128".into());
         }
         if budget.is_some() && self.feature_schema() != crate::features::SCHEMA_VERSION {
-            return Err("geometry proposals require feature schema 5".into());
+            return Err(format!(
+                "geometry proposals require feature schema {}",
+                crate::features::SCHEMA_VERSION
+            ));
         }
         if self.geometry_budget != budget {
             self.cache.clear();

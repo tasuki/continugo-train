@@ -1,6 +1,6 @@
-//! Version-5 inputs: antialiased stones, connected group size, spatial
-//! liberty-center and liberty-footprint unions, and borders. Exact move rows
-//! carry a binary friendly-region splitting feature.
+//! Version-6 inputs: antialiased stones, connected group size and liberty area,
+//! spatial liberty-center and liberty-footprint unions, and borders. Exact move
+//! rows omit redundant legality/resulting size and retain binary region splitting.
 //! Legacy version 4 retains its original coarse inputs and ten exact fields.
 
 use continugo_rules::{
@@ -46,10 +46,15 @@ pub struct CoarseProfile {
 #[derive(Debug, Default, serde::Serialize)]
 pub struct RasterProfile {
     pub allocation: Stage,
-    pub group_shapes: Stage,
+    /// Lazy allocation/zeroing of the independent group size/area canvases.
+    pub group_canvas_allocation: Stage,
+    /// Shared coverage/painting for group size and liberty area. Count once,
+    /// not per plane. Canvas allocation is separate.
+    pub group_shared_shapes: Stage,
     pub occupancy: Stage,
     pub liberty_union: Stage,
     pub group_reduce: Stage,
+    pub group_liberty_reduce: Stage,
     pub liberty_centers: Stage,
     pub liberty_footprints: Stage,
     pub borders: Stage,
@@ -68,10 +73,21 @@ impl CoarseProfile {
             (&mut self.liberty_area, &other.liberty_area),
             (&mut self.painting, &other.painting),
             (&mut self.raster.allocation, &other.raster.allocation),
-            (&mut self.raster.group_shapes, &other.raster.group_shapes),
+            (
+                &mut self.raster.group_canvas_allocation,
+                &other.raster.group_canvas_allocation,
+            ),
+            (
+                &mut self.raster.group_shared_shapes,
+                &other.raster.group_shared_shapes,
+            ),
             (&mut self.raster.occupancy, &other.raster.occupancy),
             (&mut self.raster.liberty_union, &other.raster.liberty_union),
             (&mut self.raster.group_reduce, &other.raster.group_reduce),
+            (
+                &mut self.raster.group_liberty_reduce,
+                &other.raster.group_liberty_reduce,
+            ),
             (
                 &mut self.raster.liberty_centers,
                 &other.raster.liberty_centers,
@@ -88,9 +104,9 @@ impl CoarseProfile {
     }
 }
 
-// User reopened unused schema 5 on 2026-11-08 to replace the local footprint.
-// Feature names in checkpoint/export metadata identify the revised contract.
-pub const SCHEMA_VERSION: u32 = 5;
+// Schema 6 adds group liberty area, saturating scalars, and narrower exact rows.
+// Schema 5 is rejected rather than silently reinterpreting old derived tensors.
+pub const SCHEMA_VERSION: u32 = 6;
 pub const POINT_SAMPLED_SCHEMA: u32 = 4;
 
 pub fn validate_schema(schema: u32) -> Result<(), String> {
@@ -109,11 +125,13 @@ pub fn coarse_planes(schema: u32) -> Result<&'static [&'static str], String> {
     })
 }
 
-pub const COARSE_PLANES: [&str; 12] = [
+pub const COARSE_PLANES: [&str; 14] = [
     "friendly_stones",
     "enemy_stones",
     "friendly_group_size",
     "enemy_group_size",
+    "friendly_group_liberty_area",
+    "enemy_group_liberty_area",
     "friendly_liberty_centers",
     "enemy_liberty_centers",
     "friendly_liberty_footprints",
@@ -150,13 +168,11 @@ pub const LEGACY_MOVE_FEATURES: [&str; 10] = [
     "bottom_border",
 ];
 
-pub const MOVE_FEATURES: [&str; 11] = [
-    "legal",
+pub const MOVE_FEATURES: [&str; 9] = [
     "connected_groups",
     "connected_stones",
     "captured_groups",
     "captured_stones",
-    "resulting_group_size",
     "splits_friendly_region",
     "left_border",
     "right_border",
@@ -191,13 +207,22 @@ pub fn resolution(diameter: i32, samples_per_diameter: usize) -> Result<usize, S
     Ok(result)
 }
 
-/// Counts are log1p-scaled against the million-coordinate domain, without clipping.
+/// Log-scaled stone counts and liberty areas saturate at 100 stone-discs.
+pub fn scalar_feature(value: f64) -> f32 {
+    (value.clamp(0.0, 100.0).ln_1p() / 101.0_f64.ln()) as f32
+}
+
 pub fn count_feature(count: usize) -> f32 {
+    scalar_feature(count as f64)
+}
+
+// Preserve schema-4 model inputs exactly.
+fn legacy_count_feature(count: usize) -> f32 {
     (count as f32).ln_1p() / (COORDINATE_ACTIONS as f32).ln_1p()
 }
 
 pub struct MoveFeatures {
-    /// Candidate-major [N, fields]; schema 5 has 11, schema 4 has 10 fields.
+    /// Candidate-major [N, fields]; schema 6 has 9, schema 4 has 10 fields.
     /// Illegal tactical/splitting columns are zero.
     pub exact: Vec<f32>,
     pub legal: Vec<u8>,
@@ -211,7 +236,7 @@ pub struct FeatureExtractor<'a> {
     #[cfg(test)]
     footprints: footprint::Cache,
     pub resolution: usize,
-    /// Plane-major [12, H, W]; schema determines channel meanings.
+    /// Plane-major [planes, H, W]; schema 6 has 14 planes, schema 4 has 12.
     pub coarse: Vec<f32>,
     /// Opt-in exact per-group source geometry, before colour union/rasterization.
     pub geometry: Option<std::sync::Arc<Geometry>>,
@@ -244,7 +269,7 @@ impl<'a> FeatureExtractor<'a> {
         Self::build::<true>(game, density, schema, false)
     }
 
-    /// Keep exact geometry already computed for schema-5 coarse inputs.
+    /// Keep exact geometry already computed for current coarse inputs.
     pub fn with_geometry(
         game: &'a Game,
         density: usize,
@@ -252,7 +277,9 @@ impl<'a> FeatureExtractor<'a> {
         profile: bool,
     ) -> Result<(Self, CoarseProfile), String> {
         if schema != SCHEMA_VERSION {
-            return Err("geometry proposals require feature schema 5".into());
+            return Err(format!(
+                "geometry proposals require feature schema {SCHEMA_VERSION}"
+            ));
         }
         if profile {
             Self::build::<true>(game, density, schema, true)
@@ -290,6 +317,7 @@ impl<'a> FeatureExtractor<'a> {
         }
         let grid = (schema == SCHEMA_VERSION).then(|| spatial::Grid::new(&edges));
         let mut sizes: [Option<Vec<f32>>; 2] = [None, None];
+        let mut group_areas: [Option<Vec<f32>>; 2] = [None, None];
         let mut liberties = [Vec::new(), Vec::new()];
         let mut geometry = retain_geometry.then(Geometry::default);
         for color in [game.on_move(), game.on_move().other()] {
@@ -298,7 +326,11 @@ impl<'a> FeatureExtractor<'a> {
                 if PROFILE {
                     profile.groups += 1;
                 }
-                let size = count_feature(members.len());
+                let size = if schema == SCHEMA_VERSION {
+                    count_feature(members.len())
+                } else {
+                    legacy_count_feature(members.len())
+                };
                 if let Some(grid) = &grid {
                     let tick = PROFILE.then(Instant::now);
                     let spans = this.prepared.liberty_spans(members);
@@ -307,13 +339,29 @@ impl<'a> FeatureExtractor<'a> {
                         profile.spans += spans.len() as u64;
                     }
                     let tick = PROFILE.then(Instant::now);
-                    grid.group(
-                        sizes[offset].get_or_insert_with(|| grid.canvas()),
+                    let liberty_area =
+                        crate::liberty_area::in_stone_discs(&spans, board.stone_radius());
+                    if let Some(tick) = tick {
+                        profile.liberty_area.record(tick);
+                    }
+                    let tick = PROFILE.then(Instant::now);
+                    let sub = PROFILE.then(Instant::now);
+                    let size_canvas = sizes[offset].get_or_insert_with(|| grid.canvas());
+                    let area_canvas = group_areas[offset].get_or_insert_with(|| grid.canvas());
+                    if let Some(sub) = sub {
+                        profile.raster.group_canvas_allocation.record(sub);
+                    }
+                    let sub = PROFILE.then(Instant::now);
+                    grid.group_values(
+                        &mut [size_canvas.as_mut_slice(), area_canvas.as_mut_slice()],
                         board,
                         game.position().stones(),
                         members,
-                        size,
+                        [size, scalar_feature(liberty_area)],
                     );
+                    if let Some(sub) = sub {
+                        profile.raster.group_shared_shapes.record(sub);
+                    }
                     if let Some(geometry) = &mut geometry {
                         geometry.groups.push(GroupGeometry {
                             friendly: offset == 0,
@@ -324,7 +372,6 @@ impl<'a> FeatureExtractor<'a> {
                     liberties[offset].extend(spans);
                     if let Some(tick) = tick {
                         profile.painting.record(tick);
-                        profile.raster.group_shapes.record(tick);
                     }
                     continue;
                 }
@@ -417,10 +464,16 @@ impl<'a> FeatureExtractor<'a> {
                 if let Some(sub) = sub {
                     profile.raster.liberty_footprints.record(sub);
                 }
+                let sub = PROFILE.then(Instant::now);
+                let group_liberties = grid.reduce(group_areas[offset].as_ref().unwrap());
+                if let Some(sub) = sub {
+                    profile.raster.group_liberty_reduce.record(sub);
+                }
                 for (plane, values) in [
                     (2 + offset, group),
-                    (4 + offset, centers),
-                    (6 + offset, footprints),
+                    (4 + offset, group_liberties),
+                    (6 + offset, centers),
+                    (8 + offset, footprints),
                 ] {
                     this.coarse[plane * area..(plane + 1) * area].copy_from_slice(&values);
                 }
@@ -548,7 +601,7 @@ impl<'a> FeatureExtractor<'a> {
     #[cfg(test)]
     fn moves_footprint(&self, actions: &[Action]) -> Result<MoveFeatures, String> {
         let mut result = MoveFeatures {
-            exact: vec![0.0; actions.len() * self.move_fields],
+            exact: vec![0.0; actions.len() * 11],
             legal: vec![0; actions.len()],
         };
         self.fill_moves_impl::<true>(actions, &mut result.exact, &mut result.legal)?;
@@ -570,15 +623,16 @@ impl<'a> FeatureExtractor<'a> {
         exact: &mut [f32],
         legal: &mut [u8],
     ) -> Result<(), String> {
+        let fields = if FOOTPRINT { 11 } else { self.move_fields };
         for ((&action, row), legal) in actions
             .iter()
-            .zip(exact.chunks_mut(self.move_fields))
+            .zip(exact.chunks_mut(fields))
             .zip(legal.iter_mut())
         {
             let spot = action
                 .spot()
                 .ok_or("pass must not appear in coordinate features")?;
-            row[self.move_fields - 4..].copy_from_slice(&self.borders(spot));
+            row[fields - 4..].copy_from_slice(&self.borders(spot));
             let Some(analysis) = self.prepared.analyze_move(
                 Stone {
                     color: self.game.on_move(),
@@ -589,15 +643,29 @@ impl<'a> FeatureExtractor<'a> {
                 continue;
             };
             *legal = 1;
-            row[..6].copy_from_slice(&[
-                1.0,
-                count_feature(analysis.connected_groups),
-                count_feature(analysis.connected_stones),
-                count_feature(analysis.captured_groups),
-                count_feature(analysis.captured_stones),
-                count_feature(analysis.group_size),
-            ]);
-            if self.move_fields == MOVE_FEATURES.len() {
+            if fields == MOVE_FEATURES.len() {
+                row[..4].copy_from_slice(&[
+                    count_feature(analysis.connected_groups),
+                    count_feature(analysis.connected_stones),
+                    count_feature(analysis.captured_groups),
+                    count_feature(analysis.captured_stones),
+                ]);
+            } else {
+                let count = if FOOTPRINT {
+                    count_feature
+                } else {
+                    legacy_count_feature
+                };
+                row[..6].copy_from_slice(&[
+                    1.0,
+                    count(analysis.connected_groups),
+                    count(analysis.connected_stones),
+                    count(analysis.captured_groups),
+                    count(analysis.captured_stones),
+                    count(analysis.group_size),
+                ]);
+            }
+            if FOOTPRINT || fields == MOVE_FEATURES.len() {
                 if FOOTPRINT {
                     #[cfg(test)]
                     {
@@ -609,7 +677,7 @@ impl<'a> FeatureExtractor<'a> {
                         );
                     }
                 } else {
-                    row[6] = self.splitting.value(self.game, spot, &analysis.position);
+                    row[4] = self.splitting.value(self.game, spot, &analysis.position);
                 }
             }
         }

@@ -161,7 +161,8 @@ fn real_three_group_join_inside_cell_with_all_stones_outside() {
         .unwrap()
         .pass()
         .unwrap();
-    let (input, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+    let (input, _) =
+        FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false).unwrap();
     let geometry = input.geometry.unwrap();
     let cell = cells::cell(560500, input.resolution);
     let list = generate(&game, &geometry, input.resolution, &[cell], 8, 0).unwrap();
@@ -297,7 +298,8 @@ fn retaining_geometry_preserves_features_and_source_group_identity() {
         .unwrap();
     let ordinary = FeatureExtractor::new(&game, 4).unwrap();
     assert!(ordinary.geometry.is_none());
-    let (retained, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+    let (retained, _) =
+        FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false).unwrap();
     assert_eq!(ordinary.coarse, retained.coarse);
     let geometry = retained.geometry.unwrap();
     let prepared = game.position().prepare();
@@ -326,7 +328,9 @@ fn deterministic_shortlists_respect_cells_protect_extrema_and_join() {
             .unwrap()
             .pass()
             .unwrap();
-        let (extractor, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+        let (extractor, _) =
+            FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false)
+                .unwrap();
         let geometry = extractor.geometry.unwrap();
         let resolution = extractor.resolution;
         let middle = Spot { x: 500, y: 400 };
@@ -388,7 +392,9 @@ fn corner_capture_has_validated_representatives_for_both_colours() {
         let game = Game::new(Board::new(9).unwrap());
         let game = if white { game.pass().unwrap() } else { game };
         let game = game.play(Spot { x: 55, y: 55 }).unwrap();
-        let (extractor, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+        let (extractor, _) =
+            FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false)
+                .unwrap();
         let geometry = extractor.geometry.unwrap();
         let enemy = geometry.groups.iter().find(|g| !g.friendly).unwrap();
         let witness = game
@@ -420,7 +426,8 @@ fn connected_hug_is_kept_even_inside_maximum_reach() {
         .unwrap()
         .play(Spot { x: 520, y: 500 })
         .unwrap();
-    let (input, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+    let (input, _) =
+        FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false).unwrap();
     let geometry = input.geometry.unwrap();
     let cell = cells::cell(500410, input.resolution);
     let list = generate(&game, &geometry, input.resolution, &[cell], 16, 0).unwrap();
@@ -459,7 +466,8 @@ fn extend_uses_real_outer_reach_not_cell_corners_or_overlap_edges() {
         .unwrap()
         .play(Spot { x: 800, y: 800 })
         .unwrap();
-    let (input, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+    let (input, _) =
+        FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false).unwrap();
     let geometry = input.geometry.unwrap();
     let i = geometry.groups.iter().position(|g| g.friendly).unwrap();
     let cell = cells::cell(500450, input.resolution);
@@ -517,7 +525,8 @@ fn actual_board_limit_is_an_extension_frontier() {
         .unwrap()
         .play(Spot { x: 800, y: 800 })
         .unwrap();
-    let (input, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+    let (input, _) =
+        FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false).unwrap();
     let geometry = input.geometry.unwrap();
     let cell = cells::cell(55300, input.resolution);
     let list = generate(&game, &geometry, input.resolution, &[cell], 16, 0).unwrap();
@@ -543,7 +552,9 @@ fn join_keeps_four_lens_aligned_extremes_including_rotated_side_tips() {
             .unwrap()
             .pass()
             .unwrap();
-        let (input, _) = FeatureExtractor::with_geometry(&game, 4, 5, false).unwrap();
+        let (input, _) =
+            FeatureExtractor::with_geometry(&game, 4, crate::features::SCHEMA_VERSION, false)
+                .unwrap();
         let geometry = input.geometry.unwrap();
         let friends: Vec<_> = geometry
             .groups
