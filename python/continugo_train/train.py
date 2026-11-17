@@ -53,7 +53,7 @@ class Options:
     validation_positions_per_game: int = 0
     steps_per_epoch: int = 0
     seed: int = 0
-    validation_fraction: float = 0.2
+    validation_fraction: float = 0.02
     lr: float = 0.01
     momentum: float = 0.9
     weight_decay: float = 1e-4

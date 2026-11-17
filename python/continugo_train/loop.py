@@ -70,7 +70,7 @@ class LoopConfig:
     workers: int = Options().workers
     shuffle_buffer: int = 8
     feature_cache: str = Options().feature_cache
-    validation_fraction: float = 0.2
+    validation_fraction: float = 0.02
     lr: float | None = None
     warm_start_optimizer: str = "keep"
     device: str = "cuda"

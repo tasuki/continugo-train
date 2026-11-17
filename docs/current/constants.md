@@ -119,7 +119,7 @@ See [window semantics](loop.md#training-and-validation-windows).
 | Symbol / setting | Default / meaning |
 |---|---|
 | `f = training_window_fraction` | `1/3`; valid range `[0,1]`; zero selects legacy mode |
-| `v = validation_fraction` | `0.2`; strictly between 0 and 1 |
+| `v = validation_fraction` | `0.02`; strictly between 0 and 1 |
 | `G` | Number of unique `train` identities in the **parent checkpoint's ancestral split ledger** |
 | Training target | `T_target = max(1, ceil(G*f))` |
 | Selected training games | `T <= T_target`, capped by eligible, accessible, positive-weight training games |
