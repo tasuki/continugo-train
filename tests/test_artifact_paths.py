@@ -26,6 +26,15 @@ class ArtifactPathsTests(helpers.LoopHarness):
         local = moment.astimezone(timezone(timedelta(hours=3)))
         self.assertEqual(paths.timestamp(local), "20261101-123456")
 
+    def test_initial_training_plots_target_prepared_campaign_root(self):
+        campaign = self.root / "prepared-campaign"
+        job = campaign / "initial-training"
+        job.mkdir(parents=True)
+        self.assertEqual(paths.plot_directory(job), job)
+        (campaign / "initial-training-plan.json").write_text("{}")
+        self.assertEqual(paths.plot_directory(job), campaign)
+        self.assertEqual(paths.plot_directory(campaign), campaign)
+
     def test_training_and_standalone_defaults_are_separate(self):
         with patch.object(paths, "ROOT", self.root):
             for label in ["train", "loop", "export", "selfplay", "arena", "pipeline-profile"]:

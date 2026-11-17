@@ -13,6 +13,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .paths import plot_directory
+
 EPOCH = re.compile(r"^epoch=(\d+)/\d+ (train|validation): (.*)$")
 SAVED = re.compile(r"^saved .*[/\\]epoch-(\d+)\.pt;")
 METRICS = (
@@ -271,14 +273,7 @@ def plot_draws(rates, output, title):
 
 def update(run):
     """Refresh campaign plots after epochs/batches; plotting cannot stop learning."""
-    run = Path(run).resolve()
-    for parent in (run, *run.parents):
-        if (parent / "loop.pt").is_file():
-            run = parent.parent if parent.name == "loop" else parent
-            break
-        if (parent / "loop" / "loop.pt").is_file():
-            run = parent
-            break
+    run = plot_directory(run)
     try:
         try:
             jobs = collect_jobs(run)
@@ -300,7 +295,9 @@ def main(argv=None):
     parser.add_argument(
         "--run", type=Path, required=True, help="campaign, loop or offline job directory"
     )
-    parser.add_argument("--output", type=Path, help="PNG/SVG/PDF; default RUN/metrics.png")
+    parser.add_argument(
+        "--output", type=Path, help="PNG/SVG/PDF; default campaign-root metrics.png"
+    )
     parser.add_argument("--title", help="override the loss figure title")
     parser.add_argument(
         "--draws-output",
@@ -313,7 +310,7 @@ def main(argv=None):
         rates = collect_draws(args.run)
         if args.draws_output and not rates:
             raise ValueError("no fully recorded self-play batches found for the draw-rate plot")
-        output = args.output or args.run / "metrics.png"
+        output = args.output or plot_directory(args.run) / "metrics.png"
         draws_output = args.draws_output or output.with_name(f"draws{output.suffix}")
         if rates and draws_output.resolve() == output.resolve():
             raise ValueError("loss and draw-rate output paths must differ")

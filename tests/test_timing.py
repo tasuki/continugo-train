@@ -102,7 +102,7 @@ class TimingTests(unittest.TestCase):
             )
             self.assertEqual(dict(plot_timing.arena_history(root, "cg9")), {10: 12.3})
 
-    def test_update_refreshes_both_campaign_images_from_either_entrypoint(self):
+    def test_update_refreshes_only_campaign_root_image_from_either_entrypoint(self):
         with tempfile.TemporaryDirectory() as directory:
             run = Path(directory)
             root = run / "loop"
@@ -118,7 +118,7 @@ class TimingTests(unittest.TestCase):
                 collect.assert_called_once_with(root)
                 self.assertEqual(
                     [call.args[1] for call in plot.call_args_list],
-                    [root / "timing.png", run / "timing.png"],
+                    [run / "timing.png"],
                 )
 
     def test_normal_loop_refreshes_timing_after_success_or_interruption(self):

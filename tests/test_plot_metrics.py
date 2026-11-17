@@ -118,13 +118,16 @@ class PlotMetricsTests(unittest.TestCase):
         loop = self.draw_state()
         epoch_dir = loop / "iteration-0001/train-attempt-0001"
         self.log("loop/iteration-0001/train-attempt-0001/training.log", epoch(1))
-        with (
-            patch("continugo_train.plot_metrics.plot") as losses,
-            patch("continugo_train.plot_metrics.plot_draws") as draws,
-        ):
-            update(epoch_dir)
-        self.assertEqual(losses.call_args.args[1], self.root / "metrics.png")
-        self.assertEqual(draws.call_args.args[1], self.root / "draws.png")
+        for entrypoint in (self.root, loop, epoch_dir):
+            with (
+                patch("continugo_train.plot_metrics.plot") as losses,
+                patch("continugo_train.plot_metrics.plot_draws") as draws,
+            ):
+                update(entrypoint)
+            losses.assert_called_once()
+            draws.assert_called_once()
+            self.assertEqual(losses.call_args.args[1], self.root / "metrics.png")
+            self.assertEqual(draws.call_args.args[1], self.root / "draws.png")
 
     def test_auto_draw_update_before_first_saved_epoch_and_plot_failure(self):
         loop = self.draw_state()

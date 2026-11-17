@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import timing
+from .paths import plot_directory
 from .plot_metrics import pyplot, save_figure
 
 PHASES = {
@@ -202,10 +203,8 @@ def update(run):
         run = run / "loop"
     try:
         rows = collect(run)
-        plot(rows, run / "timing.png", f"Iteration timing — {run.resolve().name}")
-        # Campaign users commonly open the images beside recipe.json.
-        if run.name == "loop" and (run.parent / "launch.json").is_file():
-            plot(rows, run.parent / "timing.png", f"Iteration timing — {run.parent.name}")
+        output = plot_directory(run)
+        plot(rows, output / "timing.png", f"Iteration timing — {output.name}")
     except (OSError, ValueError, RuntimeError) as error:
         print(f"WARNING: timing plot not updated: {error}", file=sys.stderr)
 
@@ -253,7 +252,9 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     parser.add_argument("--measured-only", action="store_true", help="omit historical estimates")
     parser.add_argument(
-        "--watch-pid", type=int, help="refresh both campaign images until this supervisor exits"
+        "--watch-pid",
+        type=int,
+        help="refresh campaign-root timing image until this supervisor exits",
     )
     parser.add_argument(
         "--interval", type=float, default=30, help="watch polling interval in seconds"
@@ -266,7 +267,7 @@ def main(argv=None):
             watch(args.run, args.watch_pid, args.interval)
             return
         rows = collect(args.run, estimates=not args.measured_only)
-        output = args.output or args.run / "timing.png"
+        output = args.output or plot_directory(args.run) / "timing.png"
         plot(rows, output, f"Iteration timing — {args.run.resolve().name}")
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"timing plot error: {error}\n")

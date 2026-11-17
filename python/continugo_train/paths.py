@@ -7,6 +7,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def plot_directory(run):
+    """Campaign images live above loop/, even when invoked from a nested job."""
+    run = Path(run).resolve()
+    for parent in (run, *run.parents):
+        if (parent / "initial-training-plan.json").is_file():
+            return parent
+        if (parent / "loop.pt").is_file():
+            return parent.parent if parent.name == "loop" else parent
+        if (parent / "loop" / "loop.pt").is_file():
+            return parent
+    return run
+
+
 def utc_now():
     return datetime.now(UTC)
 
