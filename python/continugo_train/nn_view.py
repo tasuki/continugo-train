@@ -370,7 +370,7 @@ aside small{overflow-wrap:anywhere}figcaption{font-size:11px;overflow-wrap:anywh
 dialog{max-width:94vw;max-height:94vh;background:#172134;color:#fff;border:1px solid #62758d}dialog img{max-width:85vw;max-height:78vh;image-rendering:pixelated}dialog::backdrop{background:#000b}
 @media(min-width:2100px){figure img{max-height:195px}#inputs img{max-height:160px}}@media(max-width:1200px){main{grid-template-columns:240px 1fr}#inputs{grid-template-columns:1fr}#inputs .gallery{grid-template-columns:repeat(6,1fr)}}@media(max-width:750px){main{display:block}aside,section,#inputs{margin-bottom:12px}#inputs{display:block}#inputs .gallery{grid-template-columns:repeat(3,1fr)}}
 </style>
-<header><strong>ContinuGo · NN microscope</strong><button id="prev">←</button><span id="position"></span><button id="next">→</button><input id="slider" type="range" min="0" value="0"><a id="sgf" download="game.sgf">SGF ↓</a></header>
+<header><strong>ContinuGo · NN microscope</strong><button id="prev">←</button><span id="position"></span><button id="next">→</button><input id="slider" type="range" min="0" value="0"><button id="sgf" type="button" aria-live="polite" title="Copy the complete original SGF, including all annotations">Copy SGF</button></header>
 <p id="notice" class="panel" style="margin:12px" role="status" hidden></p>
 <details id="skipped" class="panel" style="margin:12px" hidden><summary id="skippedtitle"></summary><ul id="skiplist"></ul></details>
 <main><aside class="panel"><div class="board-stack"><div id="board"></div><svg id="played-overlay" viewBox="0 0 1000 1000" aria-label="Move played"><path id="played" fill="none" stroke="#ff701f" stroke-width="5"/></svg></div><p class="muted">Shared ContinuGo viewer · hover for groups, liberties and capture previews.</p><h2 id="turn"></h2><div id="stats"></div><p class="muted">Pre-move position. Orange cross = move played. All network quantities are side-to-move relative, not always Black.</p><p class="muted">Diagnostic checkpoint replay, not a live tree trace. Complete top-ranked cells + recorded visit/move cells; live search also uses seeded exploration and independent proposals.</p><p class="muted">Blue = negative, orange = positive for signed maps. Other maps: dark → bright. Transparent checkerboard = not evaluated. Probability/visit pixels sum; exact features/logits average. Click an image to enlarge.</p><small id="provenance"></small></aside>
@@ -380,6 +380,7 @@ dialog{max-width:94vw;max-height:94vh;background:#172134;color:#fff;border:1px s
 <details class="panel"><summary>All projected policy-context input channels</summary><p>These shared spatial channels feed the coarse cell head and are bilinearly sampled at each exact coordinate before adding the exact-feature projection. RMS above is only a summary; these are the individual channel values.</p><div id="context" class="gallery"></div></details>
 <details class="panel"><summary>Top diagnostic policy actions · exact feature values & methodology</summary><p>Local softmax uses all legal coordinates in each complete selected cell. Final policy redistributes placement mass over nonempty selected cells, preserving global coarse pass probability (or pass=1 if none). Input planes use fixed [0,1] scales except uncapped liberty areas; every map shows its range. Value is expected win/draw/loss outcome; “points” counts draws as half, not strict win probability. Score is signed final area / board area; stone units divide by stone-disc area. Ownership is auxiliary, not used in search. This report does not recompute ratings or change SGF training labels.</p><div style="overflow:auto"><table id="candidates"></table></div></details></main>
 <dialog id="zoom"><button id="close">Close (Esc)</button><h2 id="zoomtitle"></h2><img id="zoomimage" alt="Enlarged heatmap"></dialog>
+<dialog id="sgfcopy"><button id="copyclose" type="button">Close</button><h2>Copy the complete annotated SGF</h2><p>Automatic clipboard access was blocked. Press Ctrl+C or ⌘C to copy the selected text.</p><textarea id="sgftext" readonly aria-label="Complete original SGF" style="width:75vw;height:45vh;box-sizing:border-box"></textarea></dialog>
 """
 
 SCRIPT = r"""
@@ -387,8 +388,26 @@ SCRIPT = r"""
 'use strict';
 const data=JSON.parse(document.getElementById('data').textContent), frames=data.frames;
 const $=id=>document.getElementById(id), fmt=(v,n=3)=>v==null?'unknown':Number(v).toFixed(n);
-let index=0, viewer=null;
+let index=0, viewer=null, copyFeedbackTimer=null;
 const sgfText=new TextDecoder().decode(Uint8Array.from(atob(data.sgf.split(',')[1]),c=>c.charCodeAt(0)));
+function legacyCopySGF(){
+const previous=document.activeElement,field=document.createElement('textarea');
+field.value=sgfText;field.readOnly=true;field.style.cssText='position:fixed;left:0;top:0;opacity:0';document.body.append(field);
+try{field.focus();field.select();field.setSelectionRange(0,field.value.length);return document.execCommand('copy')}
+finally{field.remove();if(previous)previous.focus()}
+}
+async function copySGF(){
+const button=$('sgf');clearTimeout(copyFeedbackTimer);button.textContent='Copy SGF';button.disabled=true;
+try{
+let copied=false;
+if(window.isSecureContext&&navigator.clipboard&&typeof navigator.clipboard.writeText==='function'){
+try{await navigator.clipboard.writeText(sgfText);copied=true}catch(error){}
+}
+if(!copied){try{copied=legacyCopySGF()}catch(error){}}
+if(copied){button.textContent='Copied ✓';copyFeedbackTimer=setTimeout(()=>{button.textContent='Copy SGF'},1200)}
+else{$('sgftext').value=sgfText;$('sgfcopy').showModal();$('sgftext').focus();$('sgftext').select();$('sgftext').setSelectionRange(0,sgfText.length)}
+}finally{button.disabled=false}
+}
 function gallery(id,images){$(id).replaceChildren(...images.map(image=>{const f=document.createElement('figure'),img=document.createElement('img'),c=document.createElement('figcaption'),s=document.createElement('small');img.src=image.src;img.alt=image.name;c.textContent=image.name;s.textContent=`${fmt(image.low)} … ${fmt(image.high)} ${image.note}`;img.title=s.textContent;img.onclick=()=>{$('zoomtitle').textContent=image.name+' · '+s.textContent;$('zoomimage').src=image.src;$('zoom').showModal()};f.append(img,c,s);return f}))}
 function board(f){
 if(viewer)viewer.update({move:f.ply});
@@ -401,9 +420,9 @@ $('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points
 $('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,f[name]);
 const features=f.features||data.features,table=$('candidates');table.replaceChildren();let tr=document.createElement('tr');for(const name of ['Action','P(move)','Raw logit','P(move|cell)',...features]){const th=document.createElement('th');th.textContent=name;tr.append(th)}table.append(tr);for(const row of f.candidates){tr=document.createElement('tr');for(const value of [row.action,fmt(row.p,6),fmt(row.logit),fmt(row.local,6),...(row.features||features.map(()=>null)).map(v=>fmt(v))]){const td=document.createElement('td');td.textContent=value;tr.append(td)}table.append(tr)}}
 const skipped=data.skipped||[];if(skipped.length){$('skipped').hidden=false;$('skippedtitle').textContent=`${skipped.length} moves skipped (random or unsupported network)`;for(const s of skipped){const li=document.createElement('li');li.textContent=`Move ${s.ply+1} · ${s.player?'White':'Black'}: ${s.reason}`;$('skiplist').append(li)}}
-if(!frames.length){document.querySelector('main').hidden=true;$('notice').hidden=false;$('notice').textContent='No moves can be visualized with the available supported checkpoints. See the skipped-move reasons below; the original game is embedded in SGF ↓.';$('position').textContent=`0 visualizable / ${data.moves||0} moves`;for(const id of ['slider','prev','next'])$(id).disabled=true}
-$('slider').max=Math.max(0,frames.length-1);$('slider').oninput=e=>show(+e.target.value);$('prev').onclick=()=>show(index-1);$('next').onclick=()=>show(index+1);$('close').onclick=()=>$('zoom').close();$('sgf').href=data.sgf;
-document.addEventListener('keydown',e=>{if($('zoom').open||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();show(e.key==='Home'?0:e.key==='End'?frames.length-1:index+(e.key==='ArrowRight'?1:-1))}});show(0);
+if(!frames.length){document.querySelector('main').hidden=true;$('notice').hidden=false;$('notice').textContent='No moves can be visualized with the available supported checkpoints. See the skipped-move reasons below; the original annotated game is available through Copy SGF.';$('position').textContent=`0 visualizable / ${data.moves||0} moves`;for(const id of ['slider','prev','next'])$(id).disabled=true}
+$('slider').max=Math.max(0,frames.length-1);$('slider').oninput=e=>show(+e.target.value);$('prev').onclick=()=>show(index-1);$('next').onclick=()=>show(index+1);$('close').onclick=()=>$('zoom').close();$('copyclose').onclick=()=>$('sgfcopy').close();$('sgf').onclick=copySGF;
+document.addEventListener('keydown',e=>{if($('zoom').open||$('sgfcopy').open||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();show(e.key==='Home'?0:e.key==='End'?frames.length-1:index+(e.key==='ArrowRight'?1:-1))}});show(0);
 </script></html>
 """
 

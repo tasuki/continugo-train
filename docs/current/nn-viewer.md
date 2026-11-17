@@ -1,9 +1,15 @@
 # Neural game microscope
 
 Generate a **single self-contained HTML file**, with embedded PNG images, inline
-JavaScript/CSS (including the shared ContinuGo embedded viewer), and a downloadable
-embedded source SGF. Open it directly in a
-browser: no server, Internet, image directory or Python installation is needed to
+JavaScript/CSS (including the shared ContinuGo embedded viewer), and the complete
+embedded source SGF. **Copy SGF** in the upper-right copies the original game text,
+including all annotations, without a URL-size limit or network request. It first
+tries the Clipboard API, then a legacy copy fallback; if browser permissions block
+both (including when opened as a local file), a dialog selects the entire SGF for
+manual Ctrl+C / ⌘C. On automatic-copy success the button briefly shows
+“Copied ✓” for 1.2 seconds, then returns to “Copy SGF”; no persistent status text
+is displayed.
+Open it directly in a browser: no server, Internet, image directory or Python installation is needed to
 view it. Use **← / →**, Home/End, the slider, or the navigation buttons. Click any
 image to enlarge it. The dashboard targets a large desktop screen (1920×1080 or
 larger); smaller screens reflow and scroll.
