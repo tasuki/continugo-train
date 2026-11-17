@@ -47,8 +47,12 @@ read-only and reports roles, cumulative progress, metrics, phase, disk and live 
 Use `mise run loop -- --help` or the [constants and formulas inventory](constants.md)
 for defaults. New loops default to 12 concurrent games / batch limit 12 /
 collection wait two ms; active slots are capped by `--games-per-iteration`
-(default 100). Training batch size is 64; position and step caps default to zero
-(all eligible positions, exhaustive one-epoch training and validation). Feature
+(default 100). Training batch size is 64; `--positions-per-epoch` defaults to
+65,536, sampled uniformly without replacement from the eligible replay window
+before feature loading, with a fresh seeded sample each iteration/epoch. Smaller
+pools are exhausted; zero disables sampling. The default is one training epoch
+per iteration (1,024 batches for a full sample). Per-game and step caps default
+to zero; validation remains exhaustive and uncapped by this sampling budget. Feature
 caches are required by default. See [inference batching](inference.md#cross-game-batching).
 `--device cpu` selects CPU. Play, training and export are separate supervised
 processes; export verification uses CPU.
@@ -129,22 +133,28 @@ The trainer's `best.pt` is a within-job diagnostic. The loop exports the **lates
 completed epoch**, not a loss-selected promotion. Training always starts from the
 latest candidate.
 
-New loops and new campaign forks default to **`--training-window-fraction 0.3333333333333333`**.
-Each round selects the newest `ceil(parent cumulative unique training games / 3)`
-training games, using the same ancestral split ledger as the ratings chart's x-axis
-(not generated-game counts or repeated epochs). The minimum is one; the window is
-capped at the available eligible training pool. All earlier local rounds and explicit
+New loops and new campaign forks default to **`--training-window-fraction 0.5`**.
+Each round targets `ceil(parent progress.data_positions / 2)` eligible training
+positions, retaining whole newest games until the target is reached (possibly
+overshooting by the last game), or the available eligible training pool is exhausted.
+The minimum target is one position. The historical counter includes validation and
+generated/imported positions, not repeated optimizer exposures; unknown historical
+position totals are rejected. A fresh initial checkpoint may use `--data-positions`
+to supply an agreed historical estimate (900000 for cg10); new generation then
+increases the counter without requiring old SGFs to be imported. All earlier local rounds and explicit
 bootstrap games are candidates, not just the last few rounds. Board-size selection
 remains weighted round-robin, newest-first within each size; canonical duplicates
 count once. Legacy fixed-window limits `--window-games` and `--window-iterations` do not cap this mode.
 
 **Validation is separate.** New identities get a permanent split before window selection.
-From the validation-only pool, select the newest `ceil(selected training games *
-validation_fraction / (1-validation_fraction))` games (at least one, capped by availability).
+From the validation-only pool, target `ceil(selected training positions *
+validation_fraction / (1-validation_fraction))` positions (at least one), retaining
+whole games with the same boundary overshoot and availability rules.
 Changing window size or random seed never moves a held-out identity into training.
 Pool pins survive checkpoint continuation/forks, including assigned-but-unselected
 games. These extra pins are stored separately from the used-game ledger: unselected
-training games do not inflate the ratings chart's cumulative training count. Selected
+training games do not inflate the ancestral used-game ledger. The replay budget
+uses the separate historical data-position counter, not that ledger's size. Selected
 corpora, budgets and splits are frozen per round for restartability. Validation
 subsets may change, so validation loss is not a fixed-cohort benchmark.
 

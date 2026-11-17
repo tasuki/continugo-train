@@ -61,10 +61,11 @@ class LoopConfig:
     cache_positions: int = 64
     window_iterations: int = 4
     window_games: int = 256
-    training_window_fraction: float = 1 / 3
+    training_window_fraction: float = 1 / 2
     train_epochs: int = 1
     steps_per_epoch: int = 0
     positions_per_game: int = 0
+    positions_per_epoch: int = 65_536
     validation_positions_per_game: int = 0
     batch_size: int = Options().batch_size
     workers: int = Options().workers
@@ -129,6 +130,7 @@ class LoopConfig:
             "seed",
             "steps_per_epoch",
             "positions_per_game",
+            "positions_per_epoch",
             "validation_positions_per_game",
             "workers",
             "shuffle_buffer",
@@ -208,6 +210,7 @@ class LoopConfig:
             "workers",
             "shuffle_buffer",
             "positions_per_game",
+            "positions_per_epoch",
             "validation_positions_per_game",
             "steps_per_epoch",
             "validation_fraction",
@@ -402,23 +405,45 @@ def select_replay(records, limit, size_weights=DEFAULT_SIZE_WEIGHTS):
     return selected
 
 
+def select_position_replay(records, target, size_weights=DEFAULT_SIZE_WEIGHTS):
+    """Keep whole games in replay order until the eligible-position target is met."""
+    ordered = select_replay(records, len(records), size_weights)
+    selected, positions = [], 0
+    for record in ordered:
+        count = record["eligible_positions"]
+        if type(count) is not int or count <= 0:
+            raise ValueError("eligible replay games must have positive eligible_positions")
+        selected.append(record)
+        positions += count
+        if positions >= target:
+            break
+    return selected
+
+
 def select_growing_replay(
     records,
     splits,
-    cumulative_training_games,
+    cumulative_data_positions,
     fraction,
     validation_fraction,
     size_weights=DEFAULT_SIZE_WEIGHTS,
 ):
-    """Select training/validation windows separately; holdouts do not count in the budget."""
-    train_limit = max(1, math.ceil(cumulative_training_games * fraction))
-    train = select_replay(
+    """Budget eligible positions, retaining whole games and separate pinned holdouts.
+
+    The historical data counter includes validation and generated positions no longer
+    accessible in replay. Training exposures do not increase this counter.
+    """
+    if type(cumulative_data_positions) is not int or cumulative_data_positions < 0:
+        raise ValueError("position-based replay requires known cumulative data positions")
+    train_limit = max(1, math.ceil(cumulative_data_positions * fraction))
+    train = select_position_replay(
         [r for r in records if splits.get(r["game_id"]) == "train"], train_limit, size_weights
     )
+    training_positions = sum(r["eligible_positions"] for r in train)
     validation_limit = max(
-        1, math.ceil(len(train) * validation_fraction / (1 - validation_fraction))
+        1, math.ceil(training_positions * validation_fraction / (1 - validation_fraction))
     )
-    validation = select_replay(
+    validation = select_position_replay(
         [r for r in records if splits.get(r["game_id"]) == "validation"],
         validation_limit,
         size_weights,
@@ -787,7 +812,7 @@ class LoopRunner:
                     _, _, splits = assign_splits(
                         games, options.seed, options.validation_fraction, splits
                     )
-                cumulative = sum(split == "train" for split in history.values())
+                cumulative = checkpoint_progress(parent)["data_positions"]
                 selected, target = select_growing_replay(
                     candidates,
                     splits,
@@ -800,11 +825,16 @@ class LoopRunner:
                 iteration["replay_pool_splits"] = splits
                 iteration["replay_splits"] = {r["game_id"]: splits[r["game_id"]] for r in selected}
                 iteration["replay_budget"] = {
-                    "cumulative_training_games": cumulative,
+                    "unit": "positions",
+                    "cumulative_data_positions": cumulative,
                     "training_target": target,
-                    "training_selected": sum(splits[r["game_id"]] == "train" for r in selected),
+                    "training_selected": sum(
+                        r["eligible_positions"] for r in selected if splits[r["game_id"]] == "train"
+                    ),
                     "validation_selected": sum(
-                        splits[r["game_id"]] == "validation" for r in selected
+                        r["eligible_positions"]
+                        for r in selected
+                        if splits[r["game_id"]] == "validation"
                     ),
                 }
                 self.log(

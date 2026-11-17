@@ -312,6 +312,23 @@ def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_si
     return ordered
 
 
+def _subsample_plans(plans, budget, seed, epoch, *, preserve_order=False):
+    """Uniformly sample position references before feature loading, without replacement."""
+    if type(budget) is not int or budget < 0:
+        raise ValueError("position budget must be a nonnegative integer")
+    if not budget:
+        return plans
+    references = [(game, ply) for game, plies in plans for ply in plies]
+    if len(references) <= budget:
+        return plans
+    rng = random.Random(seed + epoch * 1000039 + 65537)
+    indices = rng.sample(range(len(references)), budget)
+    if preserve_order:
+        # Weighted plans already provide shuffled, size-interleaved ordering.
+        indices.sort()
+    return [(references[i][0], [references[i][1]]) for i in indices]
+
+
 def _serial_samples(plans, density, binary, feature_profile=None, feature_cache="require"):
     with SampleReader(binary, cache=feature_cache, profile=feature_profile is not None) as client:
         for game, plies in plans:
@@ -422,6 +439,7 @@ def batches(
     feature_profile=None,
     feature_cache="require",
     augmentation="d4",
+    position_budget=0,
 ):
     """Bounded, deterministic shuffling and homogeneous-resolution batches.
 
@@ -430,6 +448,10 @@ def batches(
     if augmentation not in ("none", "d4"):
         raise ValueError("augmentation must be none or d4")
     plans = _plans(games, seed, epoch, training, limit, size_weights, batch_size)
+    if training:
+        plans = _subsample_plans(
+            plans, position_budget, seed, epoch, preserve_order=size_weights != "uniform"
+        )
     # Weighted plans already shuffle references within each size. A global
     # shuffle would undo the early-step budget mix and waste extraction work.
     if size_weights != "uniform":

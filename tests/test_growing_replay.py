@@ -18,13 +18,14 @@ def record(number):
         "game_id": f"{number:064x}",
         "board_size": 9,
         "eligible": True,
+        "eligible_positions": 1,
         "path": f"game-{number}.sgf",
     }
 
 
 class GrowingReplayTests(unittest.TestCase):
     def test_default_and_validation(self):
-        self.assertEqual(LoopConfig().training_window_fraction, 1 / 3)
+        self.assertEqual(LoopConfig().training_window_fraction, 1 / 2)
         for invalid in (-1, 1.01, math.nan, math.inf):
             with self.assertRaisesRegex(ValueError, "training-window-fraction"):
                 LoopConfig(training_window_fraction=invalid).validate()
@@ -77,6 +78,45 @@ class GrowingReplayTests(unittest.TestCase):
         selected, target = select_growing_replay(records, splits, 1000, 1 / 3, 0.2, "uniform")
         self.assertEqual(target, 334)
         self.assertEqual(len(selected), 2)
+
+    def test_position_budgets_keep_whole_games_and_separate_holdouts(self):
+        records = [record(i) for i in range(5, 0, -1)]
+        for r, count in zip(records, (30, 200, 40, 60, 500), strict=True):
+            r["eligible_positions"] = count
+        splits = {r["game_id"]: "train" for r in records}
+        splits[records[1]["game_id"]] = "validation"
+        selected, target = select_growing_replay(records, splits, 200, 0.5, 0.02)
+        self.assertEqual(target, 100)
+        train = [r for r in selected if splits[r["game_id"]] == "train"]
+        self.assertEqual(train, [records[0], records[2], records[3]])
+        self.assertEqual(sum(r["eligible_positions"] for r in train), 130)
+        self.assertEqual(selected[-1], records[1])
+
+    def test_historical_baseline_retains_initial_pool_until_it_fills(self):
+        old, new, validation = record(1), record(2), record(3)
+        old["eligible_positions"] = 430_000
+        new["eligible_positions"] = 10_000
+        validation["eligible_positions"] = 9_000
+        splits = {
+            old["game_id"]: "train",
+            new["game_id"]: "train",
+            validation["game_id"]: "validation",
+        }
+        selected, target = select_growing_replay([new, old, validation], splits, 900_000, 0.5, 0.02)
+        self.assertEqual(target, 450_000)
+        self.assertEqual(selected, [new, old, validation])
+        # Once enough newer positions exist, the older whole game drops out.
+        new["eligible_positions"] = 900_000
+        selected, target = select_growing_replay(
+            [new, old, validation], splits, 1_800_000, 0.5, 0.02
+        )
+        self.assertEqual(target, 900_000)
+        self.assertEqual(selected, [new, validation])
+        with self.assertRaisesRegex(ValueError, "known cumulative data positions"):
+            select_growing_replay([old], splits, None, 0.5, 0.02)
+        old["eligible_positions"] = 0
+        with self.assertRaisesRegex(ValueError, "positive eligible_positions"):
+            select_growing_replay([old], splits, 900_000, 0.5, 0.02)
 
     def test_pool_pins_do_not_inflate_cumulative_training_count(self):
         games = [GameEntry(str(i), f"{i:064x}", "hash", 9, 4, 1, (0,)) for i in (1, 2)]

@@ -118,25 +118,30 @@ See [window semantics](loop.md#training-and-validation-windows).
 
 | Symbol / setting | Default / meaning |
 |---|---|
-| `f = training_window_fraction` | `1/3`; valid range `[0,1]`; zero selects legacy mode |
+| `f = training_window_fraction` | `1/2`; valid range `[0,1]`; zero selects legacy mode |
 | `v = validation_fraction` | `0.02`; strictly between 0 and 1 |
-| `G` | Number of unique `train` identities in the **parent checkpoint's ancestral split ledger** |
-| Training target | `T_target = max(1, ceil(G*f))` |
-| Selected training games | `T <= T_target`, capped by eligible, accessible, positive-weight training games |
-| Validation target | `V_target = max(1, ceil(T*v/(1-v)))` |
-| Selected validation games | `V <= V_target`, capped by the separate eligible validation pool |
+| `D` | Cumulative eligible data positions in the **parent checkpoint's `progress.data_positions`** |
+| Training target | `T_target = max(1, ceil(D*f))` positions |
+| Selected training positions | Whole newest games until the target is reached, or the eligible accessible positive-weight pool is exhausted |
+| Validation target | `V_target = max(1, ceil(T*v/(1-v)))`, where `T` is actually selected training positions |
+| Selected validation positions | Whole newest games from the separate pinned validation pool until its target is reached or the pool is exhausted |
 
-At the defaults, request about one-third of ancestral training games and then
-one validation game per four **actually selected** training games. For example,
-`G=3000` requests 1000 training and 250 validation games if both pools suffice.
-There is no fixed 1000-game cap in this mode.
+At the defaults, request half of historical eligible data positions for training
+and one validation position per 49 **actually selected** training positions.
+Both targets can overshoot by the final selected game's position count.
+For example, `D=900000` targets 450000 training positions; with only 430000
+available, retain all of them and target 8776 validation positions.
+There is no fixed game-count cap in this mode.
 
 Important qualifications:
 
-- `G` is neither generated games, positions, epochs, nor the entire assigned pool.
-  Repeated use counts once; validation and assigned-but-unselected training games
-  do not increase it. An ancestral identity contributes to `G` even if its SGF is
-  no longer locally accessible, but inaccessible SGFs cannot be sampled.
+- `D` counts historical eligible generated/imported positions, including validation,
+  not optimizer exposures or game counts. Repeated epochs do not increase it.
+  Generated data can increase it even if not selected for training; inaccessible
+  history still contributes to the target but cannot be selected. Unknown legacy
+  position totals are rejected in growing mode rather than replaced by game counts.
+  An explicit initial `--data-positions 900000` can supply the agreed cg10 estimate
+  when training its fresh checkpoint; the loop then adds new generation normally.
 - All local rounds through the current round and explicitly supplied bootstrap
   games are candidates. Selection is newest-round-first within each size,
   weighted round-robin across sizes, with canonical duplicates removed.
@@ -168,7 +173,7 @@ With `training_window_fraction=0`, `window_iterations=4` admits the current and
 previous three generated rounds, plus explicit bootstrap games. `window_games=256`
 limits the **combined** selected corpus before its permanent split is applied.
 The combined limit must be at least 2. This is a different policy, not an additional
-cap on the one-third formula.
+cap on the one-half formula.
 
 ## 3. Position sampling and optimization
 
@@ -185,6 +190,7 @@ Sources: [training `Options` and CLI](../../python/continugo_train/train.py),
 | Epochs per job | 3; resume without `--epochs` adds one to completed epochs | 1 |
 | `steps_per_epoch` | 0 = exhaust stream | 0 = exhaust stream |
 | `positions_per_game` | 0 = all eligible pre-move positions | 0 = all eligible pre-move positions |
+| `positions_per_epoch` | 0 = entire eligible stream | 65,536 globally sampled training positions; 0 disables |
 | `validation_positions_per_game` | 0 = all eligible positions | 0 = all eligible positions |
 | `batch_size` | 64 | 64 |
 | Feature workers | 6; 0 = serial | 6 |
@@ -193,9 +199,14 @@ Sources: [training `Options` and CLI](../../python/continugo_train/train.py),
 | D4 augmentation | `d4`: uniform draw among 8 symmetries during training only | Inherited from parent |
 | Training device / Torch threads | `auto` / `min(4, cpu_count or 1)` | `cuda` / 4 |
 
-The loop defaults to one exhaustive epoch over all eligible positions in its
-selected size-9 training window, with exhaustive validation. There is no default
-640-sample/20-step cap. Explicit nonzero position/step caps remain available.
+The loop defaults to one epoch of up to 65,536 training positions, uniformly
+sampled without replacement from its selected window before feature loading.
+The seeded sample refreshes each epoch/iteration. Smaller pools are exhausted.
+At batch 64 this is 1,024 optimizer steps when the pool is large enough.
+Validation remains exhaustive and is not subject to this budget. Standalone
+initial training remains uncapped; use `--positions-per-epoch 0` explicitly when
+starting a fresh job from a previously capped checkpoint. Explicit per-game and
+step caps can further restrict the sampled stream.
 Policy sample count can be smaller than total samples because of the cheap-move
 policy mask.
 

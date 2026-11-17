@@ -56,8 +56,14 @@ zero), all eligible positions are candidates before board-mixture downsampling.
 `--size-weights uniform` instead uses every eligible position once and evaluates
 all held-out positions. Nonzero `--positions-per-game` chooses a fresh reproducible
 subset each training epoch. `--validation-positions-per-game` chooses a fixed
-seeded subset per held-out game. `--steps-per-epoch` caps optimizer batches;
-otherwise an epoch exhausts the data. Final partial batches are retained.
+seeded subset per held-out game. `--positions-per-epoch` uniformly samples a
+global budget of training position references without replacement, before loading
+features; sampling is seeded and refreshes each epoch. Zero (the standalone
+default) disables it, and smaller pools are exhausted. The self-play loop defaults
+to 65,536 positions per epoch, independently of its larger eligible replay window.
+Validation is never capped by this option. `--steps-per-epoch` additionally caps
+optimizer batches; otherwise an epoch exhausts the sampled stream. Final partial
+batches are retained.
 
 ### Board-symmetry augmentation
 

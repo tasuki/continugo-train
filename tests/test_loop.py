@@ -393,7 +393,7 @@ class LoopTests(LoopHarness):
         state = self.run_loop(output, extra=["--training-window-fraction", "0.3333333333333333"])
         first = state["iterations"][0]
         parent = loop.load_training(output / first["parent_checkpoint"]["path"])
-        count = sum(s == "train" for s in trainer.checkpoint_splits(parent).values())
+        count = parent["progress"]["data_positions"]
         self.assertEqual(first["replay_budget"]["training_target"], max(1, (count + 2) // 3))
         self.assertGreater(first["replay_budget"]["validation_selected"], 0)
         pins = dict(state["replay_pool_splits"])
@@ -785,7 +785,7 @@ class LoopTests(LoopHarness):
             self.assertEqual(saved["epoch"], 1)
             self.assertEqual(
                 iteration["replay_budget"]["training_selected"],
-                sum(game["split"] == "train" for game in saved["manifest"]),
+                sum(len(game["plies"]) for game in saved["manifest"] if game["split"] == "train"),
             )
             self.assertTrue(
                 all(

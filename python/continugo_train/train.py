@@ -50,6 +50,7 @@ class Options:
     shuffle_buffer: int = 8
     samples_per_diameter: int = 4
     positions_per_game: int = 0
+    positions_per_epoch: int = 0
     validation_positions_per_game: int = 0
     steps_per_epoch: int = 0
     seed: int = 0
@@ -85,6 +86,7 @@ class Options:
                 "workers",
                 "shuffle_buffer",
                 "positions_per_game",
+                "positions_per_epoch",
                 "validation_positions_per_game",
                 "steps_per_epoch",
                 "seed",
@@ -241,6 +243,7 @@ def run_phase(
         feature_profile=feature_profile,
         feature_cache=options.feature_cache,
         augmentation=options.augmentation,
+        position_budget=options.positions_per_epoch if training else 0,
     )
     memory = GpuMemorySampler(enabled=profile_stages and device.type == "cuda")
     with memory, closing(stream), torch.set_grad_enabled(training):
@@ -493,6 +496,7 @@ def train(args):
         "batch_size",
         "shuffle_buffer",
         "positions_per_game",
+        "positions_per_epoch",
         "steps_per_epoch",
         "lr",
         "grad_clip",
