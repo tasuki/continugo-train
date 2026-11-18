@@ -2,6 +2,8 @@
 //! adjacency and exact integer liberty spans; this module only rasterizes them.
 use continugo_rules::{Board, LibertySpan, Spot, Stone};
 
+mod footprint_raster;
+
 #[cfg(test)]
 #[path = "spatial/shared_tests.rs"]
 mod shared_tests;
@@ -166,6 +168,12 @@ impl<'a> Grid<'a> {
 
     /// Union of stone-radius capsules swept over exact source row spans.
     pub fn footprints(&self, spans: &[LibertySpan], radius: i32) -> Vec<f32> {
+        footprint_raster::rasterize(self, spans, radius)
+    }
+
+    /// Frozen streaming-union oracle for the exact optimized rasterizer.
+    #[cfg(test)]
+    fn footprints_reference(&self, spans: &[LibertySpan], radius: i32) -> Vec<f32> {
         if spans.is_empty() {
             return vec![0.0; self.resolution.pow(2)];
         }
@@ -228,6 +236,7 @@ impl<'a> Grid<'a> {
 
 /// Keep only the small disjoint union as source rows arrive. Most neighbouring
 /// capsules overlap or are contained; sorting every source interval is wasteful.
+#[cfg(test)]
 fn insert_interval(intervals: &mut Vec<(f64, f64)>, mut left: f64, mut right: f64) {
     let first = intervals.partition_point(|&(_, end)| end < left);
     if first < intervals.len() && intervals[first].0 <= left && right <= intervals[first].1 {

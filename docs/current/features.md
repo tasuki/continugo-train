@@ -172,6 +172,12 @@ lives in `src/features/raster.rs` and `src/features/spatial.rs`. Empty colours s
 spatial canvases entirely; footprint rasterization maintains disjoint row unions
 and accumulates sample counts directly into coarse pixels, without a second
 supersampled canvas. These optimizations preserve the original raster bits.
+The common single-interval union updates its endpoints directly. For default
+size-9/13/19 density-4 grids, circle extensions use three immutable precomputed
+geometry tables (together less than 1 MiB), with actual sample-axis equality
+checked before reuse. Other grids/source ranges use the original square-root
+calculation. These are not per-group/per-position caches; no sampling precision
+or schema changes. See the [exact footprint optimization measurements](../history/2026-11-18-exact-footprint-optimization.md).
 
 All schema-5 coarse values are in [0,1]. Border distances are measured from the
 permitted stone-center boundary in stone diameters, clipped to [0,4], then divided
