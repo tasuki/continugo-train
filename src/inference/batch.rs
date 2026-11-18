@@ -17,6 +17,52 @@ pub enum InferenceOutput {
 
 type Error = Box<dyn std::error::Error>;
 
+pub(super) type CoarseRaster = (
+    Vec<f32>,
+    crate::features::CoarseProfile,
+    Option<Arc<crate::geometry_proposals::Geometry>>,
+);
+
+/// Immutable extraction recipe sharing the execution worker's bounded CPU pool
+/// and cache, but not its ONNX sessions or mutable inference counters.
+pub(super) struct CoarsePreparer {
+    pub cache: Arc<std::sync::Mutex<super::cache::ContextCache>>,
+    pool: Option<Arc<rayon::ThreadPool>>,
+    density: usize,
+    schema: u32,
+    profile: bool,
+    geometry: bool,
+}
+
+impl CoarsePreparer {
+    /// Hints retain request order; duplicates and currently cached games need no
+    /// extraction. Execution rechecks the cache and handles intervening eviction.
+    pub fn prepare(&self, games: &[&Game]) -> Result<Vec<Option<CoarseRaster>>, String> {
+        let extract = |i: usize| {
+            if games[..i].iter().any(|g| *g == games[i])
+                || self.cache.lock().unwrap().contains(games[i])
+            {
+                return Ok(None);
+            }
+            let raster = if self.geometry {
+                FeatureExtractor::with_geometry(games[i], self.density, self.schema, self.profile)
+                    .map(|(e, p)| (e.coarse, p, e.geometry))
+            } else if self.profile {
+                FeatureExtractor::profiled_with_schema(games[i], self.density, self.schema)
+                    .map(|(e, p)| (e.coarse, p, None))
+            } else {
+                FeatureExtractor::with_schema(games[i], self.density, self.schema)
+                    .map(|e| (e.coarse, Default::default(), None))
+            }?;
+            Ok(Some(raster))
+        };
+        match &self.pool {
+            Some(pool) => pool.install(|| (0..games.len()).into_par_iter().map(extract).collect()),
+            None => (0..games.len()).map(extract).collect(),
+        }
+    }
+}
+
 impl OnnxEvaluator {
     /// Each tuple requests either a selective cell policy (true) or only a value.
     /// Mixed resolutions are bucketed, not padded. Outputs retain request order.
@@ -56,18 +102,38 @@ impl OnnxEvaluator {
     }
 
     pub(super) fn cached_context(&mut self, game: &Game) -> Option<Arc<Context>> {
-        let context = self.cache.get(game)?;
+        let context = self.cache.lock().unwrap().get(game)?;
         self.stats.cache_hits += 1;
         self.cache_stats();
         Some(context)
     }
 
     fn cache_stats(&mut self) {
-        self.stats.cache_entries = self.cache.len();
-        self.stats.cache_bytes = self.cache.bytes;
+        let cache = self.cache.lock().unwrap();
+        self.stats.cache_entries = cache.len();
+        self.stats.cache_bytes = cache.bytes;
+    }
+
+    pub(super) fn coarse_preparer(&self) -> CoarsePreparer {
+        CoarsePreparer {
+            cache: Arc::clone(&self.cache),
+            pool: self.feature_pool.clone(),
+            density: self.metadata.feature_spec.samples_per_diameter,
+            schema: self.metadata.feature_spec.schema,
+            profile: self.profile_coarse,
+            geometry: self.geometry_budget.is_some(),
+        }
     }
 
     pub(super) fn contexts(&mut self, games: &[&Game]) -> Result<Vec<Arc<Context>>, Error> {
+        self.contexts_prepared(games, None)
+    }
+
+    pub(super) fn contexts_prepared(
+        &mut self,
+        games: &[&Game],
+        mut prepared: Option<&mut [Option<CoarseRaster>]>,
+    ) -> Result<Vec<Arc<Context>>, Error> {
         if games.len() > MAX_BATCH {
             return Err("inference batch exceeds 32 positions".into());
         }
@@ -113,9 +179,16 @@ impl OnnxEvaluator {
                         .map(|e| (e.coarse, Default::default(), None))
                 }
             };
+            let hints: Vec<_> = indices
+                .iter()
+                .map(|&i| (i, prepared.as_deref_mut().and_then(|p| p[i].take())))
+                .collect();
+            let extract_hint = |(i, hint): (usize, Option<CoarseRaster>)| {
+                hint.map(Ok).unwrap_or_else(|| extract(&i))
+            };
             let rasters: Result<Vec<_>, _> = match &self.feature_pool {
-                Some(pool) => pool.install(|| indices.par_iter().map(extract).collect()),
-                None => indices.iter().map(extract).collect(),
+                Some(pool) => pool.install(|| hints.into_par_iter().map(extract_hint).collect()),
+                None => hints.into_iter().map(extract_hint).collect(),
             };
             let planes = self.metadata.feature_spec.coarse.len();
             let mut coarse = Vec::with_capacity(indices.len() * planes * size * size);
@@ -172,7 +245,10 @@ impl OnnxEvaluator {
                     geometry: geometries[row].take(),
                 });
                 self.stats.cache_evictions +=
-                    self.cache.insert(games[i], Arc::clone(&context)) as u64;
+                    self.cache
+                        .lock()
+                        .unwrap()
+                        .insert(games[i], Arc::clone(&context)) as u64;
                 result[i] = Some(context);
             }
             self.stats.encoder_seconds += tick.elapsed().as_secs_f64();

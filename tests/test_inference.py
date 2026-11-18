@@ -403,6 +403,9 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertNotIn("geometry_budget", result)
             self.assertAlmostEqual(result["value"], value.item(), places=6)
             self.assertAlmostEqual(result["score"], score.item(), places=6)
+            # The pipelined worker must also preserve the complete-cell legacy
+            # path, not only geometry-based schemas 5/6.
+            self.check_batches(model=bundle)
 
     def test_leaky_value_head_export_matches_native_cpu_and_cuda(self):
         source = self.root / "leaky.sgf"
@@ -600,10 +603,10 @@ class NativeInferenceTests(unittest.TestCase):
     def test_native_search_generates_replayable_sparse_visit_targets(self):
         self.check_search()
 
-    def check_batches(self, device="cpu", library=None, environment=None):
+    def check_batches(self, device="cpu", library=None, environment=None, model=None):
         environment = dict(environment or os.environ)
         environment.update(
-            CONTINUGO_TEST_MODEL=str(self.bundle),
+            CONTINUGO_TEST_MODEL=str(model or self.bundle),
             CONTINUGO_TEST_DEVICE=device,
             ORT_DYLIB_PATH=str(library or self.library),
         )

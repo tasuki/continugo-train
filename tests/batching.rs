@@ -209,4 +209,49 @@ fn native_batch_parity_and_worker_lifecycle() {
     assert_eq!(stats.calls, 3);
     assert_eq!(stats.requests, 6);
     assert_eq!(stats.cache_hits, 2);
+
+    // The bounded pipeline splits four slots into batches of at most two.
+    // Duplicate requests must share CPU preparation/encoding within each batch
+    // even with the context cache disabled, and all clients must drain on exit.
+    let mut evaluator = OnnxEvaluator::load(&model, None, 1, device).unwrap();
+    evaluator.configure_features(4, 0).unwrap();
+    evaluator.profile_coarse = true;
+    let (worker, client) = BatchingWorker::new(
+        evaluator,
+        BatchingConfig {
+            max_batch: 4,
+            max_wait: Duration::from_millis(100),
+        },
+        4,
+    )
+    .unwrap();
+    let barrier = Barrier::new(5);
+    let stats = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| worker.run());
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let mut client = client.clone();
+            let barrier = &barrier;
+            let game = &games[0];
+            handles.push(scope.spawn(move || {
+                barrier.wait();
+                client.estimate(game).unwrap()
+            }));
+        }
+        drop(client);
+        barrier.wait();
+        for handle in handles {
+            let actual = handle.join().unwrap();
+            close(actual.value, singles[0].value);
+            close(actual.score, singles[0].score);
+        }
+        worker.join().unwrap()
+    });
+    assert_eq!(stats.requests, 4);
+    assert_eq!(stats.value_calls, 4);
+    assert_eq!(stats.encoder_batches, 2);
+    assert_eq!(stats.encoder_positions, 2);
+    assert_eq!(stats.coarse_stages.positions, 2);
+    assert_eq!(stats.cache_hits, 0);
+    assert_eq!(stats.cache_entries, 0);
 }

@@ -19,7 +19,10 @@ use ort::{
     session::Session,
 };
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum InferenceDevice {
@@ -179,8 +182,8 @@ pub struct OnnxEvaluator {
     encoder: Session,
     scorer: Session,
     metadata: Metadata,
-    feature_pool: Option<rayon::ThreadPool>,
-    cache: ContextCache,
+    feature_pool: Option<Arc<rayon::ThreadPool>>,
+    cache: Arc<Mutex<ContextCache>>,
     pub device: InferenceDevice,
     pub stats: InferenceStats,
     /// Opt-in coarse-group and geometry-proposal stage clocks, independent of cache.
@@ -240,8 +243,11 @@ impl OnnxEvaluator {
                     .map_err(|error| format!("feature pool: {error}"))?,
             )
         };
-        self.feature_pool = pool;
-        self.cache = ContextCache::new(cache_positions, 32 * 1024 * 1024);
+        self.feature_pool = pool.map(Arc::new);
+        self.cache = Arc::new(Mutex::new(ContextCache::new(
+            cache_positions,
+            32 * 1024 * 1024,
+        )));
         self.stats.cache_entries = 0;
         self.stats.cache_bytes = 0;
         Ok(())
@@ -257,7 +263,7 @@ impl OnnxEvaluator {
             return Err("geometry proposals require feature schema 5 or 6".into());
         }
         if self.geometry_budget != budget {
-            self.cache.clear();
+            self.cache.lock().unwrap().clear();
             self.stats.cache_entries = 0;
             self.stats.cache_bytes = 0;
         }
@@ -397,7 +403,7 @@ impl OnnxEvaluator {
             metadata,
             device,
             feature_pool: None,
-            cache: ContextCache::new(64, 32 * 1024 * 1024),
+            cache: Arc::new(Mutex::new(ContextCache::new(64, 32 * 1024 * 1024))),
             stats: InferenceStats::default(),
             profile_coarse: false,
             geometry_budget,

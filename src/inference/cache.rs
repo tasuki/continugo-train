@@ -42,6 +42,10 @@ impl ContextCache {
         self.entries.len()
     }
 
+    pub fn contains(&self, game: &Game) -> bool {
+        self.entries.iter().any(|(key, _)| key == game)
+    }
+
     pub fn get(&mut self, game: &Game) -> Option<Arc<Context>> {
         let index = self.entries.iter().position(|(key, _)| key == game)?;
         let entry = self.entries.remove(index).unwrap();

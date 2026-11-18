@@ -75,7 +75,10 @@ native measurements. SGFs remain the only primary game records.
 
 - Native `stats`: coarse/rules features, move preparation/selection/exact features,
   encoder, scorer, counts, and cache payloads. `feature_seconds` is the sum of
-  coarse/move times, **not an additional disjoint stage**. Scorer timing includes
+  coarse/move times, **not an additional disjoint stage**. With the default
+  cross-game pipeline, preparation overlaps encoder/execution work, so even
+  coarse/move/encoder/scorer elapsed times are not additive wall-time shares.
+  Scorer timing includes
   host output handling/transfer; coarse includes shared-rule analysis. Overall
   query seconds include normalization, dense result construction and other work.
   `stats.coarse_stages` splits preparation (including shared group/witness work),
@@ -101,8 +104,10 @@ native measurements. SGFs remain the only primary game records.
   colour-union construction are also shared inputs, not independent per-plane
   costs. These are nested subtotals, not additional coarse work. For concurrent extraction, subtotals
   sum worker wall times and may exceed elapsed batch time; never add them
-  to the batch total. Counts include only extractions on cache misses, after
-  deduplicating identical batch positions, and exclude diagnostic warmup.
+  to the batch total. Counts include actual extractions after deduplicating
+  identical batch positions, and exclude diagnostic warmup. Pipelined preparation
+  can observe a cache miss that is filled before execution: its speculative work
+  is counted even though execution subsequently reuses the cached context.
 - Training baseline: wall time, loader wait, compute plus transfer, positions/s,
   memory, losses, and actual board mix. Stage diagnostics separately synchronize
   transfer, encoding, policy scoring/normalization, and loss/backward/optimizer.

@@ -335,12 +335,25 @@ remains sequential. Existing loops restore their frozen configuration.
   for overlap without neural batching. Use `--concurrent-games 1` for a sequential
   control. [Loop](loop.md) resumes may retain older saved settings.
 
-Each synchronous tree has one outstanding query. One model-owning worker drains a
-bounded channel; one feature pool serves all games. There is no intra-tree
+Each synchronous tree has one outstanding query. A CPU preparation worker feeds a
+single model-owning execution worker through a one-batch bounded channel. Coarse
+features for the next batch overlap encoder execution for the preceding batch;
+one shared feature pool serves both coarse and exact work. There is no intra-tree
 parallelism or virtual loss. Baseline random/unguided engines bypass this scheduler.
 
+To leave requests available to both stages, actual execution batches are capped at
+`min(inference_batch_size, ceil(active_game_slots / 2))`: the default 32 games /
+batch limit 32 normally executes batches of up to 16. The user setting remains a
+maximum, not a required batch size. No pipelining opt-in or alternative scheduler
+is retained. See the [pipeline measurements](../history/2026-11-18-inference-pipeline.md).
+
 Cache misses batch by actual resolution without padding. Identical Game snapshots
-share an encoder execution even with cache disabled. Cached values return when
+within a batch share preparation and an encoder execution even with cache disabled.
+The preparation worker serves cached values directly. Cache lookups/inserts use a
+short shared lock, never held during feature extraction or ONNX calls. Execution
+rechecks the cache: speculative preparation can become unnecessary, or a context
+seen during preparation can be evicted before execution (then features are
+extracted on demand). Cached values return when
 dequeued; uncached values return after encoding, before exact policy work. Policies
 batch separately with per-position selected cells. Chunks stream at most 65,536
 coordinates/position and 262,144 aggregate rows, also respecting model chunk size.
@@ -369,7 +382,11 @@ encoder/scorer time, cache statistics, and encoder/scorer batch counts/maxima.
 counts proposed cells. `scorer_batches` counts chunk calls; `scorer_positions`
 counts selective policies.
 Queue/request seconds sum across clients and can exceed wall time; request seconds
-/ requests gives mean latency. These counters are zero without the worker.
+/ requests gives mean latency. Queue time covers collection and waiting between
+preparation and execution. These counters are zero without the worker. Coarse
+preparation and execution stages overlap, so their elapsed times must not be added
+to reconstruct wall time. Coarse profiling counts actual extraction work, including
+speculative preparation subsequently made unnecessary by a cache fill.
 Per-game concurrent latencies must not be summed as batch wall time.
 
 Compare the same seeds, sizes, and budgets across sequential, concurrent batch-one,
