@@ -30,6 +30,7 @@ class PipelineProfileTests(unittest.TestCase):
     def test_batch_and_concurrency_defaults_allow_explicit_and_saved_settings(self):
         required = ["--positions", "unused", "--model", "unused", "--checkpoint", "unused"]
         defaults = LoopConfig()
+        self.assertEqual((defaults.concurrent_games, defaults.inference_batch_size), (32, 32))
         profile = parse_profile_args(required)
         for name in (
             "concurrent_games",

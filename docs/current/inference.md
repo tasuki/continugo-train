@@ -311,22 +311,24 @@ and [SGF masks](features.md#sgf-replay-and-labels).
 
 ## Cross-game batching
 
-Neural self-play and new loops default to twelve active games, a twelve-request
+Neural self-play and new loops default to 32 active games, a 32-request
 batch limit and a two-ms collection wait. Actual concurrency is capped by the
-number of games requested; request at least twelve games to use all slots:
+number of games requested; request at least 32 games to use all slots:
 
 ```sh
-mise run neural-selfplay -- --model scratch/model-001 --games 18 --concurrent-games 12 --inference-batch-size 12 --inference-batch-wait-ms 2 --output scratch/batched-001
+mise run neural-selfplay -- --model scratch/model-001 --games 64 --concurrent-games 32 --inference-batch-size 32 --inference-batch-wait-ms 2 --output scratch/batched-001
 ```
 
 See the [concurrency measurements](../history/2026-11-04-concurrency.md) for the
-fixed workload, parity checks and memory costs. These user-selected defaults are
-hardware/model-specific, not a universal optimum; override them when appropriate.
+fixed workload, parity checks and memory costs. The later
+[cg10 pilot](../history/2026-11-18-cg10-concurrency.md) motivated the approved
+32/32 defaults. These are hardware/model-specific, not a universal optimum;
+override them when appropriate.
 Training feature workers are separate and unchanged. Random/unguided self-play
 remains sequential. Existing loops restore their frozen configuration.
 
-- `--concurrent-games`: 1..64, neural default 12; capped by games requested.
-- `--inference-batch-size`: 1..32, default 12; capped by active game slots.
+- `--concurrent-games`: 1..64, neural default 32; capped by games requested.
+- `--inference-batch-size`: 1..32, default 32; capped by active game slots.
 - `--inference-batch-wait-ms`: 0..1000, default 2. Zero drains immediately available
   requests; a single active game never waits to collect a batch. The bound covers
   collection, not queueing/execution latency. Batch-one concurrency is a control

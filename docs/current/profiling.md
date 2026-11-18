@@ -37,7 +37,7 @@ The profiler:
    so repeated queries do not hide coarse/rules extraction and encoding.
 3. Generates six genuine neural MCTS games, two per size, seeds 800–805, eight
    simulations, cap 512. Default production cache settings apply here. Concurrency
-   defaults to 12 games / batch limit 12 / collection wait two ms, capped
+   defaults to 32 games / batch limit 32 / collection wait two ms, capped
    by the six games requested. Records completion, truncation, throughput and
    inference stages. Override with `--concurrent-games`, `--inference-batch-size`
    and `--inference-batch-wait-ms`. For historical sequential comparisons, pass

@@ -53,8 +53,8 @@ class LoopConfig:
     proposal_attempts: int = 128
     independent_exploration: float = 0.25
     score_weight: float = 0.5
-    concurrent_games: int = 12
-    inference_batch_size: int = 12
+    concurrent_games: int = 32
+    inference_batch_size: int = 32
     inference_batch_wait_ms: int = 2
     inference_threads: int = 1
     feature_threads: int = 6

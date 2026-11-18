@@ -45,7 +45,7 @@ New loops reserve `runs/YYYYMMDD-HHMMSS-loop` (UTC, collision-safe). Explicit
 read-only and reports roles, cumulative progress, metrics, phase, disk and live logs.
 
 Use `mise run loop -- --help` or the [constants and formulas inventory](constants.md)
-for defaults. New loops default to 12 concurrent games / batch limit 12 /
+for defaults. New loops default to 32 concurrent games / batch limit 32 /
 collection wait two ms; active slots are capped by `--games-per-iteration`
 (default 100). Training batch size is 64; `--positions-per-epoch` defaults to
 65,536, sampled uniformly without replacement from the eligible replay window

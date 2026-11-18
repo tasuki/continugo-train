@@ -350,9 +350,9 @@ selected legal placement, pass probability is 1. See [proposal details](geometry
 
 | Setting / bound | Current value |
 |---|---|
-| Concurrent neural games | 12 default, valid 1–64; active slots capped by game count |
+| Concurrent neural games | 32 default, valid 1–64; active slots capped by game count |
 | Non-neural concurrency | 1 |
-| Inference batch size | 12 default, hard maximum 32; also capped by active game concurrency; homogeneous resolution |
+| Inference batch size | 32 default, hard maximum 32; also capped by active game concurrency; homogeneous resolution |
 | Collection wait | 2 ms default; valid 0–1000 ms; forced to zero with one active game; partial batches still run |
 | Worker request-queue capacity | 1–64; supplied from active game concurrency |
 | ONNX intra-op / inter-op threads | 1 default / fixed 1; thread spinning off |
@@ -518,7 +518,7 @@ Sources: [synthetic benchmark](../../python/continugo_train/benchmark.py),
 |---|---|
 | Synthetic model benchmark | Diameters 110/76/52; batches 1/4; density 4; 2 warmups, 5 measured iterations; `auto` device; threads `min(6, cpu_count or 1)` |
 | Real pipeline profiler | Sizes 9/13/19; CPU; 3 iterations; 1 warmup training step, 12 measured steps; 12 positions/game; 8 search simulations; 512 moves; seed 800 |
-| Profiler parallelism | 12 games, inference batch 12, wait 2 ms; 6 feature threads, 6 loader workers; training batch 64; Torch threads 1 |
+| Profiler parallelism | 32 games, inference batch 32, wait 2 ms; 6 feature threads, 6 loader workers; training batch 64; Torch threads 1 |
 | Native `infer` | Ply 0; seed 0; 0 warmups, 1 measured iteration; default probes `0,999,1000,999999,500500,500501,1000000` |
 | Offline `diagnose` | CPU; at most 32 games; threads 1 |
 | Neural HTML viewer | Threads 1; rated rendering contract `rated-own-actor-v2` |
