@@ -55,7 +55,10 @@ fn group_liberty_area_is_per_group_not_the_colour_union() {
             let expected = scalar_feature(f64::from(legacy.coarse[4 * area + cell]));
             assert!(expected > 0.0);
             values.push(expected);
-            assert!((features.coarse[4 * area + cell] - expected).abs() < 1e-6);
+            // Schema 6 now uses the approved 8x-coarser area integral; legacy
+            // schema 4 remains precise. Test per-group semantics, allowing only
+            // the measured small normalized precision difference.
+            assert!((features.coarse[4 * area + cell] - expected).abs() < 0.002);
         }
         assert_ne!(values[0], values[1]);
         let record = game.record();

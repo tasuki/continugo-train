@@ -1,0 +1,1423 @@
+{
+  "description": "User-approved schema-6 numerical precision change: eight times original midpoint spacing; legacy schemas, other planes and exact fields unchanged.",
+  "schema": 6,
+  "coarsening": 8,
+  "baseline_revision": "1590091",
+  "coarse_cases": [
+    {
+      "game": "size13",
+      "ply": 0,
+      "precise_coarse_sha256": "b171beace5d54393b63024d89818fb782bebf547ec333b271040695550e2f938",
+      "unchanged_planes_sha256": "c7bbc8250ad9fed5b28f73b037e8cf3a670bb7ab13a067c9ad7851c9dffc91db",
+      "coarse_sha256": "b171beace5d54393b63024d89818fb782bebf547ec333b271040695550e2f938",
+      "max_area_plane_change": 0.0
+    },
+    {
+      "game": "size13",
+      "ply": 1,
+      "precise_coarse_sha256": "22518f764411c59f50e20417f0591a1d8fcb3f7c922cadd63cbbd8907bc79010",
+      "unchanged_planes_sha256": "96c581c2135d3db4e4f0fb87f1299a8e7b01489ccae2f1f2a41c6600b713293d",
+      "coarse_sha256": "d0f26e24a0d8d5e02fa7339355e51063a12283172b780ce622ab73d41ddaf7c8",
+      "max_area_plane_change": 2.4318695068359375e-05
+    },
+    {
+      "game": "size13",
+      "ply": 2,
+      "precise_coarse_sha256": "0723299a3ff8fd2382fa20bc6c13fe7b79668f98ef451f356c32176d7689b848",
+      "unchanged_planes_sha256": "a222852f87e3f51182c84994341a3eeb3ea10e094171d1e71738047b1247edeb",
+      "coarse_sha256": "fd864a7f6fde9ce4d7bd7f3e79eb70e162cfcafdd091a6546b9800192dc58a86",
+      "max_area_plane_change": 2.4318695068359375e-05
+    },
+    {
+      "game": "size19",
+      "ply": 0,
+      "precise_coarse_sha256": "c7fcf4f8a36485c830dc4836c3a20d859b5ecd70728000efa1645b24ead93f13",
+      "unchanged_planes_sha256": "c5b017f339abd8e2bf2eeaedb8518736cd0e8d0991d7a63da877910856a49972",
+      "coarse_sha256": "c7fcf4f8a36485c830dc4836c3a20d859b5ecd70728000efa1645b24ead93f13",
+      "max_area_plane_change": 0.0
+    },
+    {
+      "game": "size19",
+      "ply": 1,
+      "precise_coarse_sha256": "c7fcf4f8a36485c830dc4836c3a20d859b5ecd70728000efa1645b24ead93f13",
+      "unchanged_planes_sha256": "c5b017f339abd8e2bf2eeaedb8518736cd0e8d0991d7a63da877910856a49972",
+      "coarse_sha256": "c7fcf4f8a36485c830dc4836c3a20d859b5ecd70728000efa1645b24ead93f13",
+      "max_area_plane_change": 0.0
+    },
+    {
+      "game": "game-000057-size9-seed99100356",
+      "ply": 0,
+      "precise_coarse_sha256": "4936a1dec9eef460fd46343fd00bc0ceb8f688a7c47c8b92e113b45f60e28a4b",
+      "unchanged_planes_sha256": "9754d7709febd5cfb42e73684395da35737f733acc36272c62b05a4ad67cb500",
+      "coarse_sha256": "4936a1dec9eef460fd46343fd00bc0ceb8f688a7c47c8b92e113b45f60e28a4b",
+      "max_area_plane_change": 0.0
+    },
+    {
+      "game": "game-000057-size9-seed99100356",
+      "ply": 20,
+      "precise_coarse_sha256": "872e5be076b59630b98e45e55b3f1ab257f422bf658dc71c81ea989bde126613",
+      "unchanged_planes_sha256": "b09e21497ecca5f35026c43548fa644aa8165d14ae0fcead634de25d83ca00ad",
+      "coarse_sha256": "0ba6cdbd05045843856ebd7be68adf39055fa5a3a4f47673b56ae96505a3db42",
+      "max_area_plane_change": 0.00021076202392578125
+    },
+    {
+      "game": "game-000057-size9-seed99100356",
+      "ply": 80,
+      "precise_coarse_sha256": "ad0c906a22dd5f437825720d419fd09d6bc315cd339e2a2b6be6dcc9f5781bbb",
+      "unchanged_planes_sha256": "7bb83054cb88590e25a0f5452dab4b83d05b7f4cf2893851ebae6de558b8ef74",
+      "coarse_sha256": "efaf3f07eaca5ad0e3d71f08572f0b4234adfba1fff14d9dc44d61ab6d68d1a1",
+      "max_area_plane_change": 0.0005411505699157715
+    },
+    {
+      "game": "game-000057-size9-seed99100356",
+      "ply": 160,
+      "precise_coarse_sha256": "ea68069337cf034585c2146c21bd641ccdfdb5cc48abf8cd5c87c6f707ae6f3c",
+      "unchanged_planes_sha256": "7d0557bc2e137bcbd37f39ff1dee58c6de81367aab8560ed5f05fb34f12c0b91",
+      "coarse_sha256": "31ae5c149784d3d12cad256f7e30bfa7fa40cda238cf4ca48a7f503019459d6f",
+      "max_area_plane_change": 0.0004976391792297363
+    },
+    {
+      "game": "game-000057-size9-seed99100356",
+      "ply": 341,
+      "precise_coarse_sha256": "20a8e8fc16632bd239db85a145e3797794a8132035578d79aaf296d0cec2b754",
+      "unchanged_planes_sha256": "3f9491c9457dde14a597e2bdc7b3d92d5c2b1db3520d7a47c8a65cc9d0279aa6",
+      "coarse_sha256": "36840a40e544748c60a1fba728b43a196810027ad9c5bcf295541dbee9654cdf",
+      "max_area_plane_change": 1.4573335647583008e-05
+    },
+    {
+      "game": "game-000083-size9-seed99103382",
+      "ply": 0,
+      "precise_coarse_sha256": "4936a1dec9eef460fd46343fd00bc0ceb8f688a7c47c8b92e113b45f60e28a4b",
+      "unchanged_planes_sha256": "9754d7709febd5cfb42e73684395da35737f733acc36272c62b05a4ad67cb500",
+      "coarse_sha256": "4936a1dec9eef460fd46343fd00bc0ceb8f688a7c47c8b92e113b45f60e28a4b",
+      "max_area_plane_change": 0.0
+    },
+    {
+      "game": "game-000083-size9-seed99103382",
+      "ply": 20,
+      "precise_coarse_sha256": "badf4d0f80b75e6599d7481e87aa2872d153cd96759f273826c883c112e9aade",
+      "unchanged_planes_sha256": "e9ba4f4633a6d147b030f35a07296c0131d488c6c6c0cf9f838282a5b924e91d",
+      "coarse_sha256": "24de8527e5b1e98af2fe6520009158d32082182c028750faf4fdc1e028c04b6b",
+      "max_area_plane_change": 0.00018215179443359375
+    },
+    {
+      "game": "game-000083-size9-seed99103382",
+      "ply": 80,
+      "precise_coarse_sha256": "57bde638a1325526976e01b8b2345461c49db5adf77e3b6c7edd8be39d22c4d6",
+      "unchanged_planes_sha256": "9abdda6e47363c9fcd8057e99a35f9870f80e111d7fbe624458e20ec71ed1f8c",
+      "coarse_sha256": "0c60b4ea49c2a38d2fc2bc5b3c4572ec0b7444848fcb2a545b9a319cdcad97d6",
+      "max_area_plane_change": 0.00028133392333984375
+    },
+    {
+      "game": "game-000083-size9-seed99103382",
+      "ply": 160,
+      "precise_coarse_sha256": "067e43a79c83eb04e8c4af58e9a2093cfe56d67ca83f55ecbe45a880c0c91996",
+      "unchanged_planes_sha256": "dae4fdf7e910f949ad2a17c884c8d039330c6b886284674fd877c7781588134b",
+      "coarse_sha256": "20492a850d933381087a298bb1e9ebe199dc073a7999bbdd561282d8728c6e47",
+      "max_area_plane_change": 0.0001767277717590332
+    },
+    {
+      "game": "game-000083-size9-seed99103382",
+      "ply": 252,
+      "precise_coarse_sha256": "d33ef450ed009823372ba8d6e339549e5a07d0213d896a7dc8abdf527ed0f320",
+      "unchanged_planes_sha256": "d08bd1364cb7d7c9a294a492b95dd049378f7ee77c8a2f45e6fe6f8f9664a375",
+      "coarse_sha256": "5579723247a2917918e3b24fd0b32f9ef75c18c02fc19a58eb980341fd76e328",
+      "max_area_plane_change": 0.0006066560745239258
+    }
+  ],
+  "scalar_cases": [
+    {
+      "name": "empty",
+      "radius": 26,
+      "spans": [],
+      "precise_area_bits": 0,
+      "area8_bits": 0,
+      "feature8_bits": 0
+    },
+    {
+      "name": "one_isolated_center",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607182418800017408,
+      "area8_bits": 4607182418800017408,
+      "feature8_bits": 1041877897
+    },
+    {
+      "name": "one_horizontal_span",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          200,
+          408
+        ]
+      ],
+      "precise_area_bits": 4618546079473453186,
+      "area8_bits": 4618546079473453186,
+      "feature8_bits": 1054431131
+    },
+    {
+      "name": "two_centers_dx1_dy0",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          251,
+          251
+        ]
+      ],
+      "precise_area_bits": 4607294006203559213,
+      "area8_bits": 4607322179095483944,
+      "feature8_bits": 1042101791
+    },
+    {
+      "name": "two_centers_dx0_dy1",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          251,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607294001105793008,
+      "area8_bits": 4607317112384620178,
+      "feature8_bits": 1042093734
+    },
+    {
+      "name": "two_centers_dx1_dy1",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          251,
+          251,
+          251
+        ]
+      ],
+      "precise_area_bits": 4607339664717032075,
+      "area8_bits": 4607363049732734611,
+      "feature8_bits": 1042166619
+    },
+    {
+      "name": "two_centers_dx26_dy0",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          276,
+          276
+        ]
+      ],
+      "precise_area_bits": 4609927580651444546,
+      "area8_bits": 4609977197492786743,
+      "feature8_bits": 1045807523
+    },
+    {
+      "name": "two_centers_dx0_dy26",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          276,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4609926467065035408,
+      "area8_bits": 4609950611765607823,
+      "feature8_bits": 1045774730
+    },
+    {
+      "name": "two_centers_dx26_dy26",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          276,
+          276,
+          276
+        ]
+      ],
+      "precise_area_bits": 4610869731509420366,
+      "area8_bits": 4610874513319963884,
+      "feature8_bits": 1046873083
+    },
+    {
+      "name": "two_centers_dx51_dy0",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          301,
+          301
+        ]
+      ],
+      "precise_area_bits": 4611674260119428710,
+      "area8_bits": 4611708033913406831,
+      "feature8_bits": 1047821111
+    },
+    {
+      "name": "two_centers_dx0_dy51",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          301,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4611673393358507741,
+      "area8_bits": 4611700795344437430,
+      "feature8_bits": 1047805572
+    },
+    {
+      "name": "two_centers_dx53_dy0",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          303,
+          303
+        ]
+      ],
+      "precise_area_bits": 4611687333501329267,
+      "area8_bits": 4611715506393254006,
+      "feature8_bits": 1047837135
+    },
+    {
+      "name": "two_centers_dx0_dy53",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          303,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4611687333501329269,
+      "area8_bits": 4611716763237341370,
+      "feature8_bits": 1047839828
+    },
+    {
+      "name": "two_centers_dx53_dy53",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          303,
+          303,
+          303
+        ]
+      ],
+      "precise_area_bits": 4611687333501329269,
+      "area8_bits": 4611716763237341371,
+      "feature8_bits": 1047839828
+    },
+    {
+      "name": "duplicate_isolated_center",
+      "radius": 26,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607183733873958778,
+      "area8_bits": 4607211906765883509,
+      "feature8_bits": 1041925424
+    },
+    {
+      "name": "four_small_islands_width0",
+      "radius": 26,
+      "spans": [
+        [
+          150,
+          200,
+          200
+        ],
+        [
+          213,
+          200,
+          200
+        ],
+        [
+          276,
+          200,
+          200
+        ],
+        [
+          339,
+          200,
+          200
+        ]
+      ],
+      "precise_area_bits": 4616190933128699771,
+      "area8_bits": 4616174976961118713,
+      "feature8_bits": 1051879419
+    },
+    {
+      "name": "four_small_islands_width1",
+      "radius": 26,
+      "spans": [
+        [
+          150,
+          200,
+          201
+        ],
+        [
+          151,
+          200,
+          201
+        ],
+        [
+          213,
+          200,
+          201
+        ],
+        [
+          214,
+          200,
+          201
+        ],
+        [
+          276,
+          200,
+          201
+        ],
+        [
+          277,
+          200,
+          201
+        ],
+        [
+          339,
+          200,
+          201
+        ],
+        [
+          340,
+          200,
+          201
+        ]
+      ],
+      "precise_area_bits": 4616413593311857520,
+      "area8_bits": 4616415786878003941,
+      "feature8_bits": 1052175263
+    },
+    {
+      "name": "four_small_islands_width3",
+      "radius": 26,
+      "spans": [
+        [
+          150,
+          200,
+          203
+        ],
+        [
+          151,
+          200,
+          203
+        ],
+        [
+          152,
+          200,
+          203
+        ],
+        [
+          153,
+          200,
+          203
+        ],
+        [
+          213,
+          200,
+          203
+        ],
+        [
+          214,
+          200,
+          203
+        ],
+        [
+          215,
+          200,
+          203
+        ],
+        [
+          216,
+          200,
+          203
+        ],
+        [
+          276,
+          200,
+          203
+        ],
+        [
+          277,
+          200,
+          203
+        ],
+        [
+          278,
+          200,
+          203
+        ],
+        [
+          279,
+          200,
+          203
+        ],
+        [
+          339,
+          200,
+          203
+        ],
+        [
+          340,
+          200,
+          203
+        ],
+        [
+          341,
+          200,
+          203
+        ],
+        [
+          342,
+          200,
+          203
+        ]
+      ],
+      "precise_area_bits": 4616871637408511533,
+      "area8_bits": 4616863998456238652,
+      "feature8_bits": 1052711503
+    },
+    {
+      "name": "empty",
+      "radius": 38,
+      "spans": [],
+      "precise_area_bits": 0,
+      "area8_bits": 0,
+      "feature8_bits": 0
+    },
+    {
+      "name": "one_isolated_center",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607182418800017408,
+      "area8_bits": 4607182418800017408,
+      "feature8_bits": 1041877897
+    },
+    {
+      "name": "one_horizontal_span",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          200,
+          504
+        ]
+      ],
+      "precise_area_bits": 4618546079473453187,
+      "area8_bits": 4618546079473453187,
+      "feature8_bits": 1054431131
+    },
+    {
+      "name": "two_centers_dx1_dy0",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          251,
+          251
+        ]
+      ],
+      "precise_area_bits": 4607259972415170205,
+      "area8_bits": 4607297098586266170,
+      "feature8_bits": 1042061865
+    },
+    {
+      "name": "two_centers_dx0_dy1",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          251,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607259965883595187,
+      "area8_bits": 4607298438199924479,
+      "feature8_bits": 1042064001
+    },
+    {
+      "name": "two_centers_dx1_dy1",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          251,
+          251,
+          251
+        ]
+      ],
+      "precise_area_bits": 4607291214634075414,
+      "area8_bits": 4607329436512154663,
+      "feature8_bits": 1042113324
+    },
+    {
+      "name": "two_centers_dx38_dy0",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          288,
+          288
+        ]
+      ],
+      "precise_area_bits": 4609929048331407474,
+      "area8_bits": 4610002214125584590,
+      "feature8_bits": 1045838313
+    },
+    {
+      "name": "two_centers_dx0_dy38",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          288,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4609927300624024351,
+      "area8_bits": 4609968992474395660,
+      "feature8_bits": 1045797410
+    },
+    {
+      "name": "two_centers_dx38_dy38",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          288,
+          288,
+          288
+        ]
+      ],
+      "precise_area_bits": 4610870915088226536,
+      "area8_bits": 4610856892532209399,
+      "feature8_bits": 1046852892
+    },
+    {
+      "name": "two_centers_dx75_dy0",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          325,
+          325
+        ]
+      ],
+      "precise_area_bits": 4611682063367506493,
+      "area8_bits": 4611721510734911504,
+      "feature8_bits": 1047849997
+    },
+    {
+      "name": "two_centers_dx0_dy75",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          325,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4611678027485097419,
+      "area8_bits": 4611669543136073318,
+      "feature8_bits": 1047756057
+    },
+    {
+      "name": "two_centers_dx77_dy0",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          327,
+          327
+        ]
+      ],
+      "precise_area_bits": 4611688122553866716,
+      "area8_bits": 4611725248724962682,
+      "feature8_bits": 1047857999
+    },
+    {
+      "name": "two_centers_dx0_dy77",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          327,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4611688122553866716,
+      "area8_bits": 4611598131440834855,
+      "feature8_bits": 1047678902
+    },
+    {
+      "name": "two_centers_dx77_dy77",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          327,
+          327,
+          327
+        ]
+      ],
+      "precise_area_bits": 4611688122553866718,
+      "area8_bits": 4611598131440834855,
+      "feature8_bits": 1047678902
+    },
+    {
+      "name": "duplicate_isolated_center",
+      "radius": 38,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607184522926496222,
+      "area8_bits": 4607221649097592187,
+      "feature8_bits": 1041941092
+    },
+    {
+      "name": "four_small_islands_width0",
+      "radius": 38,
+      "spans": [
+        [
+          150,
+          200,
+          200
+        ],
+        [
+          237,
+          200,
+          200
+        ],
+        [
+          324,
+          200,
+          200
+        ],
+        [
+          411,
+          200,
+          200
+        ]
+      ],
+      "precise_area_bits": 4616191722181237210,
+      "area8_bits": 4616105377786555990,
+      "feature8_bits": 1051834276
+    },
+    {
+      "name": "four_small_islands_width1",
+      "radius": 38,
+      "spans": [
+        [
+          150,
+          200,
+          201
+        ],
+        [
+          151,
+          200,
+          201
+        ],
+        [
+          237,
+          200,
+          201
+        ],
+        [
+          238,
+          200,
+          201
+        ],
+        [
+          324,
+          200,
+          201
+        ],
+        [
+          325,
+          200,
+          201
+        ],
+        [
+          411,
+          200,
+          201
+        ],
+        [
+          412,
+          200,
+          201
+        ]
+      ],
+      "precise_area_bits": 4616343607383440079,
+      "area8_bits": 4616308065219550241,
+      "feature8_bits": 1052040268
+    },
+    {
+      "name": "four_small_islands_width3",
+      "radius": 38,
+      "spans": [
+        [
+          150,
+          200,
+          203
+        ],
+        [
+          151,
+          200,
+          203
+        ],
+        [
+          152,
+          200,
+          203
+        ],
+        [
+          153,
+          200,
+          203
+        ],
+        [
+          237,
+          200,
+          203
+        ],
+        [
+          238,
+          200,
+          203
+        ],
+        [
+          239,
+          200,
+          203
+        ],
+        [
+          240,
+          200,
+          203
+        ],
+        [
+          324,
+          200,
+          203
+        ],
+        [
+          325,
+          200,
+          203
+        ],
+        [
+          326,
+          200,
+          203
+        ],
+        [
+          327,
+          200,
+          203
+        ],
+        [
+          411,
+          200,
+          203
+        ],
+        [
+          412,
+          200,
+          203
+        ],
+        [
+          413,
+          200,
+          203
+        ],
+        [
+          414,
+          200,
+          203
+        ]
+      ],
+      "precise_area_bits": 4616653334326425340,
+      "area8_bits": 4616668213669088029,
+      "feature8_bits": 1052482115
+    },
+    {
+      "name": "empty",
+      "radius": 55,
+      "spans": [],
+      "precise_area_bits": 0,
+      "area8_bits": 0,
+      "feature8_bits": 0
+    },
+    {
+      "name": "one_isolated_center",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607182418800017408,
+      "area8_bits": 4607182418800017408,
+      "feature8_bits": 1041877897
+    },
+    {
+      "name": "one_horizontal_span",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          200,
+          640
+        ]
+      ],
+      "precise_area_bits": 4618546079473453187,
+      "area8_bits": 4618546079473453187,
+      "feature8_bits": 1054431131
+    },
+    {
+      "name": "two_centers_dx1_dy0",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          251,
+          251
+        ]
+      ],
+      "precise_area_bits": 4607235756581200650,
+      "area8_bits": 4607258999692791989,
+      "feature8_bits": 1042001005
+    },
+    {
+      "name": "two_centers_dx0_dy1",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          251,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607235754427076074,
+      "area8_bits": 4607260278264190014,
+      "feature8_bits": 1042003052
+    },
+    {
+      "name": "two_centers_dx1_dy1",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          251,
+          251,
+          251
+        ]
+      ],
+      "precise_area_bits": 4607257345324796853,
+      "area8_bits": 4607281927008629764,
+      "feature8_bits": 1042037660
+    },
+    {
+      "name": "two_centers_dx55_dy0",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          305,
+          305
+        ]
+      ],
+      "precise_area_bits": 4609927603334973998,
+      "area8_bits": 4609967067632597581,
+      "feature8_bits": 1045795037
+    },
+    {
+      "name": "two_centers_dx0_dy55",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          305,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4609926218824392300,
+      "area8_bits": 4609948051624276896,
+      "feature8_bits": 1045771568
+    },
+    {
+      "name": "two_centers_dx55_dy55",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          305,
+          305,
+          305
+        ]
+      ],
+      "precise_area_bits": 4610869572463839245,
+      "area8_bits": 4610902939995577757,
+      "feature8_bits": 1046905596
+    },
+    {
+      "name": "two_centers_dx109_dy0",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          359,
+          359
+        ]
+      ],
+      "precise_area_bits": 4611683766893804998,
+      "area8_bits": 4611707853239859183,
+      "feature8_bits": 1047820724
+    },
+    {
+      "name": "two_centers_dx0_dy109",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          359,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4611681423470228005,
+      "area8_bits": 4611693695091777482,
+      "feature8_bits": 1047790314
+    },
+    {
+      "name": "two_centers_dx111_dy0",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          361,
+          361
+        ]
+      ],
+      "precise_area_bits": 4611687227470941852,
+      "area8_bits": 4611710470582533190,
+      "feature8_bits": 1047826338
+    },
+    {
+      "name": "two_centers_dx0_dy111",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          361,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4611687227470941851,
+      "area8_bits": 4611709487937218337,
+      "feature8_bits": 1047824231
+    },
+    {
+      "name": "two_centers_dx111_dy111",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          361,
+          361,
+          361
+        ]
+      ],
+      "precise_area_bits": 4611687227470941851,
+      "area8_bits": 4611709487937218337,
+      "feature8_bits": 1047824231
+    },
+    {
+      "name": "duplicate_isolated_center",
+      "radius": 55,
+      "spans": [
+        [
+          250,
+          250,
+          250
+        ],
+        [
+          250,
+          250,
+          250
+        ]
+      ],
+      "precise_area_bits": 4607183627843571351,
+      "area8_bits": 4607206870955162692,
+      "feature8_bits": 1041917318
+    },
+    {
+      "name": "four_small_islands_width0",
+      "radius": 55,
+      "spans": [
+        [
+          150,
+          200,
+          200
+        ],
+        [
+          271,
+          200,
+          200
+        ],
+        [
+          392,
+          200,
+          200
+        ],
+        [
+          513,
+          200,
+          200
+        ]
+      ],
+      "precise_area_bits": 4616190827098312352,
+      "area8_bits": 4616221916684186782,
+      "feature8_bits": 1051930474
+    },
+    {
+      "name": "four_small_islands_width1",
+      "radius": 55,
+      "spans": [
+        [
+          150,
+          200,
+          201
+        ],
+        [
+          151,
+          200,
+          201
+        ],
+        [
+          271,
+          200,
+          201
+        ],
+        [
+          272,
+          200,
+          201
+        ],
+        [
+          392,
+          200,
+          201
+        ],
+        [
+          393,
+          200,
+          201
+        ],
+        [
+          513,
+          200,
+          201
+        ],
+        [
+          514,
+          200,
+          201
+        ]
+      ],
+      "precise_area_bits": 4616295556317061180,
+      "area8_bits": 4616322767850805759,
+      "feature8_bits": 1052058841
+    },
+    {
+      "name": "four_small_islands_width3",
+      "radius": 55,
+      "spans": [
+        [
+          150,
+          200,
+          203
+        ],
+        [
+          151,
+          200,
+          203
+        ],
+        [
+          152,
+          200,
+          203
+        ],
+        [
+          153,
+          200,
+          203
+        ],
+        [
+          271,
+          200,
+          203
+        ],
+        [
+          272,
+          200,
+          203
+        ],
+        [
+          273,
+          200,
+          203
+        ],
+        [
+          274,
+          200,
+          203
+        ],
+        [
+          392,
+          200,
+          203
+        ],
+        [
+          393,
+          200,
+          203
+        ],
+        [
+          394,
+          200,
+          203
+        ],
+        [
+          395,
+          200,
+          203
+        ],
+        [
+          513,
+          200,
+          203
+        ],
+        [
+          514,
+          200,
+          203
+        ],
+        [
+          515,
+          200,
+          203
+        ],
+        [
+          516,
+          200,
+          203
+        ]
+      ],
+      "precise_area_bits": 4616507858140247713,
+      "area8_bits": 4616516454537457672,
+      "feature8_bits": 1052299192
+    }
+  ]
+}

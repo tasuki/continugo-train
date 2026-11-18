@@ -30,8 +30,8 @@ coverage planes remain coverage fractions, not clipped area scalars.
 
 **Per-group total liberty area** is the continuous union of physical-radius discs
 swept over that group's exact integer liberty spans, divided by one stone-disc's
-area. It uses the existing numerical integration in `src/liberty_area.rs`, not
-raw integer-center count, a sum over overlapping alternatives, a local candidate
+area. It uses numerical integration in `src/liberty_area.rs`, not raw
+integer-center count, a sum over overlapping alternatives, a local candidate
 area, or a capture-in-one flag. Compute it once per existing group, transform it,
 and paint it on the same member discs and adjacency bridges as group size.
 Current bridge radius is **0.40 × stone radius** (widened from 0.30 for visibility);
@@ -41,6 +41,19 @@ At shape overlaps the larger transformed value wins before pixel averaging. Grou
 of one colour retain their own scalar areas; these are not the colour-union area.
 Extraction still does no opposing capture-witness search. Profiling now records
 one `liberty_area` call per group, rather than zero.
+
+With explicit user approval on 2026-11-18, schema 6 uses **8x coarser midpoint
+integration** for these scalar inputs: eight times the original slice spacing,
+anchored at the same lower extent, with a clipped final slice integrated at its
+own midpoint/height. Empty regions and single spans keep their analytic formulas.
+No per-group cache is added. This is an approved numerical-precision change within
+schema 6, not a channel/layout change or a checkpoint migration. Exact spans,
+legality, labels, other coarse planes and exact fields are unchanged. Legacy
+schema 4 and accuracy/display diagnostics retain their original finer integral;
+schema 5 does not integrate these scalars. See the
+[area-precision measurements](../history/2026-11-18-area8-inference-costs.md).
+Derived sidecars fingerprint the extractor binary and must match the new extractor
+(or be rebuilt); frozen campaigns keep their original runtime and caches.
 
 Exact rows are `[N, 9]`, in caller coordinate order:
 
@@ -323,9 +336,10 @@ are covered. Normal self-play/search behavior is unchanged.
 ## Liberty-footprint geometry and legacy scalar area
 
 Schema 5 represents the following shape spatially, unioned per colour and
-antialiased as described above. The scalar integration below is used only by
-legacy schema-4 coarse extraction and optional accuracy/preview diagnostics.
-Current coarse inputs use spatial maps; the exact splitting bit does not measure
+antialiased as described above. The precise scalar integration below is used by
+legacy schema-4 extraction and accuracy/preview diagnostics. Schema 6 additionally
+uses the approved 8x-coarser estimate described at the top of this document.
+Schema 5 uses spatial maps instead; the exact splitting bit does not measure
 area at all.
 
 We measure the region drawn by `Coverage.elm`: each exact integer liberty-center

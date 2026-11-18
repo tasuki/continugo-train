@@ -309,8 +309,10 @@ impl<'a> FeatureExtractor<'a> {
                         profile.spans += spans.len() as u64;
                     }
                     let tick = PROFILE.then(Instant::now);
-                    let liberty_area =
-                        crate::liberty_area::in_stone_discs(&spans, board.stone_radius());
+                    let liberty_area = crate::liberty_area::coarse_input_in_stone_discs(
+                        &spans,
+                        board.stone_radius(),
+                    );
                     if let Some(tick) = tick {
                         profile.liberty_area.record(tick);
                     }

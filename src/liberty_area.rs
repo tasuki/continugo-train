@@ -5,16 +5,23 @@
 //! overlapping areas. Integrate continuous horizontal union lengths numerically;
 //! this is NOT a count of centers, packing capacity, or moves to capture.
 //!
-//! Midpoint slices are at most min(1 board unit, r/32) high. Legality and liberty
-//! centers stay exact; only the displayed continuous area is numerical. Tests
-//! compare analytic capsule/disk unions and doubled sampling density. This is
-//! tested numerical accuracy, not a certified worst-case integration error bound.
+//! The precise legacy/diagnostic integral uses midpoint slices at most
+//! min(1 board unit, r/32) high. Schema-6 coarse inputs use eight times that
+//! spacing, with a clipped final slice. Legality and liberty centers stay exact.
+//! Both are numerical estimates, not certified worst-case integration bounds.
 
 use continugo_rules::LibertySpan;
 use std::{f64::consts::PI, sync::OnceLock};
 
+/// Preserve the original integral for legacy inputs and accuracy diagnostics.
 pub(crate) fn in_stone_discs(spans: &[LibertySpan], radius: i32) -> f64 {
     measure(spans, f64::from(radius), 1)
+}
+
+/// Approved schema-6 input precision. Same capsule union/analytic shortcuts,
+/// eight times the midpoint spacing; no memoization or feature-layout change.
+pub(crate) fn coarse_input_in_stone_discs(spans: &[LibertySpan], radius: i32) -> f64 {
+    measure_impl::<false, true>(spans, f64::from(radius), 1)
 }
 
 /// Same midpoint samples as legacy extraction. Cache circular extensions only
@@ -25,14 +32,18 @@ pub(crate) fn candidate_in_stone_discs(spans: &[LibertySpan], radius: i32) -> f6
     if !(1..=500).contains(&radius) || !density.is_power_of_two() {
         return in_stone_discs(spans, radius);
     }
-    measure_impl::<true>(spans, f64::from(radius), 1)
+    measure_impl::<true, false>(spans, f64::from(radius), 1)
 }
 
 fn measure(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
-    measure_impl::<false>(spans, radius, refinement)
+    measure_impl::<false, false>(spans, radius, refinement)
 }
 
-fn measure_impl<const KERNEL: bool>(spans: &[LibertySpan], radius: f64, refinement: usize) -> f64 {
+fn measure_impl<const KERNEL: bool, const COARSE_INPUT: bool>(
+    spans: &[LibertySpan],
+    radius: f64,
+    refinement: usize,
+) -> f64 {
     assert!(radius > 0.0);
     let Some(first) = spans.first() else {
         return 0.0;
@@ -45,11 +56,15 @@ fn measure_impl<const KERNEL: bool>(spans: &[LibertySpan], radius: f64, refineme
     }
     let low = f64::from(first.y) - radius;
     let high = f64::from(spans.last().unwrap().y) + radius;
-    // Capsule tops/bottoms are integer y coordinates. Align slices to those
-    // boundaries so long horizontal spans cannot introduce quadrature jumps.
+    // Preserve the precise grid exactly for legacy/diagnostic callers. Coarse
+    // inputs retain its lower anchor and cover the last partial slice separately.
     let slices_per_unit = (32.0 / radius).ceil().max(1.0) as usize * refinement;
-    let slices = (high - low) as usize * slices_per_unit;
-    let step = 1.0 / slices_per_unit as f64;
+    let step = if COARSE_INPUT { 8.0 } else { 1.0 } / slices_per_unit as f64;
+    let slices = if COARSE_INPUT {
+        ((high - low) / step).ceil() as usize
+    } else {
+        (high - low) as usize * slices_per_unit
+    };
     static KERNELS: [OnceLock<Vec<f64>>; 501] = [const { OnceLock::new() }; 501];
     let kernel = if KERNEL {
         KERNELS[radius as usize]
@@ -71,7 +86,17 @@ fn measure_impl<const KERNEL: bool>(spans: &[LibertySpan], radius: f64, refineme
     let mut intervals: Vec<(f64, f64)> = Vec::new();
     let mut sum = 0.0;
     for i in 0..slices {
-        let y = low + (i as f64 + 0.5) * step;
+        let bottom = low + i as f64 * step;
+        let height = if COARSE_INPUT {
+            (high - bottom).min(step)
+        } else {
+            step
+        };
+        let y = if COARSE_INPUT {
+            bottom + height * 0.5
+        } else {
+            low + (i as f64 + 0.5) * step
+        };
         let start = spans.partition_point(|s| f64::from(s.y) < y - radius);
         let end = spans.partition_point(|s| f64::from(s.y) <= y + radius);
         intervals.clear();
@@ -113,10 +138,18 @@ fn measure_impl<const KERNEL: bool>(spans: &[LibertySpan], radius: f64, refineme
             }
         }
         for &(start, end) in &intervals {
-            sum += end - start;
+            if COARSE_INPUT {
+                sum += (end - start) * height;
+            } else {
+                sum += end - start;
+            }
         }
     }
-    sum * step / (PI * radius * radius)
+    if COARSE_INPUT {
+        sum / (PI * radius * radius)
+    } else {
+        sum * step / (PI * radius * radius)
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +202,57 @@ mod tests {
             }
         }
         sum * step / (PI * radius * radius)
+    }
+
+    #[test]
+    fn schema6_coarse_input_matches_approved_eightfold_precision() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/liberty-area8.json")).unwrap();
+        assert_eq!(fixture["coarsening"].as_u64(), Some(8));
+        for case in fixture["scalar_cases"].as_array().unwrap() {
+            let radius = case["radius"].as_i64().unwrap() as i32;
+            let spans: Vec<_> = case["spans"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| LibertySpan {
+                    y: s[0].as_i64().unwrap() as i32,
+                    left: s[1].as_i64().unwrap() as i32,
+                    right: s[2].as_i64().unwrap() as i32,
+                })
+                .collect();
+            let precise = in_stone_discs(&spans, radius);
+            let coarse = coarse_input_in_stone_discs(&spans, radius);
+            assert_eq!(
+                precise.to_bits(),
+                case["precise_area_bits"].as_u64().unwrap(),
+                "precise: {case}"
+            );
+            assert_eq!(
+                coarse.to_bits(),
+                case["area8_bits"].as_u64().unwrap(),
+                "coarse: {case}"
+            );
+            assert_eq!(
+                crate::features::scalar_feature(coarse).to_bits(),
+                case["feature8_bits"].as_u64().unwrap() as u32
+            );
+            assert!(
+                (crate::features::scalar_feature(coarse)
+                    - crate::features::scalar_feature(precise))
+                .abs()
+                    < 0.002
+            );
+            let shifted: Vec<_> = spans
+                .iter()
+                .map(|s| LibertySpan {
+                    y: s.y + 7,
+                    left: s.left + 11,
+                    right: s.right + 11,
+                })
+                .collect();
+            assert!((coarse_input_in_stone_discs(&shifted, radius) - coarse).abs() < 1e-10);
+        }
     }
 
     #[test]

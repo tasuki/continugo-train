@@ -18,10 +18,20 @@ from continugo_train.train import feature_spec
 
 
 class SchemaCompatibilityTests(unittest.TestCase):
-    def test_inputs_match_git_history_bit_for_bit(self):
+    def test_legacy_history_and_approved_schema6_precision(self):
         fixture = json.loads(
             (Path(__file__).parent / "fixtures/feature-schema-history.json").read_text()
         )
+        precision = json.loads(
+            (Path(__file__).parent / "fixtures/liberty-area8.json").read_text()
+        )
+        self.assertEqual((precision["schema"], precision["coarsening"]), (6, 8))
+        approved = {(c["game"], c["ply"]): c for c in precision["coarse_cases"]}
+        expected_cases = {
+            (game["name"], case["ply"])
+            for game in fixture["games"] for case in game["cases"] if case["schema"] == 6
+        }
+        self.assertEqual(set(approved), expected_cases)
         self.assertTrue(fixture["schema5_git_revision"].startswith("71f8daf"))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "game.sgf"
@@ -36,6 +46,15 @@ class SchemaCompatibilityTests(unittest.TestCase):
                             feature_schema=case["schema"],
                         )
                         for field, expected in case["hashes"].items():
+                            if case["schema"] == 6 and field == "coarse":
+                                record = approved[game["name"], case["ply"]]
+                                self.assertEqual(record["precise_coarse_sha256"], expected)
+                                expected = record["coarse_sha256"]
+                                keep = [i for i in range(14) if i not in (4, 5)]
+                                unchanged = hashlib.sha256(
+                                    sample.coarse[keep].numpy().tobytes()
+                                ).hexdigest()
+                                self.assertEqual(unchanged, record["unchanged_planes_sha256"])
                             actual = hashlib.sha256(
                                 getattr(sample, field).numpy().tobytes()
                             ).hexdigest()

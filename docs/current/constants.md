@@ -291,6 +291,7 @@ See [features](features.md), [network](network.md) and [auxiliary targets](auxil
 | Physical occupancy / liberty-center coverage | Analytic disc coverage / exact integer-center cell coverage; not the 8×8 approximation |
 | Friendly-region splitting | Binary; at least 2 remaining nonempty components; exact 8-neighbour integer connectivity |
 | Legacy scalar liberty-area integration | Midpoint slices with `ceil(32/radius)` slices/unit, minimum 1; normalized by `pi*radius²` |
+| Schema-6 scalar liberty-area precision | Eight times the legacy midpoint spacing; clipped last slice at its own midpoint/height; analytic empty/single-span shortcuts preserved; no per-group cache |
 
 Rounded raster sample locations have endpoints 0 and 999; control-volume outer
 edges are 0 and 1000. Features are side-to-move relative, float32; raster geometry
