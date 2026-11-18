@@ -683,6 +683,14 @@ class LoopTests(LoopHarness):
         # ReLU. Compare canonical configs rather than rejecting the added default.
         legacy = torch.load(self.source, weights_only=True)
         legacy["config"].pop("value_activation", None)
+        # This tests process/checkpoint plumbing, not playing strength. Random
+        # critics can prefer placements to a terminal jigo despite a pass-biased
+        # policy. Use constant heads and overwhelming pass exploration instead.
+        with torch.no_grad():
+            for parameter in self.model.parameters():
+                parameter.zero_()
+            self.model.pass_head.bias.fill_(30)
+        legacy["model"] = self.model.state_dict()
         atomic_checkpoint(self.source, legacy)
         output = self.root / "real"
         arguments = [
@@ -710,10 +718,13 @@ class LoopTests(LoopHarness):
             "32",
             "--widening",
             "0.01",
-            # Keep this a cheap recovery test, not a search-strength match.
-            # Some games draw naturally on an empty board; others are censored.
+            "--cpuct",
+            "10000",
+            # Temperature-one self-play can still sample the independently
+            # explored placement. Allow room to reach two natural passes rather
+            # than requiring both opening samples to be passes.
             "--max-moves",
-            "2",
+            "16",
             "--concurrent-games",
             "6",
             "--inference-batch-size",
@@ -776,6 +787,12 @@ class LoopTests(LoopHarness):
             loop.run_loop(loop.parse_args(["--output", str(output), "--resume"]))
         self.assertEqual(before, loop.digest(output / state["iterations"][0]["checkpoint"]["path"]))
         for number, iteration in enumerate(state["iterations"], 1):
+            self.assertTrue(iteration["completed"])
+            self.assertTrue(any(game["eligible"] for game in iteration["games"]))
+            for game in iteration["games"]:
+                info = inspect_game(output / game["path"])
+                self.assertTrue(info["labeled"], (number, game["path"]))
+                self.assertTrue(info["eligible_plies"], (number, game["path"]))
             self.assertEqual({g["board_size"] for g in iteration["games"]}, {9, 13, 19})
             saved = loop.load_training(output / iteration["checkpoint"]["path"])
             self.assertEqual(
