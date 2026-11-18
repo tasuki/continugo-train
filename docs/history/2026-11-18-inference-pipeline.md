@@ -72,3 +72,25 @@ Cargo path overrides are not part of the adopted change.
 Cg10 remains paused after round 22. Its frozen binary/runtime, loop configuration,
 checkpoint and data were not changed or resumed; adopting source defaults does
 not silently upgrade a frozen campaign.
+
+## Follow-up: gather prepared inputs without a pool round trip
+
+Further coarse-stage investigation (`scratch/20261118-coarse-investigation/`)
+found that the execution thread submitted already-prepared inputs to the shared
+Rayon pool merely to move owned buffers. This waited behind preparation work.
+With explicit user approval, all-ready batches now gather on the execution
+thread; genuine fallback extraction still uses the shared pool. There is no
+new option and no change to feature values, model exports or cache semantics.
+
+A matched diagnostic pilot with the workload above measured 159.630 -> 144.768 s
+(12.830 -> 14.147 moves/s), **10.3% more throughput**, with all 64 SGFs byte-identical.
+The all-ready gather counter fell from 22.746 s to .011 s; producer preparation
+was essentially unchanged (122.850 -> 123.559 s). This is one matched pair, not
+a full-campaign speed guarantee. The earlier ~149 s coarse counter combined
+producer and execution-side work; it was not one 149 s preparation stage.
+
+Validation after adoption: Rust suite passed; CPU/CUDA native worker parity,
+legacy-schema worker coverage, concurrent self-play/output-error handling and
+the real two-iteration interruption/recovery test all passed. Cg10 is still
+paused with its frozen binaries unchanged. Group-level area caching and cheaper
+area integration are separate, unimplemented changes.

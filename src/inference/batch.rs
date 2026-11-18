@@ -183,12 +183,21 @@ impl OnnxEvaluator {
                 .iter()
                 .map(|&i| (i, prepared.as_deref_mut().and_then(|p| p[i].take())))
                 .collect();
+            let all_ready = hints.iter().all(|(_, hint)| hint.is_some());
             let extract_hint = |(i, hint): (usize, Option<CoarseRaster>)| {
                 hint.map(Ok).unwrap_or_else(|| extract(&i))
             };
-            let rasters: Result<Vec<_>, _> = match &self.feature_pool {
-                Some(pool) => pool.install(|| hints.into_par_iter().map(extract_hint).collect()),
-                None => hints.into_iter().map(extract_hint).collect(),
+            let rasters: Result<Vec<_>, _> = if all_ready {
+                // Only move already-prepared buffers. Submitting this to the
+                // shared pool would make execution wait for next-batch work.
+                hints.into_iter().map(extract_hint).collect()
+            } else {
+                match &self.feature_pool {
+                    Some(pool) => {
+                        pool.install(|| hints.into_par_iter().map(extract_hint).collect())
+                    }
+                    None => hints.into_iter().map(extract_hint).collect(),
+                }
             };
             let planes = self.metadata.feature_spec.coarse.len();
             let mut coarse = Vec::with_capacity(indices.len() * planes * size * size);

@@ -353,8 +353,10 @@ The preparation worker serves cached values directly. Cache lookups/inserts use 
 short shared lock, never held during feature extraction or ONNX calls. Execution
 rechecks the cache: speculative preparation can become unnecessary, or a context
 seen during preparation can be evicted before execution (then features are
-extracted on demand). Cached values return when
-dequeued; uncached values return after encoding, before exact policy work. Policies
+extracted on demand). When every input is already prepared, execution gathers
+buffers directly rather than waiting on the shared feature pool; genuine fallback
+extraction remains parallel. Cached values return when dequeued; uncached values
+return after encoding, before exact policy work. Policies
 batch separately with per-position selected cells. Chunks stream at most 65,536
 coordinates/position and 262,144 aggregate rows, also respecting model chunk size.
 Ragged coordinate lists are padded only for scorer transport; padded rows receive
