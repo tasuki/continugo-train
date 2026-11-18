@@ -1,4 +1,4 @@
-//! Spatial group/liberty maps for schema 6. Rules provide membership,
+//! Shared raster primitives for the separately versioned schema-5/6 maps. Rules provide membership,
 //! adjacency and exact integer liberty spans; this module only rasterizes them.
 use continugo_rules::{Board, LibertySpan, Spot, Stone};
 
@@ -17,10 +17,15 @@ pub(super) struct Grid<'a> {
     resolution: usize,
     samples: usize,
     axis: Vec<f64>,
+    bridge_radius_fraction: f64,
 }
 
 impl<'a> Grid<'a> {
     pub fn new(edges: &'a [f64]) -> Self {
+        Self::with_bridge_radius(edges, BRIDGE_RADIUS_FRACTION)
+    }
+
+    pub fn with_bridge_radius(edges: &'a [f64], bridge_radius_fraction: f64) -> Self {
         let resolution = edges.len() - 1;
         let samples = SUBSAMPLES.min((MAX_SAMPLE_AXIS / resolution).max(1));
         let axis = edges
@@ -34,6 +39,7 @@ impl<'a> Grid<'a> {
             resolution,
             samples,
             axis,
+            bridge_radius_fraction,
         }
     }
 
@@ -118,7 +124,7 @@ impl<'a> Grid<'a> {
                         canvases,
                         stones[a].spot,
                         stones[b].spot,
-                        radius * BRIDGE_RADIUS_FRACTION,
+                        radius * self.bridge_radius_fraction,
                         values,
                     );
                 }

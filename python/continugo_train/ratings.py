@@ -693,8 +693,9 @@ def register_accepted(store, reference):
         _accept(tables, store, reference)
 
 
-def _inspect(path, settings, names, feature_binary):
-    info = inspect_game(path, binary=feature_binary)
+def _inspect(path, settings, names, feature_binary, *, info=None):
+    if info is None:
+        info = inspect_game(path, binary=feature_binary)
     root = info.get("root_comment")
     if not isinstance(root, dict) or not {"model", "opponent"}.issubset(root):
         raise ValueError("rating SGF has no frozen match metadata")

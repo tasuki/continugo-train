@@ -1,5 +1,7 @@
+import copy
 import io
 import json
+import shutil
 from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -95,6 +97,57 @@ class ChampionTests(helpers.LoopHarness):
 
     def saved_state(self):
         return torch.load(self.store / "ratings/evaluator.pt", weights_only=True)
+
+    def test_runtime_upgrade_preserves_champion_history_and_settings(self):
+        self.evaluate()
+        state = self.saved_state()
+        registry_path = self.store / "ratings/champions.json"
+        registry = json.loads(registry_path.read_text())
+        before_registry = copy.deepcopy(registry)
+        before_state = copy.deepcopy(state)
+        directory = self.root / "numbered-schema-runtime"
+        directory.mkdir()
+        for key, name in (
+            ("selfplay_binary", "continugo-train"),
+            ("feature_binary", "features"),
+            ("arena_binary", "arena"),
+            ("rating_binary", "rating"),
+        ):
+            shutil.copy2(state["config"][key], directory / name)
+        with (directory / "arena").open("ab") as stream:
+            stream.write(b"\nnumbered-schema-runtime-test\n")  # genuinely different executable hash
+        runner = rate_saved.ArtifactRunner(self.store, state, 0)
+        rate_saved.upgrade_runtime(runner, registry, directory)
+        runner.verify_runtime()
+        self.assertEqual(registry["champion"], before_registry["champion"])
+        self.assertEqual(registry["history"], before_registry["history"])
+        self.assertEqual(registry["evaluated"], before_registry["evaluated"])
+        self.assertEqual(state["matches"], before_state["matches"])
+        self.assertEqual(state["trials"], before_state["trials"])
+        self.assertEqual(
+            state["rating_protocol"]["search"], before_state["rating_protocol"]["search"]
+        )
+        self.assertTrue((Path(state["runtime_changes"][-1]["backup"]) / "evaluator.pt").is_file())
+        self.assertEqual(len(state["runtime_changes"]), 1)
+        cache, _ = rating_store.refresh(self.store, runner.config, visualize=False)
+        self.assertEqual(len(cache["protocols"]), 2)
+        self.assertEqual(len(cache["records"]), len(before_state["rating_cache"]["records"]))
+        sgf = next((self.store / "sgfs").glob("*/*.sgf"))
+        original = sgf.read_text()
+        old_hash = before_state["rating_protocol"]["arena_sha256"]
+        self.assertIn(old_hash, original)
+        sgf.write_text(original.replace(old_hash, "0" * 64))
+        with self.assertRaisesRegex(ValueError, "unregistered evaluation runtime"):
+            rating_store.refresh(self.store, runner.config, visualize=False)
+        sgf.write_text(original)
+        rate_saved.upgrade_runtime(runner, registry, directory)
+        self.assertEqual(len(state["runtime_changes"]), 1)
+        registry["pending"] = {"candidate": self.ids[0]}
+        rate_saved.upgrade_runtime(runner, registry, directory)  # identical runtime is resumable
+        other = self.root / "different-runtime"
+        shutil.copytree(directory, other)
+        with self.assertRaisesRegex(ValueError, "pending"):
+            rate_saved.upgrade_runtime(runner, registry, other)
 
     def test_joint_fit_cache_and_legacy_cache_match_full_rebuild(self):
         self.evaluate()

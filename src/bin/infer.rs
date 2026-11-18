@@ -38,7 +38,7 @@ struct Args {
         default_value = "0,999,1000,999999,500500,500501,1000000"
     )]
     actions: Vec<u32>,
-    /// Override the schema-5 geometry soft budget (default 16, range 1..=128).
+    /// Override the schema-5/6 geometry soft budget (default 16, range 1..=128).
     #[arg(long, conflicts_with = "complete_cells")]
     geometry_budget: Option<usize>,
     /// Analyze complete selected cells instead of using geometry proposals.

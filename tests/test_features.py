@@ -8,10 +8,10 @@ from pathlib import Path
 
 import torch
 
+from continugo_train.feature_schemas import SCHEMA4_MOVE_FEATURES
 from continugo_train.features import (
     COARSE_PLANES,
     HEADER,
-    LEGACY_MOVE_FEATURES,
     MOVE_FEATURES,
     SCHEMA_VERSION,
     FeatureClient,
@@ -87,7 +87,7 @@ class RealFeatureTests(unittest.TestCase):
         self.assertEqual(sample.exact.dtype, torch.float32)
         self.assertEqual(sample.legal.dtype, torch.bool)
         self.assertEqual(sample.actions.dtype, torch.int64)
-        self.assertEqual(sample.exact.shape, (2, len(LEGACY_MOVE_FEATURES)))
+        self.assertEqual(sample.exact.shape, (2, len(SCHEMA4_MOVE_FEATURES)))
         flags = sample.coarse[6:8]
         self.assertTrue(((flags == 0) | (flags == 1)).all())
         self.assertEqual(sample.coarse[6].count_nonzero(), 0)
@@ -105,7 +105,7 @@ class RealFeatureTests(unittest.TestCase):
         current = self.load(actions=actions)
         legacy = self.load(actions=actions, feature_schema=4)
         self.assertEqual(MOVE_FEATURES[4], "splits_friendly_region")
-        self.assertEqual(MOVE_FEATURES[5:], LEGACY_MOVE_FEATURES[6:])
+        self.assertEqual(MOVE_FEATURES[5:], SCHEMA4_MOVE_FEATURES[6:])
         self.assertNotIn("legal", MOVE_FEATURES)
         self.assertNotIn("resulting_group_size", MOVE_FEATURES)
         self.assertEqual(current.exact.shape, (3, 9))
@@ -144,8 +144,11 @@ class RealFeatureTests(unittest.TestCase):
             explicit = client.load(self.sgf, 1, cells=[], feature_schema=6)
             self.assertEqual(explicit.coarse.shape[0], 14)
             torch.testing.assert_close(aa.coarse, explicit.coarse, rtol=0, atol=0)
-            with self.assertRaisesRegex(ValueError, "schema"):
-                client.load(self.sgf, 1, cells=[], feature_schema=5)
+            schema5 = client.load(self.sgf, 1, cells=[], feature_schema=5)
+            self.assertEqual(schema5.coarse.shape[0], 12)
+            self.assertEqual(schema5.exact.shape[1], 11)
+            torch.testing.assert_close(schema5.coarse[:2], aa.coarse[:2], rtol=0, atol=0)
+            torch.testing.assert_close(schema5.coarse[4:8], aa.coarse[6:10], rtol=0, atol=0)
             import math
 
             covered = (aa.coarse[1] * ownership_weights(aa.resolution)).sum().item()

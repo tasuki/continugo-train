@@ -1,7 +1,7 @@
 //! Version-6 inputs: antialiased stones, connected group size and liberty area,
 //! spatial liberty-center and liberty-footprint unions, and borders. Exact move
 //! rows omit redundant legality/resulting size and retain binary region splitting.
-//! Legacy version 4 retains its original coarse inputs and ten exact fields.
+//! Schemas 4 and 5 retain their separately versioned inputs for inference.
 
 use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
@@ -10,6 +10,8 @@ use continugo_rules::{
 #[cfg(test)]
 mod footprint;
 mod raster;
+pub mod schema5;
+pub mod schema6;
 mod spatial;
 mod splitting;
 
@@ -104,13 +106,17 @@ impl CoarseProfile {
     }
 }
 
-// Schema 6 adds group liberty area, saturating scalars, and narrower exact rows.
-// Schema 5 is rejected rather than silently reinterpreting old derived tensors.
-pub const SCHEMA_VERSION: u32 = 6;
+// The default extraction/training schema is 6; inference uses model metadata.
+pub use schema6::{
+    COARSE_PLANES, MOVE_FEATURES, VERSION as SCHEMA_VERSION, count_feature, scalar_feature,
+};
 pub const POINT_SAMPLED_SCHEMA: u32 = 4;
 
 pub fn validate_schema(schema: u32) -> Result<(), String> {
-    if matches!(schema, POINT_SAMPLED_SCHEMA | SCHEMA_VERSION) {
+    if matches!(
+        schema,
+        POINT_SAMPLED_SCHEMA | schema5::VERSION | schema6::VERSION
+    ) {
         Ok(())
     } else {
         Err(format!("unsupported feature schema {schema}"))
@@ -118,30 +124,14 @@ pub fn validate_schema(schema: u32) -> Result<(), String> {
 }
 pub fn coarse_planes(schema: u32) -> Result<&'static [&'static str], String> {
     validate_schema(schema)?;
-    Ok(if schema == SCHEMA_VERSION {
-        &COARSE_PLANES
-    } else {
-        &LEGACY_COARSE_PLANES
+    Ok(match schema {
+        schema5::VERSION => &schema5::COARSE_PLANES,
+        schema6::VERSION => &schema6::COARSE_PLANES,
+        _ => &SCHEMA4_COARSE_PLANES,
     })
 }
 
-pub const COARSE_PLANES: [&str; 14] = [
-    "friendly_stones",
-    "enemy_stones",
-    "friendly_group_size",
-    "enemy_group_size",
-    "friendly_group_liberty_area",
-    "enemy_group_liberty_area",
-    "friendly_liberty_centers",
-    "enemy_liberty_centers",
-    "friendly_liberty_footprints",
-    "enemy_liberty_footprints",
-    "left_border",
-    "right_border",
-    "top_border",
-    "bottom_border",
-];
-pub const LEGACY_COARSE_PLANES: [&str; 12] = [
+pub const SCHEMA4_COARSE_PLANES: [&str; 12] = [
     "friendly_stones",
     "enemy_stones",
     "friendly_group_size",
@@ -155,7 +145,7 @@ pub const LEGACY_COARSE_PLANES: [&str; 12] = [
     "top_border",
     "bottom_border",
 ];
-pub const LEGACY_MOVE_FEATURES: [&str; 10] = [
+pub const SCHEMA4_MOVE_FEATURES: [&str; 10] = [
     "legal",
     "connected_groups",
     "connected_stones",
@@ -168,24 +158,12 @@ pub const LEGACY_MOVE_FEATURES: [&str; 10] = [
     "bottom_border",
 ];
 
-pub const MOVE_FEATURES: [&str; 9] = [
-    "connected_groups",
-    "connected_stones",
-    "captured_groups",
-    "captured_stones",
-    "splits_friendly_region",
-    "left_border",
-    "right_border",
-    "top_border",
-    "bottom_border",
-];
-
 pub fn move_features(schema: u32) -> Result<&'static [&'static str], String> {
     validate_schema(schema)?;
-    Ok(if schema == SCHEMA_VERSION {
-        &MOVE_FEATURES
-    } else {
-        &LEGACY_MOVE_FEATURES
+    Ok(match schema {
+        schema5::VERSION => &schema5::MOVE_FEATURES,
+        schema6::VERSION => &schema6::MOVE_FEATURES,
+        _ => &SCHEMA4_MOVE_FEATURES,
     })
 }
 
@@ -207,22 +185,13 @@ pub fn resolution(diameter: i32, samples_per_diameter: usize) -> Result<usize, S
     Ok(result)
 }
 
-/// Log-scaled stone counts and liberty areas saturate at 100 stone-discs.
-pub fn scalar_feature(value: f64) -> f32 {
-    (value.clamp(0.0, 100.0).ln_1p() / 101.0_f64.ln()) as f32
-}
-
-pub fn count_feature(count: usize) -> f32 {
-    scalar_feature(count as f64)
-}
-
-// Preserve schema-4 model inputs exactly.
-fn legacy_count_feature(count: usize) -> f32 {
+// Schemas 4 and 5 use the same uncapped normalization.
+fn schema45_count_feature(count: usize) -> f32 {
     (count as f32).ln_1p() / (COORDINATE_ACTIONS as f32).ln_1p()
 }
 
 pub struct MoveFeatures {
-    /// Candidate-major [N, fields]; schema 6 has 9, schema 4 has 10 fields.
+    /// Candidate-major [N, fields]: schema 4 has 10, schema 5 has 11, schema 6 has 9.
     /// Illegal tactical/splitting columns are zero.
     pub exact: Vec<f32>,
     pub legal: Vec<u8>,
@@ -236,7 +205,7 @@ pub struct FeatureExtractor<'a> {
     #[cfg(test)]
     footprints: footprint::Cache,
     pub resolution: usize,
-    /// Plane-major [planes, H, W]; schema 6 has 14 planes, schema 4 has 12.
+    /// Plane-major [planes, H, W]: schemas 4/5 have 12 planes, schema 6 has 14.
     pub coarse: Vec<f32>,
     /// Opt-in exact per-group source geometry, before colour union/rasterization.
     pub geometry: Option<std::sync::Arc<Geometry>>,
@@ -276,10 +245,8 @@ impl<'a> FeatureExtractor<'a> {
         schema: u32,
         profile: bool,
     ) -> Result<(Self, CoarseProfile), String> {
-        if schema != SCHEMA_VERSION {
-            return Err(format!(
-                "geometry proposals require feature schema {SCHEMA_VERSION}"
-            ));
+        if !matches!(schema, schema5::VERSION | schema6::VERSION) {
+            return Err("geometry proposals require feature schema 5 or 6".into());
         }
         if profile {
             Self::build::<true>(game, density, schema, true)
@@ -295,6 +262,9 @@ impl<'a> FeatureExtractor<'a> {
         retain_geometry: bool,
     ) -> Result<(Self, CoarseProfile), String> {
         validate_schema(schema)?;
+        if schema == schema5::VERSION {
+            return schema5::build::<PROFILE>(game, samples_per_diameter, retain_geometry);
+        }
         let mut profile = CoarseProfile::default();
         let tick = PROFILE.then(Instant::now);
         let mut this = Self::for_moves(game, schema)?;
@@ -329,7 +299,7 @@ impl<'a> FeatureExtractor<'a> {
                 let size = if schema == SCHEMA_VERSION {
                     count_feature(members.len())
                 } else {
-                    legacy_count_feature(members.len())
+                    schema45_count_feature(members.len())
                 };
                 if let Some(grid) = &grid {
                     let tick = PROFILE.then(Instant::now);
@@ -654,7 +624,7 @@ impl<'a> FeatureExtractor<'a> {
                 let count = if FOOTPRINT {
                     count_feature
                 } else {
-                    legacy_count_feature
+                    schema45_count_feature
                 };
                 row[..6].copy_from_slice(&[
                     1.0,
@@ -665,7 +635,8 @@ impl<'a> FeatureExtractor<'a> {
                     count(analysis.group_size),
                 ]);
             }
-            if FOOTPRINT || fields == MOVE_FEATURES.len() {
+            if FOOTPRINT || fields == schema5::MOVE_FEATURES.len() || fields == MOVE_FEATURES.len()
+            {
                 if FOOTPRINT {
                     #[cfg(test)]
                     {
@@ -677,7 +648,12 @@ impl<'a> FeatureExtractor<'a> {
                         );
                     }
                 } else {
-                    row[4] = self.splitting.value(self.game, spot, &analysis.position);
+                    let column = if fields == schema5::MOVE_FEATURES.len() {
+                        6
+                    } else {
+                        4
+                    };
+                    row[column] = self.splitting.value(self.game, spot, &analysis.position);
                 }
             }
         }

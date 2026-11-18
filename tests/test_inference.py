@@ -288,7 +288,9 @@ class NativeInferenceTests(unittest.TestCase):
         self.assertEqual(a["score"], full["score"])
         for report in (a, b, full):
             self.assertAlmostEqual(report["policy_mass"], 1.0, places=5)
-        conflict = self.infer(source, [1000000], extra=["--complete-cells", "--geometry-budget", "8"])
+        conflict = self.infer(
+            source, [1000000], extra=["--complete-cells", "--geometry-budget", "8"]
+        )
         self.assertNotEqual(conflict.returncode, 0)
 
     def test_complete_cell_native_outputs_match_torch_across_sizes(self):
@@ -684,7 +686,7 @@ class NativeInferenceTests(unittest.TestCase):
         self.assertGreater(int(re.search(r"scorer_max_batch: (\d+)", stats)[1]), 1)
         default_output, default_records, default_stats = run("concurrent-defaults", None, None)
         self.assertEqual(sequential.keys(), default_records.keys())
-        self.assertIn("concurrent_games=32 batch_size=32", default_stats)
+        self.assertIn("concurrent_games=12 batch_size=12", default_stats)
         self.assertGreater(int(re.search(r"scorer_max_batch: (\d+)", default_stats)[1]), 1)
         for folder, records in ((output, batched), (default_output, default_records)):
             for name in records:

@@ -253,11 +253,8 @@ impl OnnxEvaluator {
         if budget.is_some_and(|b| b == 0 || b > 128) {
             return Err("geometry budget must be in 1..=128".into());
         }
-        if budget.is_some() && self.feature_schema() != crate::features::SCHEMA_VERSION {
-            return Err(format!(
-                "geometry proposals require feature schema {}",
-                crate::features::SCHEMA_VERSION
-            ));
+        if budget.is_some() && !matches!(self.feature_schema(), 5 | 6) {
+            return Err("geometry proposals require feature schema 5 or 6".into());
         }
         if self.geometry_budget != budget {
             self.cache.clear();
@@ -391,10 +388,9 @@ impl OnnxEvaluator {
         {
             return Err("incompatible feature/architecture metadata".into());
         }
-        // Schema 4 retains its original complete-cell behavior. Current models
-        // use direct geometry proposals unless explicitly reconfigured.
-        let geometry_budget = (spec.schema == crate::features::SCHEMA_VERSION)
-            .then_some(crate::geometry_proposals::DEFAULT_BUDGET);
+        // Schema 4 uses complete cells; schemas 5/6 use geometry proposals.
+        let geometry_budget =
+            matches!(spec.schema, 5 | 6).then_some(crate::geometry_proposals::DEFAULT_BUDGET);
         Ok(Self {
             encoder,
             scorer,

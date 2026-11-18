@@ -1,11 +1,11 @@
 # PyTorch policy/value network
 
-**Current inputs are schema 6: 14 coarse planes and 9 exact fields.** Group size
+**Schema 6 inputs: 14 coarse planes and 9 exact fields (fresh-training default).** Group size
 and total per-group liberty area use capped log scaling, saturating at 100.
 Exact legality and resulting group size are removed; the separate legality mask
 is unchanged. Both spatial liberty representations and exact splitting remain.
-Schema 5 is rejected; start fresh training. Schema-4 inference keeps its original
-inputs and scaling. See the [current feature contract](features.md#current-contract).
+Schema-4 and schema-5 inference keep their own input contracts and scaling;
+schema-6 training starts fresh. See the [schema-6 feature contract](features.md#schema-6-contract).
 
 ## Architecture
 
@@ -124,8 +124,11 @@ validated SGF visit/outcome records remain usable. New training uses feature
 schema 6 with fourteen coarse planes: antialiased occupancy, connected group
 size, spatial liberty centers/footprints, per-group total liberty area and borders;
 no capturability flags. Schema-4 score/ownership inference and viewing explicitly preserve all
-twelve original coarse inputs and ten exact fields. Schema-5 checkpoints and derived tensors are incompatible;
-fresh schema-6 training is required. Old feature metadata is not accepted.
+twelve original coarse inputs and ten exact fields. Schema-5 inference/viewing uses
+its own twelve coarse planes and eleven exact fields, restored from Git commit
+`71f8daf`. Mixed-schema arenas extract inputs independently for each model;
+schema-5 checkpoints/tensors cannot initialize schema-6 training. Metadata names
+and widths must match the selected numbered schema.
 See [features](features.md).
 The pass-preserving normalization correction changes native execution only, not
 weights, features, graph outputs, or the training objective. Current exports additionally require `targets: final-area-v1`; old policy/value-only

@@ -121,10 +121,18 @@ def load_checkpoint(path):
 
 
 def coarse_plane_image(name, values, index, schema):
-    legacy_area = schema == 4 and index in (4, 5)
-    limits = (0, max(1.0, float(values.max()))) if legacy_area else (0, 1)
+    schema4_area = schema == 4 and index in (4, 5)
+    limits = (0, max(1.0, float(values.max()))) if schema4_area else (0, 1)
     if schema == 4:
-        note = "Point-sampled" if index < 2 else ("Raw area; not clipped" if legacy_area else "")
+        note = "Point-sampled" if index < 2 else ("Raw area; not clipped" if schema4_area else "")
+    elif schema == 5:
+        notes = (
+            "Area-antialiased",
+            "Connected groups; uncapped log size; bridge radius 0.30 stone radii",
+            "Liberty-center union coverage",
+            "Liberty-footprint union coverage",
+        )
+        note = notes[index // 2] if index < 8 else ""
     else:
         notes = (
             "Area-antialiased",

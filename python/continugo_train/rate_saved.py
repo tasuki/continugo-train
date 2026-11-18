@@ -13,9 +13,10 @@ import torch
 from . import archive, gate, plot_ratings, rating_store, ratings, timing
 from .evaluation import EvaluationConfig, EvaluationRunner
 from .loop import atomic_bytes
+from .model import NetworkConfig
 from .paths import ROOT, utc_now
 from .saved_models import saved_sources
-from .train import atomic_checkpoint
+from .train import atomic_checkpoint, feature_spec
 
 POLICY = {
     "evaluation_every": 5,
@@ -269,10 +270,7 @@ def evaluate(runner, registry):
                 job["candidate_name"] == candidate and job["kind"].startswith("champion-")
                 for job in state["matches"].values()
             )
-            trial["challenge_due"] = (
-                started
-                or round_number % challenge_every == 0
-            )
+            trial["challenge_due"] = started or round_number % challenge_every == 0
             runner.save()
         runner.log(
             f"Candidate {number}/{len(state['candidates'])}: {candidate} vs champion {opponent}"
@@ -353,10 +351,88 @@ def evaluate(runner, registry):
         runner.log(f"Finished {candidate}: {trial['decision']}; champion={registry['champion']}")
 
 
+def validate_evaluation_model(saved, reference_spec):
+    """Each model owns its schema; only match policy/targets/density must agree."""
+    spec = saved["feature_spec"]
+    expected = feature_spec(spec["samples_per_diameter"], schema=spec["schema"])
+    config = NetworkConfig(**saved["config"])
+    if spec != expected or (
+        config.input_planes != len(spec["coarse"]) or config.move_features != len(spec["moves"])
+    ):
+        raise ValueError("incompatible feature semantics/architecture")
+    if any(
+        spec[key] != reference_spec[key] for key in ("policy", "targets", "samples_per_diameter")
+    ):
+        raise ValueError("incompatible evaluation policy/targets/density")
+
+
+def upgrade_runtime(runner, registry, directory):
+    """Explicit, audited executable upgrade; never reset ratings or the champion."""
+    directory = Path(directory).resolve()
+    names = {
+        key: directory / name
+        for key, name in (
+            ("selfplay_binary", "continugo-train"),
+            ("feature_binary", "features"),
+            ("arena_binary", "arena"),
+            ("rating_binary", "rating"),
+        )
+    }
+    for path in names.values():
+        if not path.is_file():
+            raise ValueError(f"missing evaluation runtime executable: {path}")
+    previous_config = dict(runner.state["config"])
+    config = EvaluationConfig.from_config(
+        {**previous_config, **{k: str(v) for k, v in names.items()}}
+    )
+    config.validate()
+    previous_protocol = runner.state["rating_protocol"]
+    protocol = ratings.protocol(config, legacy=previous_protocol["version"] == 1)
+    for key in previous_protocol:
+        if key not in ("arena_sha256", "rating_sha256") and protocol[key] != previous_protocol[key]:
+            raise ValueError(f"runtime upgrade would change evaluation setting {key}")
+    fingerprints = {
+        "selfplay": archive.digest(names["selfplay_binary"]),
+        "features": archive.digest(names["feature_binary"]),
+    }
+    if (
+        all(previous_config.get(k) == str(v) for k, v in names.items())
+        and protocol == previous_protocol
+        and fingerprints == runner.state["runtime_fingerprints"]
+    ):
+        return
+    if registry.get("pending") is not None:
+        raise ValueError("finish the pending champion evaluation before upgrading runtime")
+    recorded = utc_now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = runner.root / "ratings" / "runtime-upgrades" / recorded
+    backup.mkdir(parents=True)
+    atomic_checkpoint(backup / "evaluator.pt", runner.state)
+    atomic_bytes(backup / "champions.json", (json.dumps(registry, indent=2) + "\n").encode())
+    change = {
+        "recorded_at": utc_now().isoformat(),
+        "previous_config": previous_config,
+        "previous_protocol": previous_protocol,
+        "protocol": protocol,
+        "executables": {k: {"path": str(v), "sha256": archive.digest(v)} for k, v in names.items()},
+        "backup": str(backup),
+        "champion_preserved": registry["champion"],
+    }
+    runner.state["config"].update({k: str(v) for k, v in names.items()})
+    runner.state["runtime_fingerprints"] = fingerprints
+    runner.state["rating_protocol"] = protocol
+    runner.state.setdefault("runtime_changes", []).append(change)
+    registry.setdefault("runtime_changes", []).append(change)
+    runner.config = config
+    runner.save()
+    save_champions(runner.root, registry)
+    runner.log(f"Evaluation runtime upgraded: {directory}; champion/history preserved")
+
+
 def include_family(runner, registry, family, cadence=None):
     """Append compatible saved models without resetting the shared champion/history."""
-    sources = {key: value for key, value in saved_sources(runner.root).items()
-               if value["family"] == family}
+    sources = {
+        key: value for key, value in saved_sources(runner.root).items() if value["family"] == family
+    }
     if not sources:
         raise ValueError(f"no saved models for family {family}")
     models, checkpoints = model_references(runner.root, sources)
@@ -366,12 +442,14 @@ def include_family(runner, registry, family, cadence=None):
     for source in ordered:
         name = source["id"]
         if name in state["models"]:
-            if state["models"][name] != models[name] or state["checkpoints"][name] != checkpoints[name]:
+            if (
+                state["models"][name] != models[name]
+                or state["checkpoints"][name] != checkpoints[name]
+            ):
                 raise ValueError(f"saved model identity changed: {name}")
         else:
             saved = torch.load(source["checkpoint"]["path"], map_location="cpu", weights_only=True)
-            if saved["feature_spec"] != state["feature_spec"]:
-                raise ValueError(f"incompatible feature semantics: {name}")
+            validate_evaluation_model(saved, state["feature_spec"])
             added.append(name)
     old_cadence = state.get("family_evaluation_every", {}).get(family)
     if cadence is not None and cadence <= 0:
@@ -393,9 +471,12 @@ def include_family(runner, registry, family, cadence=None):
                 if name in state.get("skipped", []):
                     state["skipped"].remove(name)
     if added or cadence is not None and cadence != old_cadence:
-        change = dict(family=family, added_models=added,
-                      evaluation_every=cadence if cadence is not None else old_cadence,
-                      recorded_at=utc_now().isoformat())
+        change = {
+            "family": family,
+            "added_models": added,
+            "evaluation_every": cadence if cadence is not None else old_cadence,
+            "recorded_at": utc_now().isoformat(),
+        }
         state.setdefault("policy_changes", []).append(change)
         registry.setdefault("policy_changes", []).append(change)
     runner.save()
@@ -425,6 +506,9 @@ def run(args):
         runner = ArtifactRunner(store, state, lock)
         runner.verify_runtime()
         registry = load_champions(store)
+        if args.upgrade_runtime is not None:
+            upgrade_runtime(runner, registry, args.upgrade_runtime)
+            runner.verify_runtime()
         if args.include_family:
             include_family(runner, registry, args.include_family, args.family_evaluation_every)
         if not registry["evaluated"] and not state["matches"]:
@@ -444,9 +528,19 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", choices=["cpu", "cuda"])
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--include-family", help="append saved models to the existing shared evaluator")
-    parser.add_argument("--family-evaluation-every", type=int,
-                        help="evaluation/challenge cadence for --include-family only (1 = every model)")
+    parser.add_argument(
+        "--upgrade-runtime",
+        type=Path,
+        help="explicitly upgrade evaluator executables from DIR, preserving champion/history",
+    )
+    parser.add_argument(
+        "--include-family", help="append saved models to the existing shared evaluator"
+    )
+    parser.add_argument(
+        "--family-evaluation-every",
+        type=int,
+        help="evaluation/challenge cadence for --include-family only (1 = every model)",
+    )
     args = parser.parse_args(argv)
     if args.family_evaluation_every is not None and (
         not args.include_family or args.family_evaluation_every <= 0

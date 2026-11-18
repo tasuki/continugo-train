@@ -20,71 +20,21 @@ import numpy as np
 import torch
 from torch import Tensor
 
-# Schema 6 adds per-group liberty area and capped scalars, removes redundant
-# exact columns. Schema 5 packets/weights must not be silently reinterpreted.
-SCHEMA_VERSION = 6
-POINT_SAMPLED_SCHEMA = 4
-LEGACY_COARSE_PLANES = (
-    "friendly_stones",
-    "enemy_stones",
-    "friendly_group_size",
-    "enemy_group_size",
-    "friendly_liberty_area_stones",
-    "enemy_liberty_area_stones",
-    "friendly_capturable_in_one",
-    "enemy_capturable_in_one",
-    "left_border",
-    "right_border",
-    "top_border",
-    "bottom_border",
-)
-COARSE_PLANES = (
-    "friendly_stones",
-    "enemy_stones",
-    "friendly_group_size",
-    "enemy_group_size",
-    "friendly_group_liberty_area",
-    "enemy_group_liberty_area",
-    "friendly_liberty_centers",
-    "enemy_liberty_centers",
-    "friendly_liberty_footprints",
-    "enemy_liberty_footprints",
-    "left_border",
-    "right_border",
-    "top_border",
-    "bottom_border",
+from .feature_schemas import (
+    SCHEMA4,
+    SCHEMA5,
+    SCHEMA6,
+    SCHEMA6_COARSE_PLANES,
+    SCHEMA6_MOVE_FEATURES,
+    SUPPORTED_SCHEMAS,
+    coarse_planes,
+    move_features,
 )
 
-
-def coarse_planes(schema=SCHEMA_VERSION):
-    if schema not in (POINT_SAMPLED_SCHEMA, SCHEMA_VERSION):
-        raise ValueError(f"unsupported feature schema {schema}")
-    return COARSE_PLANES if schema == SCHEMA_VERSION else LEGACY_COARSE_PLANES
-
-
-LEGACY_MOVE_FEATURES = (
-    "legal",
-    "connected_groups",
-    "connected_stones",
-    "captured_groups",
-    "captured_stones",
-    "resulting_group_size",
-    "left_border",
-    "right_border",
-    "top_border",
-    "bottom_border",
-)
-MOVE_FEATURES = (
-    *LEGACY_MOVE_FEATURES[1:5],
-    "splits_friendly_region",
-    *LEGACY_MOVE_FEATURES[6:],
-)
-
-
-def move_features(schema=SCHEMA_VERSION):
-    if schema not in (POINT_SAMPLED_SCHEMA, SCHEMA_VERSION):
-        raise ValueError(f"unsupported feature schema {schema}")
-    return MOVE_FEATURES if schema == SCHEMA_VERSION else LEGACY_MOVE_FEATURES
+SCHEMA_VERSION = SCHEMA6  # Default extraction/training schema.
+POINT_SAMPLED_SCHEMA = SCHEMA4
+COARSE_PLANES = SCHEMA6_COARSE_PLANES
+MOVE_FEATURES = SCHEMA6_MOVE_FEATURES
 
 
 PASS = 1_000_000
@@ -191,7 +141,7 @@ def decode_sample(
     ) = HEADER.unpack_from(data)
     if (
         magic != b"CGFEAT02"
-        or feature_schema not in (POINT_SAMPLED_SCHEMA, SCHEMA_VERSION)
+        or feature_schema not in SUPPORTED_SCHEMAS
         or version != feature_schema
         or planes != len(coarse_planes(feature_schema))
         or fields != len(move_features(feature_schema))
@@ -252,11 +202,17 @@ def decode_sample(
         or ((coarse[:2] < 0) | (coarse[:2] > 1)).any()
         or (version == SCHEMA_VERSION and ((coarse < 0) | (coarse > 1)).any())
         or (version == POINT_SAMPLED_SCHEMA and ((coarse[:2] != 0) & (coarse[:2] != 1)).any())
-        or (version != SCHEMA_VERSION and ((coarse[6:8] != 0) & (coarse[6:8] != 1)).any())
+        or (version == POINT_SAMPLED_SCHEMA and ((coarse[6:8] != 0) & (coarse[6:8] != 1)).any())
+        or (version == SCHEMA5 and ((coarse[4:8] < 0) | (coarse[4:8] > 1)).any())
         or not np.isfinite(exact).all()
         or (raw_legal > 1).any()
         or (actions >= PASS).any()
-        or (version == POINT_SAMPLED_SCHEMA and not np.array_equal(exact[:, 0], raw_legal))
+        or (
+            version in (POINT_SAMPLED_SCHEMA, SCHEMA5)
+            and not np.array_equal(exact[:, 0], raw_legal)
+        )
+        or (version == SCHEMA5 and ((exact[:, 6] != 0) & (exact[:, 6] != 1)).any())
+        or (version == SCHEMA5 and (exact[raw_legal == 0, :7] != 0).any())
         or (version == SCHEMA_VERSION and ((exact < 0) | (exact > 1)).any())
         or (version == SCHEMA_VERSION and (exact[raw_legal == 0, :5] != 0).any())
         or (version == SCHEMA_VERSION and ((exact[:, 4] != 0) & (exact[:, 4] != 1)).any())

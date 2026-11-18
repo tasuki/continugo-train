@@ -1,11 +1,12 @@
 # Real neural features — schema version 6
 
-## Current contract
+## Schema 6 contract
 
 Fresh training/extraction uses **schema 6: 14 coarse planes and 9 exact fields**.
-Schema 4 remains supported with its original inputs and normalization. Schema 5
-is rejected: regenerate derived tensors and start fresh checkpoints/exports;
-validated source SGFs remain usable. Packet dimensions and schema are checked in
+Schemas 4 and 5 remain supported for extraction, inference, viewing and evaluation
+with their own original contracts. Schema-5 tensors/checkpoints are never treated
+as schema 6: fresh schema-6 training requires regenerated tensors and new weights.
+Validated source SGFs remain usable. Packet dimensions and schema are checked in
 Rust/Python, and checkpoint/ONNX feature names must match. The user reordered
 unused schema 6 to place group liberty area immediately after group size.
 Discard earlier derived schema-6 packets with the previous ordering: their
@@ -66,12 +67,12 @@ below. All tensors remain float32. CGFEAT02's header layout is unchanged, but it
 schema is 6, coarse-plane count 14 and exact width 9; payload shapes are
 `[14,H,W]` and `[N,9]`. Schema-4 payloads remain `[12,H,W]` and `[N,10]`.
 
-## Historical schema-5 reference
+## Schema 5 contract and shared geometry
 
-**The remainder records the previous schema-5 contract and shared geometry,
-labels and transport details. Its schema numbers, widths, channel indices,
-uncapped count scaling, and statements that group-area integration is absent
-are superseded by the current contract above.**
+**The remainder describes schema 5 and shared geometry, labels and transport.
+Its channel indices, uncapped counts, 0.30-radius group bridges and absence of
+per-group area integration remain the schema-5 inference contract; they do not
+apply to schema 6. Schema 6 is the fresh-training default above.**
 
 **On 2026-11-08 the user explicitly reopened unused schema 5 and replaced the
 local-liberty-footprint scalar with binary `splits_friendly_region`.** There are

@@ -36,6 +36,32 @@ def refresh(store, config, cache=None, *, visualize=True):
     identities[ratings.REFERENCE_ID] = ratings.REFERENCE_ID
     checkpoints = {key: Path(source["checkpoint"]["path"]) for key, source in sources.items()}
     settings = ratings.protocol(config)
+    champion_file = store / "ratings/champions.json"
+    registry = json.loads(champion_file.read_text()) if champion_file.exists() else {}
+    protocols = [settings]
+    for change in registry.get("runtime_changes", []):
+        for key in ("previous_protocol", "protocol"):
+            protocol = change[key]
+            if any(
+                protocol.get(k) != value
+                for k, value in settings.items()
+                if k not in ("arena_sha256", "rating_sha256")
+            ):
+                raise ValueError("runtime history changes rating search/match settings")
+            if protocol not in protocols:
+                protocols.append(protocol)
+
+    def inspect(path):
+        info = ratings.inspect_game(path, binary=config.feature_binary)
+        root = info.get("root_comment")
+        if not isinstance(root, dict):
+            raise ValueError("rating SGF has no frozen match metadata")  # noqa: TRY004 — invalid SGF data
+        arena = root.get("evaluation")
+        protocol = next((p for p in protocols if p["arena_sha256"] == arena), None)
+        if protocol is None:
+            raise ValueError(f"rating SGF has an unregistered evaluation runtime: {path}")
+        return ratings._inspect(path, protocol, names, config.feature_binary, info=info)
+
     grouped = defaultdict(list)
     for path in sorted((store / "sgfs").glob("*/*.sgf")):
         match = GAME_NAME.fullmatch(path.name)
@@ -66,6 +92,7 @@ def refresh(store, config, cache=None, *, visualize=True):
     reusable = (
         cache.get("method") == "joint-bt-v2"
         and cache.get("protocol") == settings
+        and cache.get("protocols", [cache.get("protocol")]) == protocols
         and previous == groups[: len(previous)]
         and len(previous) <= len(groups)
     )
@@ -77,7 +104,7 @@ def refresh(store, config, cache=None, *, visualize=True):
     for group in groups[len(previous) :]:
         for relative, _size, _mtime in group["files"]:
             path = store / relative
-            record = ratings._inspect(path, settings, names, config.feature_binary)
+            record = inspect(path)
             match = GAME_NAME.fullmatch(path.name)
             black, white = (identities[record[color]] for color in ["black", "white"])
             expected = [
@@ -106,12 +133,7 @@ def refresh(store, config, cache=None, *, visualize=True):
 
     update(store)  # Publish the chart before potentially slow neural reports.
     if visualize:
-        champion_file = directory / "champions.json"
-        skipped = (
-            set(json.loads(champion_file.read_text()).get("skipped", {}))
-            if champion_file.exists()
-            else set()
-        )
+        skipped = set(registry.get("skipped", {}))
         for group in groups:
             for relative, _size, _mtime in group["files"]:
                 path = store / relative
@@ -121,16 +143,14 @@ def refresh(store, config, cache=None, *, visualize=True):
                     continue  # Preserve partial SGFs, but do no more work on skipped rounds.
                 if output.is_file():
                     continue
-                info = (
-                    infos.get(relative)
-                    or ratings._inspect(path, settings, names, config.feature_binary)["info"]
-                )
+                info = infos.get(relative) or inspect(path)["info"]
                 nn_view.generate_rated(
                     path, output, info, checkpoints, binary=config.feature_binary
                 )
     return {
         "method": "joint-bt-v2",
         "protocol": settings,
+        "protocols": protocols,
         "groups": groups,
         "records": records,
         "states": states,

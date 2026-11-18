@@ -86,6 +86,35 @@ screen can reject genuine improvements. All planned games are played.
 Champion selection never changes the training actor or publishes an accepted model.
 Publication remains a separate explicit user decision; see [model storage](model-store.md#approval-operation).
 
+## Numbered schemas and evaluator runtime upgrades
+
+A match may pair schema-4, schema-5 and schema-6 models. Each model's metadata
+selects its own channel names, scalar normalization, geometry and exact-field
+width. Policy version, target format and raster density must agree. Schema-5
+inputs are recovered from Git commit `71f8daf` (not a frozen campaign binary);
+schema-6 inputs remain unchanged. Regression fixtures compare all three schemas
+bit-for-bit against executables compiled from Git history.
+
+The shared evaluator can be upgraded explicitly without resetting the champion,
+ratings, completed trials or SGFs:
+
+```sh
+mise run rate-saved -- --resume --upgrade-runtime PATH/TO/NUMBERED-SCHEMA-BINS \
+  --include-family cg10 --family-evaluation-every 5
+```
+
+The directory must contain `continugo-train`, `features`, `arena` and `rating`.
+An upgrade refuses an outstanding champion evaluation; finish it with its frozen
+runtime first. It backs up evaluator/registry metadata under
+`ratings/runtime-upgrades/`, records old/new executable fingerprints/protocols,
+and preserves all search and match budgets. Existing SGFs keep their recorded
+runtime identities. Ratings refresh validates each SGF against the matching arena
+protocol recorded in the registry's audited upgrade history; unknown arena hashes
+and changed search/match budgets are rejected. The disposable parse cache is keyed
+by that authorized protocol set as well as the file signatures. Repeat the same
+directory safely: an identical upgrade is a no-op (including during a pending trial). Evaluation code must also support the numbered schemas; changing executable
+paths alone is insufficient.
+
 ## Commands and recovery
 
 ```sh
