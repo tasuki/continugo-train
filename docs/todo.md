@@ -4,6 +4,36 @@ This is a living document.
 Remove tasks when implemented.
 Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 
+## Ratings and position accounting
+
+- [ ] Fix ratings and unify positions-versus-games accounting; use positions as
+  the primary unit.
+  - `s`: training samples this particular network has trained on, including
+    repeat exposures (not unique positions).
+  - `d`: cumulative positions generated across the entire training lineage since
+    its initial random setup, monotonically increasing across chained runs.
+    Include all games in that lineage, but not unrelated runs; a fresh random
+    setup starts a separate counter at 0.
+  - Use `d` on the ratings plot's x-axis. Make labels and counters consistent.
+  - Replace the fixed 50% training-window rule with KataGo's formula:
+    `W = min(N, 250_000 + (0.4 * 250_000**0.35 / 0.65) * (max(N, 250_000)**0.65 - 250_000**0.65))`,
+    where `N = d` is the total number of self-play positions in this lineage and
+    `W` is the window size in positions. Select the window first, then split it
+    into training/validation data. Show a sample table for
+    `N = 100, 100_000, 1_000_000, ...` positions, including the 250,000-position
+    threshold.
+
+## Feature planes
+
+- [ ] Investigate feature planes
+- [ ] Add a **last move** feature plane.
+- [ ] Add **komi** as a network input.
+- [ ] Investigate Benson pass-alive speed and feasibility for feature plane.
+
+## Move penalties
+
+- [ ] Investigate a penalty (1 point?) for meaningless moves in own or opponent territory.
+
 ## Later, only for a measured bottleneck
 
 - [ ] Trial a certified no-capture summary fast path in shared rules, reusing
