@@ -7,18 +7,11 @@ use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
 };
 
-#[cfg(test)]
-mod footprint;
 mod raster;
 pub mod schema5;
 pub mod schema6;
 mod spatial;
 mod splitting;
-
-#[cfg(test)]
-mod cache_bench;
-#[cfg(test)]
-mod fine_bench;
 
 use crate::{
     geometry_proposals::{Geometry, GroupGeometry},
@@ -202,8 +195,6 @@ pub struct FeatureExtractor<'a> {
     prepared: PreparedPosition<'a>,
     move_fields: usize,
     splitting: splitting::Cache,
-    #[cfg(test)]
-    footprints: footprint::Cache,
     pub resolution: usize,
     /// Plane-major [planes, H, W]: schemas 4/5 have 12 planes, schema 6 has 14.
     pub coarse: Vec<f32>,
@@ -482,8 +473,6 @@ impl<'a> FeatureExtractor<'a> {
             prepared: game.position().prepare(),
             move_fields: move_features(schema)?.len(),
             splitting: splitting::Cache::default(),
-            #[cfg(test)]
-            footprints: footprint::Cache::default(),
             resolution: 0,
             coarse: Vec::new(),
             geometry: None,
@@ -570,32 +559,13 @@ impl<'a> FeatureExtractor<'a> {
         Ok(result)
     }
 
-    #[cfg(test)]
-    fn moves_footprint(&self, actions: &[Action]) -> Result<MoveFeatures, String> {
-        let mut result = MoveFeatures {
-            exact: vec![0.0; actions.len() * 11],
-            legal: vec![0; actions.len()],
-        };
-        self.fill_moves_impl::<true>(actions, &mut result.exact, &mut result.legal)?;
-        Ok(result)
-    }
-
     fn fill_moves(
         &self,
         actions: &[Action],
         exact: &mut [f32],
         legal: &mut [u8],
     ) -> Result<(), String> {
-        self.fill_moves_impl::<false>(actions, exact, legal)
-    }
-
-    fn fill_moves_impl<const FOOTPRINT: bool>(
-        &self,
-        actions: &[Action],
-        exact: &mut [f32],
-        legal: &mut [u8],
-    ) -> Result<(), String> {
-        let fields = if FOOTPRINT { 11 } else { self.move_fields };
+        let fields = self.move_fields;
         for ((&action, row), legal) in actions
             .iter()
             .zip(exact.chunks_mut(fields))
@@ -623,11 +593,7 @@ impl<'a> FeatureExtractor<'a> {
                     count_feature(analysis.captured_stones),
                 ]);
             } else {
-                let count = if FOOTPRINT {
-                    count_feature
-                } else {
-                    schema45_count_feature
-                };
+                let count = schema45_count_feature;
                 row[..6].copy_from_slice(&[
                     1.0,
                     count(analysis.connected_groups),
@@ -637,26 +603,13 @@ impl<'a> FeatureExtractor<'a> {
                     count(analysis.group_size),
                 ]);
             }
-            if FOOTPRINT || fields == schema5::MOVE_FEATURES.len() || fields == MOVE_FEATURES.len()
-            {
-                if FOOTPRINT {
-                    #[cfg(test)]
-                    {
-                        row[6] = footprint::area(
-                            &self.prepared,
-                            spot,
-                            self.game.board().stone_radius(),
-                            &self.footprints,
-                        );
-                    }
+            if fields == schema5::MOVE_FEATURES.len() || fields == MOVE_FEATURES.len() {
+                let column = if fields == schema5::MOVE_FEATURES.len() {
+                    6
                 } else {
-                    let column = if fields == schema5::MOVE_FEATURES.len() {
-                        6
-                    } else {
-                        4
-                    };
-                    row[column] = self.splitting.value(self.game, spot, &analysis.position);
-                }
+                    4
+                };
+                row[column] = self.splitting.value(self.game, spot, &analysis.position);
             }
         }
         Ok(())

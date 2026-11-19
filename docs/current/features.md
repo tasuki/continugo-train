@@ -109,9 +109,10 @@ move validation, witnesses or capture decisions.
 connections, captures and resulting group size. Binary region splitting uses the
 actual returned child survivors, with the candidate temporarily absent, and an
 exact integer scanline connectivity index in `src/features/splitting.rs`.
-The replaced scalar remains only as a test/benchmark reference in
-`src/features/footprint.rs`; continuous reference/legacy integration lives in
-`src/liberty_area.rs`. No game rules live in Python.
+The replaced local scalar and its obsolete benchmarks have been removed;
+[historical conclusions](../history/2026-11-08-friendly-region-splitting.md) remain.
+Continuous reference/legacy integration lives in `src/liberty_area.rs`.
+No game rules live in Python.
 
 ## Coarse input `[12, H, W]`
 
@@ -297,8 +298,8 @@ intruder captured by the dividing move tests the difference from fixed blockers.
 Serial/parallel feature extraction remains bitwise identical.
 
 The old `local_liberty_footprint_stones_cap3` and earlier draft footprint names
-are no longer accepted in checkpoint/export metadata. Their implementation and
-coverage tests remain test-only historical references. See the
+are no longer accepted in checkpoint/export metadata. Their obsolete implementation
+and coverage tests have been removed; conclusions remain in the
 [replacement benchmark](../history/2026-11-08-friendly-region-splitting.md),
 [old footprint coverage](../history/2026-11-08-footprint-coverage.md) and
 [old cap-three costs](../history/2026-11-08-cap3-footprint.md).

@@ -95,6 +95,62 @@ fn reference(board: Board, stones: &[Stone], spot: Spot, color: Color) -> bool {
     false
 }
 
+fn benchmark_provenance() -> serde_json::Value {
+    use sha2::{Digest, Sha256};
+    use std::{fs, path::Path};
+
+    fn hash_tree(root: &Path) -> String {
+        fn visit(path: &Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, files);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        visit(root, &mut files);
+        files.sort();
+        let mut hash = Sha256::new();
+        for path in files {
+            hash.update(
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .as_bytes(),
+            );
+            hash.update([0]);
+            hash.update(fs::read(path).unwrap());
+            hash.update([0]);
+        }
+        format!("{:x}", hash.finalize())
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let git = |path: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let shared = root.join("../continugo");
+    serde_json::json!({
+        "train_revision":git(root,&["rev-parse","HEAD"]),
+        "train_status":git(root,&["status","--short"]),
+        "train_rust_sha256":hash_tree(&root.join("src")),
+        "shared_revision":git(&shared,&["rev-parse","HEAD"]),
+        "shared_status":git(&shared,&["status","--short"]),
+        "rules_rust_sha256":hash_tree(&shared.join("backend/rules/src")),
+        "cargo_lock_sha256":format!("{:x}",Sha256::digest(fs::read(root.join("Cargo.lock")).unwrap()))
+    })
+}
+
 #[test]
 #[ignore = "release whole-game comparison; set CONTINUGO_SPLIT_SGF and CONTINUGO_SPLIT_OUTPUT"]
 fn benchmark_region_splitting() {
@@ -117,9 +173,6 @@ fn benchmark_region_splitting() {
         .map(|x| x.parse().unwrap())
         .unwrap_or(3);
     assert!(repeats > 0);
-    // Optional ablation: the ten shared fields only, rather than old footprint.
-    let no_feature_baseline =
-        env::var("CONTINUGO_SPLIT_NO_FEATURE_BASELINE").is_ok_and(|v| v == "1");
     let mut totals = vec![[0.0; 2]; repeats];
     let mut positions = Vec::new();
     for ply in 0..info.moves {
@@ -144,17 +197,9 @@ fn benchmark_region_splitting() {
             for step in 0..2 {
                 let mode = (step + repeat + ply) % 2;
                 let tick = Instant::now();
-                let schema = if mode == 0 && no_feature_baseline {
-                    4
-                } else {
-                    SCHEMA_VERSION
-                };
+                let schema = if mode == 0 { 4 } else { SCHEMA_VERSION };
                 let extractor = FeatureExtractor::for_moves(&sample.game, schema).unwrap();
-                let out = if mode == 0 && !no_feature_baseline {
-                    extractor.moves_footprint(&actions).unwrap()
-                } else {
-                    extractor.moves(&actions).unwrap()
-                };
+                let out = extractor.moves(&actions).unwrap();
                 seconds[mode] = tick.elapsed().as_secs_f64();
                 black_box(&out);
                 if mode == 1 {
@@ -183,33 +228,27 @@ fn benchmark_region_splitting() {
             let old = outputs[0].as_ref().unwrap();
             let new = outputs[1].as_ref().unwrap();
             assert_eq!(old.legal, new.legal);
-            let fields = if no_feature_baseline { 10 } else { 11 };
-            let borders = if no_feature_baseline { 6 } else { 7 };
-            for (a, b) in old
-                .exact
-                .chunks_exact(fields)
-                .zip(new.exact.as_chunks::<9>().0)
-            {
+            for (a, b) in old.exact.chunks_exact(10).zip(new.exact.as_chunks::<9>().0) {
                 for i in 0..4 {
-                    let expected = if no_feature_baseline {
-                        let count =
-                            (f64::from(a[i + 1]) * 1_000_001_f64.ln()).exp_m1().round() as usize;
-                        crate::features::count_feature(count)
-                    } else {
-                        a[i + 1]
-                    };
-                    assert_eq!(expected, b[i]);
+                    let count =
+                        (f64::from(a[i + 1]) * 1_000_001_f64.ln()).exp_m1().round() as usize;
+                    assert_eq!(crate::features::count_feature(count), b[i]);
                 }
-                crate::features::cache_bench::bits_equal(&a[borders..], &b[5..]);
+                assert!(
+                    a[6..]
+                        .iter()
+                        .zip(&b[5..])
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
             }
             samples.push(seconds);
         }
         positions.push(json!({"ply":ply,"coordinates":actions.len(),"positive":positive,"index_bytes":memory,"capture_states":capture_states,"seconds":samples}));
     }
     let report = json!({"source":source,"sgf_sha256":format!("{:x}",Sha256::digest(text.as_bytes())),
-        "info":info,"repeats":repeats,"modes":[if no_feature_baseline { "rules_counts_borders_only" } else { "local_footprint" },"friendly_region_splitting"],
+        "info":info,"repeats":repeats,"modes":["rules_counts_borders_only","friendly_region_splitting"],
         "allocator":"release libtest system allocator; serial; full fine extraction including preparation",
-        "provenance":crate::features::cache_bench::provenance(),"totals_seconds":totals,"positions":positions});
+        "provenance":benchmark_provenance(),"totals_seconds":totals,"positions":positions});
     use std::io::Write;
     fs::OpenOptions::new()
         .write(true)

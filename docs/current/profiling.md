@@ -221,88 +221,14 @@ are changed by the benchmark. Keep measured results in dated history notes.
 
 ## Historical footprint audits
 
-The parent/child and shortcut diagnostics below retain the **replaced local
-footprint contract**, not current schema-5 column 6. They explicitly extract the
-test-only old reference. Use the region-splitting comparison for the current
-replacement; coarse inputs are unchanged.
+The obsolete local-footprint scalar and its cache/projection/shortcut diagnostic
+code have been removed. Conclusions and measurements remain in the
+[parent/child investigation](../history/2026-11-08-parent-child-features.md) and
+[fine-feature shortcut results](../history/2026-11-08-fine-shortcuts.md).
+Those measurements used the replaced scalar, not current fine features or native
+search throughput. Current coarse liberty-footprint planes are unaffected.
 
-### Whole-game parent/child feature audit
-
-This opt-in release diagnostic requires a naturally completed, scored SGF with
-current-format genuine policy targets. It extracts the historical footprint
-contract at density four at every pre-move ply, using complete positive-visit target cells. It does
-not run a network/search, change SGFs, or install a production feature cache.
-
-```sh
-OUT="scratch/$(date -u +%Y%m%d-%H%M%S)-parent-child-features"
-mkdir "$OUT"
-CONTINUGO_CACHE_SGF=GAME.sgf CONTINUGO_CACHE_OUTPUT="$OUT/results.json" \
-  cargo test --locked --release --lib \
-  features::cache_bench::profile_parent_child_features -- --ignored --exact
-```
-
-The output file must be new. `CONTINUGO_CACHE_REPEATS` defaults to three ordinary
-whole-game repeats. Replay, cell selection and audit work are outside extraction
-timers. Coarse extraction and the separately prepared fine extractor match
-native inference's preparation lifetime, but use serial release-libtest/system
-allocation, not production mimalloc or concurrent feature workers.
-
-JSON retains source/revision hashes, raw per-ply timings, fine/footprint stage
-decomposition, group/span preservation, conservative blocker-row reuse, physical
-raster equality after colour-channel swaps, and requested-coordinate overlap.
-All instrumented coarse/exact/legality results are checked bitwise against full
-historical-reference extraction. Fine `footprint` stages subdivide `local_footprint`;
-`parent_reusable_footprint` and `ancestor_reusable_footprint` are overlapping
-subsets of it, never extra work. Group-spans and scalar invalidation assertions
-cover every audited edge. Finished children are excluded.
-
-A metadata-only 65,536-slot coordinate cache simulates inherited local-footprint
-values along the played line, invalidating around every added/removed stone.
-The extractor still computes every value and checks cache hits against it.
-Reported reusable computation seconds exclude cache maintenance and are **gross
-opportunity estimates**, not a measured optimization. A played line's target
-cells are not a native search-tree proposal trace. In particular, value-only
-leaves never extract fine rows. Measure bounded memory and controlled end-to-end
-search throughput before retaining a cache. See the
-[initial whole-game investigation](../history/2026-11-08-parent-child-features.md).
-
-### Fine-feature shortcut experiment (historical footprint)
-
-Before adding an inherited cache, compare cheaper within-position extraction:
-
-```sh
-OUT="scratch/$(date -u +%Y%m%d-%H%M%S)-fine-shortcuts"
-mkdir "$OUT"
-CONTINUGO_FINE_SGF=GAME.sgf CONTINUGO_FINE_OUTPUT="$OUT/results.json" \
-  cargo test --locked --release --lib \
-  features::fine_bench::profile_fine_shortcuts -- --ignored --exact
-```
-
-Same scored/current-format source requirements and target-cell selection as the
-parent/child audit. `CONTINUGO_FINE_REPEATS` defaults to three. Four methods rotate
-order per position/repeat: the old reference fine extraction, a test-only
-no-capture summary certificate with authoritative fallback, exact integer
-projection lookup, and both. Each timer includes fresh fine preparation and any
-extra tables/witness preparation. Matrix/legality comparisons are outside timers;
-an untimed ordinary extraction at each position warms code/allocator. No extractor
-cache survives between methods. Output includes all samples/counts and provenance.
-
-This measures complete serial fine extraction over a real game, not a kernel or
-native search throughput. The certificate is diagnostic only: a production rules
-fast path belongs in shared rules, not a parallel validator in this crate.
-For paired component clocks (baseline versus both shortcuts), use the same
-`CONTINUGO_FINE_*` variables and a new output file, replacing the test name with
-`features::fine_bench::profile_fine_shortcut_components`. It records preparation,
-borders, shared rules/counts and nested footprint stages. These instrumented
-seconds differ from ordinary totals; footprint subtotals must not be added to
-the parent footprint stage. All outputs are checked against the old reference.
-
-Projection lookup changes arithmetic implementation, not geometry or schema.
-Neither prototype is installed in production by this test. See the
-[fine-feature results](../history/2026-11-08-fine-shortcuts.md) and measure fixed
-native searches before retaining either optimization.
-
-## Friendly-region splitting versus former footprint
+## Friendly-region splitting cost
 
 ```sh
 OUT="scratch/$(date -u +%Y%m%d-%H%M%S)-region-splitting"
@@ -313,22 +239,21 @@ CONTINUGO_SPLIT_SGF=GAME.sgf CONTINUGO_SPLIT_OUTPUT="$OUT/results.json" \
 ```
 
 Use a completed scored current-format SGF. At every pre-move ply, complete
-positive-visit target cells feed two fresh extractors: test-only former local
-footprint and current binary splitting. `CONTINUGO_SPLIT_REPEATS` defaults to three;
-method order rotates per position/repeat. Timers include all fine extraction,
-full authoritative move analysis and lazy index/capture-cache construction.
-Legality and the ten unchanged fine columns must match bitwise. Splitting is
-checked binary; positive counts and index payloads are reported per position.
+positive-visit target cells feed two fresh move-only extractors: schema-4 rules,
+counts and borders without splitting, and current schema-6 binary splitting.
+`CONTINUGO_SPLIT_REPEATS` defaults to three; method order rotates per
+position/repeat. Timers include full authoritative move analysis and lazy
+index/capture-cache construction, but no coarse extraction.
+Legality must match; shared counts are checked after conversion to schema-6
+normalization, and borders must match bitwise. Splitting is checked binary;
+positive counts and index payloads are reported per position.
 The output file must be new. JSON retains every sample and source provenance.
-Set `CONTINUGO_SPLIT_NO_FEATURE_BASELINE=1` to compare against the ten shared move
-fields alone instead of the old footprint. That ablation uses schema-4 move
-fields (no coarse extraction), preserving identical shared facts, and measures
-the incremental cost of adding the splitting bit, indices and caches.
 
 This is serial release-libtest/system allocation, not production mimalloc, a
-network/MCTS run, or a trained-schema-5 proposal trace. Both methods use the same
-full rules path, not the historical no-capture shortcut. Do not interpret this
-as a measured search-speed or strength improvement. See the
+network/MCTS run, or a trained proposal trace. Both methods use the same full
+rules path. The comparison includes schema-specific field/normalization costs,
+not only the splitting bit. Do not interpret it as a measured search-speed or
+strength improvement. Historical footprint comparison conclusions remain in the
 [replacement results](../history/2026-11-08-friendly-region-splitting.md).
 
 ## Lower-level diagnostics
