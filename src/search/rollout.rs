@@ -117,7 +117,7 @@ pub(super) fn evaluate(
             stats.draws += u64::from(value == 0.0);
             let mut evidence = SearchValue {
                 value: estimate
-                    .utility(score_weight)
+                    .utility(score_weight, game.board().size() as f64)
                     .expect("validated score weight"),
                 jigo_penalty: if jigo { 1.0 - score_weight } else { 0.0 },
             };
@@ -177,7 +177,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
         assert_eq!(
             evaluate(&game, &config(2), 128, 1.0, &mut rng, &mut stats).map(|v| v.value),
-            Some(-1.0)
+            Some(crate::score_utility::score_utility(-1.0, 0.0, 9.0))
         );
         assert_eq!(stats.losses, 4);
         assert_eq!(stats.draws, 0);
@@ -191,7 +191,7 @@ mod tests {
                 &mut stats
             )
             .map(|v| v.value),
-            Some(1.0)
+            Some(crate::score_utility::score_utility(1.0, 0.0, 9.0))
         );
         assert_eq!(stats.wins, 4);
         assert_eq!(
@@ -260,7 +260,10 @@ mod tests {
             .unwrap()
             .pass()
             .unwrap();
-        let expected = -terminal_estimate(&game.pass().unwrap()).0.score;
+        let expected = -terminal_estimate(&game.pass().unwrap())
+            .0
+            .utility(1.0, game.board().size() as f64)
+            .unwrap();
         assert!(expected > 0.0 && expected < 1.0);
         for (weight, expected) in [(1.0, expected), (0.0, 1.0)] {
             let mut stats = RolloutStats::default();

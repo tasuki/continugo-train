@@ -97,7 +97,9 @@ These are choices, with the following formulas and constraints:
   Placement proposals use `q = epsilon*uniform + (1-epsilon)*policy`, with
   `epsilon=0.25`, and importance weights `policy/q`. Their stratum retains the
   full placement probability; pass retains its own mass. `epsilon` must be in `(0,1]`.
-- Search utility: `(1-score_weight)*outcome + score_weight*normalized_score`.
+- Search utility: `(1-score_weight)*outcome + score_weight*E[f(score)]`, where
+  `f(s)=(2/pi)*atan(s/(2/SZ))` and final score is approximated by the predicted
+  Gaussian mean/stdev. Exact terminal scores have stdev zero. No dynamic center.
   The weight is a fraction in `[0,1]`, **not** an additive coefficient. Observed
   terminal jigo is a loss for both sides: outcome `-1`, score `0`; backup retains
   the shared penalty `1-score_weight` rather than turning it into a win by negation.
@@ -256,7 +258,9 @@ after per-game caps. `uniform` bypasses this quota reduction.
 | Ownership targets | Side-to-move signed area fraction per control volume, in `[-1,1]` |
 | Policy target | Actual root visits divided by their sum; cheap positions have policy weight 0 |
 
-The default objective is `policy_CE + outcome_MSE + 0.5*score_MSE + 0.5*ownership_MSE`.
+The default objective is `policy_CE + outcome_MSE + 0.5*score_NLL + 0.5*ownership_MSE`.
+Gaussian score NLL trains both mean and standard deviation; it omits its constant
+and may be negative.
 Policy CE averages only policy-enabled samples; critics average all samples.
 These are **training-loss multipliers**, distinct from search `score_weight=0.5`.
 Per the user's instruction, cg9 remains unchanged at `score_loss_weight=1.0` and
@@ -313,18 +317,20 @@ inputs, are in [features.md](features.md), not duplicated here.
 
 | `NetworkConfig` field | Default |
 |---|---:|
-| `channels` / residual `blocks` | 32 / 4 |
+| `channels` / residual `blocks` | 64 / 8 |
 | `policy_hidden` | 16 |
-| `value_hidden` / `score_hidden` | 32 / 32 |
-| `ownership_hidden` | 16 |
+| `value_hidden` (shared outcome/score) | 32 |
+| `value_channels` (shared spatial value/ownership) | 16 |
 | Exact scorer `chunk_size` | 65,536 coordinates |
 | `top_cells` / `exploration_cells` | 32 / 8 |
 | `value_activation` | `leaky_relu`, slope 0.1; `relu` is supported |
 
 The trunk and each residual convolution use 3×3 kernels, padding 1, no convolution
 bias before BatchNorm. Spatial policy/ownership projections use 1×1 kernels.
-Score and ownership hidden activations also use leaky-ReLU slope 0.1; all three
-critics end in tanh. Fine policy uses ReLU and bilinear sampling with
+Shared value spatial features use leaky-ReLU slope 0.1; outcome, score mean and
+ownership end in tanh. Score standard deviation is sigmoid-mapped to [0.001,1].
+Score training uses Gaussian NLL. Search curves score with `(2/pi)*atan(score/(2/SZ))`,
+integrated over Gaussian uncertainty (zero for authoritative terminal scores). Fine policy uses ReLU and bilinear sampling with
 `align_corners=True`, mapping coordinates by `2*x/999-1`. These architecture
 choices are checkpoint-pinned, not replaced when defaults change.
 

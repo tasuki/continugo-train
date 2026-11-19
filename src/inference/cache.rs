@@ -12,6 +12,7 @@ pub(super) struct Context {
     pub pass: f32,
     pub value: f64,
     pub score: f64,
+    pub score_stdev: f64,
     pub geometry: Option<Arc<crate::geometry_proposals::Geometry>>,
 }
 impl Context {
@@ -91,6 +92,7 @@ mod tests {
             pass: 0.0,
             value: 0.25,
             score: -0.1,
+            score_stdev: 0.2,
             geometry: None,
         })
     }

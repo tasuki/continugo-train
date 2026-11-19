@@ -22,6 +22,9 @@ def summarize(rows):
         "score_mae",
         "score_mse",
         "score_bias",
+        "score_stdev",
+        "score_standardized_mse",
+        "score_one_sigma_coverage",
         "ownership_mse",
         "score_ownership_gap",
     ):
@@ -86,7 +89,9 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
                 sample = client.load(game.path, ply, density=density, file_sha256=game.file_sha256)
                 if sample.outcome is None or sample.score is None or sample.ownership is None:
                     raise ValueError("missing final-game targets")
-                _, _, value, score, owned = model.encode_training(sample.coarse[None].to(device))
+                _, _, value, score, owned, stdev = model.encode_training(
+                    sample.coarse[None].to(device)
+                )
                 truth = sample.ownership.to(device)
                 weights = ownership_weights(game.resolution, device=device)
                 v, s = value.item(), score.item()
@@ -107,6 +112,9 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
                         "outcome": sample.outcome,
                         "outcome_target": target,
                         "score": s,
+                        "score_stdev": stdev.item(),
+                        "score_standardized_mse": ((s - sample.score) / stdev.item()) ** 2,
+                        "score_one_sigma_coverage": float(abs(s - sample.score) <= stdev.item()),
                         "score_target": sample.score,
                         "value_mse": (v - target) ** 2,
                         "score_mae": abs(s - sample.score),

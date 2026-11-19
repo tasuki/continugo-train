@@ -31,6 +31,7 @@ from .features import (
 )
 from .model import NetworkConfig, PolicyValueNet, cell_ids, local_log_probs
 from .train import feature_spec
+from .utility import score_utility
 
 
 def json_safe(value):
@@ -180,6 +181,7 @@ def frame(client, sgf, ply, loaded, info):
     coarse = sample.coarse[None]
     trunk, pooled, spatial, pass_logit, value = model._encode(coarse)
     score = model.score_head(pooled).item()
+    stdev = model.score_stdev(pooled).item()
     ownership = model.ownership_head(trunk)[0, 0].numpy()
     logits = model.coarse_logits(spatial, pass_logit)[0]
     coarse_probs = logits.softmax(0)
@@ -271,12 +273,11 @@ def frame(client, sgf, ply, loaded, info):
                 ),
             ]
         )
-    # These are the actual shared inputs to the value and score MLPs.
+    # Actual shared spatial features and dense representation of both critics.
     output_maps.extend(
         [
-            heatmap("Value & score input: pooled trunk", pooled.numpy(), signed=True),
-            heatmap("Value hidden activation", model.value_head[:2](pooled).numpy(), signed=True),
-            heatmap("Score hidden activation", model.score_head[:2](pooled).numpy(), signed=True),
+            heatmap("Value & score shared hidden", pooled.numpy(), signed=True),
+            heatmap("Value & score spatial RMS", trunk.square().mean(1).sqrt()[0].numpy()),
             heatmap("Policy spatial context RMS", spatial.square().mean(1).sqrt()[0].numpy()),
         ]
     )
@@ -325,11 +326,13 @@ def frame(client, sgf, ply, loaded, info):
         "counterfactual": counterfactual,
         "actor": actor,
         "train_policy": ply in info["policy_training_plies"],
-        "utility": (1 - weight) * value.item() + weight * score,
+        "utility": (1 - weight) * value.item()
+        + weight * score_utility(score, stdev, sample.board_size),
         "score_weight": weight,
         "value": value.item(),
         "points_pct": 50 * (value.item() + 1),
         "score": score,
+        "score_stdev": stdev,
         "score_stones": score * 1_000_000 / (math.pi * (sample.diameter / 2) ** 2),
         "outcome": sample.outcome,
         "score_target": sample.score,
@@ -424,7 +427,7 @@ const action=f.view.action,x=action%1000,y=Math.floor(action/1000);
 $('played').setAttribute('d',action===1000000?'':`M${x-15} ${y}h30 M${x} ${y-15}v30`);
 }
 function show(i){if(!frames.length)return;index=Math.max(0,Math.min(frames.length-1,i));const f=frames[index];$('slider').value=index;$('prev').disabled=!index;$('next').disabled=index===frames.length-1;$('position').textContent=`Move ${f.ply+1} / ${data.moves||frames.length} · view ${index+1}/${frames.length}`;$('turn').textContent=`${f.player?'White':'Black'} to play ${f.move}${f.counterfactual?' · counterfactual NN':''}`;
-$('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points ${fmt(f.points_pct,1)}%`,`Score ${fmt(f.score)} · ${fmt(f.score_stones,1)} stones`,`Head utility ${fmt(f.utility)} (score weight ${f.score_weight})`,`Policy training ${f.train_policy?'enabled':'absent/masked'}`,`Final outcome ${fmt(f.outcome,0)} · score ${fmt(f.score_target)}`,`P(pass) coarse ${fmt(f.coarse_pass,5)} / final ${fmt(f.pass,5)}`,`Search visits ${f.visits} · pass ${f.pass_visits}`,`${f.resolution}² raster · size ${f.board_size} · inputs v${f.feature_schema||4}`,`${f.cells} cells · ${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
+$('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points ${fmt(f.points_pct,1)}%`,`Score ${fmt(f.score)} ± ${fmt(f.score_stdev)} (1σ) · ${fmt(f.score_stones,1)} stones`,`Head utility ${fmt(f.utility)} (score weight ${f.score_weight})`,`Policy training ${f.train_policy?'enabled':'absent/masked'}`,`Final outcome ${fmt(f.outcome,0)} · score ${fmt(f.score_target)}`,`P(pass) coarse ${fmt(f.coarse_pass,5)} / final ${fmt(f.pass,5)}`,`Search visits ${f.visits} · pass ${f.pass_visits}`,`${f.resolution}² raster · size ${f.board_size} · inputs v${f.feature_schema||4}`,`${f.cells} cells · ${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
 $('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,f[name]);
 const features=f.features||data.features,table=$('candidates');table.replaceChildren();let tr=document.createElement('tr');for(const name of ['Action','P(move)','Raw logit','P(move|cell)',...features]){const th=document.createElement('th');th.textContent=name;tr.append(th)}table.append(tr);for(const row of f.candidates){tr=document.createElement('tr');for(const value of [row.action,fmt(row.p,6),fmt(row.logit),fmt(row.local,6),...(row.features||features.map(()=>null)).map(v=>fmt(v))]){const td=document.createElement('td');td.textContent=value;tr.append(td)}table.append(tr)}}
 const skipped=data.skipped||[];if(skipped.length){$('skipped').hidden=false;$('skippedtitle').textContent=`${skipped.length} moves skipped (random or unsupported network)`;for(const s of skipped){const li=document.createElement('li');li.textContent=`Move ${s.ply+1} · ${s.player?'White':'Black'}: ${s.reason}`;$('skiplist').append(li)}}

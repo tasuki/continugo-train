@@ -175,6 +175,7 @@ impl MoveEvaluation {
                     territory::Outcome::Win(color, _) => sign * color_sign(color),
                 },
                 score: sign * normalized_score(areas),
+                score_stdev: 0.0,
             }
         } else if let Some(evaluator) = evaluator {
             let estimate = evaluator.estimate(game)?;
@@ -182,11 +183,12 @@ impl MoveEvaluation {
             LeafEstimate {
                 value: -estimate.value,
                 score: -estimate.score,
+                score_stdev: estimate.score_stdev,
             }
         } else {
             return Ok(Self::default());
         };
-        estimate.utility(0.0)?; // Reject invalid estimates, rather than emitting fake nulls.
+        estimate.utility(0.0, game.board().size() as f64)?; // Reject invalid estimates, rather than emitting fake nulls.
         let stone_area = std::f64::consts::PI * f64::from(game.board().stone_radius()).powi(2);
         let rounded = |value: f64| {
             let value = (value * 10.0).round() / 10.0;
@@ -666,6 +668,7 @@ mod tests {
             Ok(crate::inference::Evaluation {
                 value: self.value,
                 score: self.score,
+                score_stdev: 0.0,
                 logits,
                 legal,
             })
@@ -679,6 +682,7 @@ mod tests {
             Ok(LeafEstimate {
                 value: self.value,
                 score: self.score,
+                score_stdev: 0.0,
             })
         }
     }
@@ -878,6 +882,7 @@ mod tests {
                 Ok(crate::inference::Evaluation {
                     value: 0.0,
                     score: 0.0,
+                    score_stdev: 0.0,
                     logits,
                     legal: vec![0; 1_000_000],
                 })
@@ -1049,6 +1054,7 @@ mod tests {
                 Ok(crate::inference::Evaluation {
                     value: 0.0,
                     score: 0.0,
+                    score_stdev: 0.0,
                     logits,
                     legal: vec![0; 1_000_000],
                 })

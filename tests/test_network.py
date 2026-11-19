@@ -125,7 +125,7 @@ class NetworkTests(unittest.TestCase):
         loss = policy_value_loss(*actual, indices, visits, torch.zeros(2, device="cuda"))
         loss.total.backward()
         for name, parameter in gpu.named_parameters():
-            if name.startswith(("score_head.", "ownership_head.")):
+            if name.startswith(("score_head.", "score_uncertainty.", "ownership_head.")):
                 self.assertIsNone(parameter.grad)  # This test isolates policy/value.
             else:
                 self.assertTrue(torch.isfinite(parameter.grad).all())
@@ -170,7 +170,9 @@ class NetworkTests(unittest.TestCase):
                     "policy_global.weight",
                     "policy_score.weight",
                     "pass_head.weight",
-                    "value_head.2.weight",
+                    "value_head.0.weight",
+                    "value_shared.0.weight",
+                    "value_spatial.0.weight",
                 ]:
                     grad = dict(model.named_parameters())[name].grad
                     self.assertTrue(torch.isfinite(grad).all(), name)
@@ -182,24 +184,24 @@ class NetworkTests(unittest.TestCase):
         config = replace(small_config(), value_activation="relu")
         relu = PolicyValueNet(config).eval()
         with torch.no_grad():
-            relu.value_head[0].weight.fill_(0.01)
-            relu.value_head[0].bias.fill_(-1)
-            relu.value_head[2].weight.fill_(0.1)
-            relu.value_head[2].bias.zero_()
+            relu.value_shared[0].weight.fill_(0.01)
+            relu.value_shared[0].bias.fill_(-1)
+            relu.value_head[0].weight.fill_(0.1)
+            relu.value_head[0].bias.zero_()
         leaky = PolicyValueNet(replace(config, value_activation="leaky_relu")).eval()
         leaky.load_state_dict(relu.state_dict())
-        self.assertEqual(leaky.value_head[1].negative_slope, 0.1)
+        self.assertEqual(leaky.value_shared[1].negative_slope, 0.1)
         self.assertEqual(list(relu.state_dict()), list(leaky.state_dict()))
         args = inputs(config)
         torch.testing.assert_close(relu(*args)[0], leaky(*args)[0], atol=0, rtol=0)
         for model, alive in [(relu, False), (leaky, True)]:
-            pooled = torch.full((2, config.channels), 0.5, requires_grad=True)
-            self.assertTrue((model.value_head[0](pooled) < 0).all())
-            model.value_head(pooled).sum().backward()
+            pooled = torch.full((2, 3 * config.value_channels), 0.5, requires_grad=True)
+            self.assertTrue((model.value_shared[0](pooled) < 0).all())
+            model.value_head(model.value_shared(pooled)).sum().backward()
             for grad in [
                 pooled.grad,
+                model.value_shared[0].weight.grad,
                 model.value_head[0].weight.grad,
-                model.value_head[2].weight.grad,
             ]:
                 self.assertEqual(grad.abs().sum().item() > 0, alive)
         legacy = asdict(config)

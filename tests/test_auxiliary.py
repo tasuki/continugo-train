@@ -41,8 +41,7 @@ class AuxiliaryTests(unittest.TestCase):
                 blocks=1,
                 policy_hidden=4,
                 value_hidden=4,
-                score_hidden=4,
-                ownership_hidden=4,
+                value_channels=4,
             )
         )
 
@@ -85,7 +84,13 @@ class AuxiliaryTests(unittest.TestCase):
         score = torch.tensor([0.8, -0.5])
         owned = torch.stack((torch.ones(n, n), -torch.ones(n, n)))
         loss = joint_loss(
-            *outputs, torch.zeros(2, 1, dtype=torch.int64), torch.ones(2, 1), outcome, score, owned
+            *outputs[:4],
+            torch.zeros(2, 1, dtype=torch.int64),
+            torch.ones(2, 1),
+            outcome,
+            score,
+            owned,
+            score_stdev=outputs[4],
         )
         torch.testing.assert_close(
             loss.total, loss.policy + loss.value + 0.5 * loss.score + 0.5 * loss.ownership
@@ -101,9 +106,10 @@ class AuxiliaryTests(unittest.TestCase):
             self.assertTrue(torch.isfinite(parameter.grad).all(), name)
         for name in (
             "score_head.0.weight",
-            "score_head.2.weight",
+            "score_uncertainty.weight",
+            "value_shared.0.weight",
+            "value_spatial.0.weight",
             "ownership_head.0.weight",
-            "ownership_head.2.weight",
             "trunk.0.weight",
         ):
             self.assertGreater(
@@ -134,6 +140,7 @@ class AuxiliaryTests(unittest.TestCase):
                 outcomes,
                 owned,
                 policy_weights=mask,
+                score_stdev=torch.ones_like(scores),
             )
 
         mixed = loss(torch.tensor([0.0, 1.0]))
@@ -162,7 +169,7 @@ class AuxiliaryTests(unittest.TestCase):
         initial = None
         for _ in range(65):
             optimizer.zero_grad(set_to_none=True)
-            _, _, _, scores, ownership = model.encode_training(coarse)
+            _, _, _, scores, ownership, _ = model.encode_training(coarse)
             loss = (scores - score_target).square().mean() + (
                 ownership - ownership_target
             ).square().mean()
@@ -177,7 +184,7 @@ class AuxiliaryTests(unittest.TestCase):
         actual = model.encode_search(coarse)
         hook.remove()
         self.assertFalse(called)
-        for a, b in zip(expected[:4], actual, strict=True):
+        for a, b in zip((*expected[:4], expected[5]), actual, strict=True):
             torch.testing.assert_close(a, b)
 
     def test_new_target_contract_and_loss_options_are_validated(self):

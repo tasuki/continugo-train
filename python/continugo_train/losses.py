@@ -110,6 +110,7 @@ def joint_loss(
     score_targets,
     ownership_targets,
     *,
+    score_stdev,
     score_weight=0.5,
     ownership_weight=0.5,
     policy_weights=None,
@@ -132,7 +133,15 @@ def joint_loss(
             raise ValueError("auxiliary targets must be finite and in [-1,1]")
     if score_targets.shape != scores.shape:
         raise ValueError("incompatible score target shape")
-    score = F.mse_loss(scores, score_targets)
+    if (
+        score_stdev.shape != scores.shape
+        or not torch.isfinite(score_stdev).all()
+        or (score_stdev <= 0).any()
+    ):
+        raise ValueError("score stdev must be finite, positive and match scores")
+    # Proper Gaussian scoring rule: both mean and uncertainty learn from final
+    # margins. No sign-agreement constraint: P(win) and E[margin] may disagree.
+    score = F.gaussian_nll_loss(scores, score_targets, score_stdev.square(), eps=1e-6)
     weights = ownership_weights(ownership.shape[-1], device=ownership.device)
     owned = ((ownership - ownership_targets).square() * weights).sum(dim=(-2, -1)).mean()
     return AuxiliaryLosses(

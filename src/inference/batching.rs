@@ -113,6 +113,7 @@ fn prepare_requests(
                     Ok(InferenceOutput::Value(LeafEstimate {
                         value: context.value,
                         score: context.score,
+                        score_stdev: context.score_stdev,
                     })),
                 );
             } else {
@@ -277,6 +278,7 @@ impl BatchingWorker {
                     Ok(InferenceOutput::Value(LeafEstimate {
                         value: context.value,
                         score: context.score,
+                        score_stdev: context.score_stdev,
                     })),
                 );
             }

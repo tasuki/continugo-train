@@ -251,8 +251,9 @@ impl Node {
         let value = LeafEstimate {
             value: evaluation.value,
             score: evaluation.score,
+            score_stdev: evaluation.score_stdev,
         }
-        .utility(config.score_weight)?;
+        .utility(config.score_weight, self.game.board().size() as f64)?;
         self.neural = Some(SampledPolicy::new(evaluation, config, rng)?);
         Ok(value)
     }
@@ -284,7 +285,7 @@ impl Node {
                 Some(
                     evaluator
                         .estimate(&self.game)?
-                        .utility(config.score_weight)?
+                        .utility(config.score_weight, self.game.board().size() as f64)?
                         .into(),
                 )
             };
@@ -644,6 +645,7 @@ fn terminal_estimate(game: &Game) -> (LeafEstimate, bool) {
         LeafEstimate {
             value: if outcome == 0.0 { -1.0 } else { sign * outcome },
             score: sign * crate::targets::normalized_score(areas),
+            score_stdev: 0.0,
         },
         outcome == 0.0,
     )
@@ -652,7 +654,9 @@ fn terminal_estimate(game: &Game) -> (LeafEstimate, bool) {
 fn terminal_search_value(game: &Game, weight: f64) -> SearchValue {
     let (estimate, jigo) = terminal_estimate(game);
     SearchValue {
-        value: estimate.utility(weight).expect("valid score weight"),
+        value: estimate
+            .utility(weight, game.board().size() as f64)
+            .expect("valid score weight"),
         jigo_penalty: if jigo { 1.0 - weight } else { 0.0 },
     }
 }
@@ -662,7 +666,7 @@ fn terminal_search_value(game: &Game, weight: f64) -> SearchValue {
 fn terminal_utility(game: &Game, weight: f64) -> f64 {
     terminal_estimate(game)
         .0
-        .utility(weight)
+        .utility(weight, game.board().size() as f64)
         .expect("valid terminal estimate and score weight")
 }
 
@@ -819,7 +823,7 @@ mod tests {
                     &mut RolloutStats::default()
                 )
                 .map(|v| v.value),
-            Some(-1.0)
+            Some(terminal_search_value(&terminal.game, SearchConfig::default().score_weight).value)
         );
         let config = SearchConfig {
             simulations: 32,
@@ -856,6 +860,7 @@ mod tests {
             Ok(Evaluation {
                 value: 0.75,
                 score: 0.0,
+                score_stdev: 0.0,
                 logits,
                 legal,
             })
@@ -893,8 +898,9 @@ mod tests {
         let expected = -LeafEstimate {
             value: 0.75,
             score: 0.0,
+            score_stdev: 0.0,
         }
-        .utility(config.score_weight)
+        .utility(config.score_weight, root.game.board().size() as f64)
         .unwrap();
         assert_eq!(root.value_sum, expected); // +root, -child, -child (side-to-move).
         assert_eq!(evaluator.calls, 3);
@@ -922,7 +928,7 @@ mod tests {
                 )
                 .unwrap()
                 .map(|v| v.value),
-            Some(-1.0)
+            Some(terminal_search_value(&terminal.game, config.score_weight).value)
         );
         assert_eq!(evaluator.calls, 3);
     }
@@ -933,6 +939,7 @@ mod tests {
         let evaluation = Evaluation {
             value: 0.0,
             score: 0.0,
+            score_stdev: 0.0,
             logits: vec![0.0; count + 1],
             legal: vec![1; count],
         };
@@ -999,6 +1006,7 @@ mod tests {
                 legal,
                 value: -0.99,
                 score: 0.0,
+                score_stdev: 0.0,
             })
         }
         fn estimate(&mut self, _: &Game) -> Result<LeafEstimate, String> {
@@ -1009,6 +1017,7 @@ mod tests {
             Ok(LeafEstimate {
                 value: -0.99,
                 score: 0.0,
+                score_stdev: 0.0,
             })
         }
         fn model_id(&self) -> &str {
@@ -1193,8 +1202,9 @@ mod tests {
                     LeafEstimate {
                         value: 1.0,
                         score: 1.0,
+                        score_stdev: 0.0,
                     }
-                    .utility(config.score_weight)
+                    .utility(config.score_weight, game.board().size() as f64)
                     .unwrap()
                     .into(),
                 ));
@@ -1320,55 +1330,68 @@ mod tests {
         let narrow = LeafEstimate {
             value: -1.0,
             score: -0.1,
+            score_stdev: 0.0,
         }
-        .utility(0.3)
+        .utility(0.3, 9.0)
         .unwrap();
         let wide = LeafEstimate {
             value: -1.0,
             score: -0.9,
+            score_stdev: 0.0,
         }
-        .utility(0.3)
+        .utility(0.3, 9.0)
         .unwrap();
         assert!(narrow > wide);
         for value in [-1.0, 0.0, 1.0] {
             for score in [-1.0, 0.0, 1.0] {
-                let estimate = LeafEstimate { value, score };
-                let u = estimate.utility(0.3).unwrap();
+                let estimate = LeafEstimate {
+                    value,
+                    score,
+                    score_stdev: 0.0,
+                };
+                let u = estimate.utility(0.3, 9.0).unwrap();
                 assert!((-1.0..=1.0).contains(&u));
                 assert!(
                     (u + LeafEstimate {
                         value: -value,
-                        score: -score
+                        score: -score,
+                        score_stdev: 0.0,
                     }
-                    .utility(0.3)
+                    .utility(0.3, 9.0)
                     .unwrap())
                     .abs()
                         < 1e-12
                 );
-                assert_eq!(estimate.utility(0.0).unwrap(), value);
-                assert_eq!(estimate.utility(1.0).unwrap(), score);
+                assert_eq!(estimate.utility(0.0, 9.0).unwrap(), value);
+                assert_eq!(
+                    estimate.utility(1.0, 9.0).unwrap(),
+                    crate::score_utility::score_utility(score, 0.0, 9.0)
+                );
             }
         }
         assert!(
             LeafEstimate {
                 value: 0.6,
-                score: -0.1
+                score: -0.1,
+                score_stdev: 0.0,
             }
-            .utility(0.3)
+            .utility(0.3, 9.0)
             .unwrap()
                 < LeafEstimate {
                     value: 0.5,
-                    score: 0.9
+                    score: 0.9,
+                    score_stdev: 0.0,
                 }
-                .utility(0.3)
+                .utility(0.3, 9.0)
                 .unwrap()
         );
         assert!(
             LeafEstimate {
                 value: 0.0,
-                score: f64::NAN
+                score: f64::NAN,
+                score_stdev: 0.0,
             }
-            .utility(0.3)
+            .utility(0.3, 9.0)
             .is_err()
         );
         let config = SearchConfig {
@@ -1414,7 +1437,14 @@ mod tests {
         assert_eq!(terminal_utility(&terminal, 0.0), -1.0);
         let score =
             crate::targets::normalized_score(territory::areas(terminal.position().stones()));
-        assert_eq!(u, color_sign(terminal.on_move()) * score);
+        assert_eq!(
+            u,
+            crate::score_utility::score_utility(
+                color_sign(terminal.on_move()) * score,
+                0.0,
+                terminal.board().size() as f64
+            )
+        );
         let draw = Game::default().pass().unwrap().pass().unwrap();
         assert_eq!(terminal_utility(&draw, 0.3), -0.7);
     }

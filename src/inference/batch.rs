@@ -95,6 +95,7 @@ impl OnnxEvaluator {
                     InferenceOutput::Value(LeafEstimate {
                         value: c.value,
                         score: c.score,
+                        score_stdev: c.score_stdev,
                     })
                 }
             })
@@ -219,6 +220,7 @@ impl OnnxEvaluator {
             let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;
             let (value_shape, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
             let (score_shape, score) = encoded["score"].try_extract_raw_tensor::<f32>()?;
+            let (stdev_shape, stdev) = encoded["score_stdev"].try_extract_raw_tensor::<f32>()?;
             let (cell_shape, cells) = encoded["cells"].try_extract_raw_tensor::<f32>()?;
             let stride = self.metadata.config.policy_hidden * size * size;
             if shape
@@ -235,6 +237,11 @@ impl OnnxEvaluator {
                 || score_shape != [batch as i64]
                 || value.len() != batch
                 || score.len() != batch
+                || stdev_shape != [batch as i64]
+                || stdev.len() != batch
+                || stdev
+                    .iter()
+                    .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
                 || spatial.iter().chain(pass).any(|v| !v.is_finite())
                 || value
                     .iter()
@@ -251,6 +258,7 @@ impl OnnxEvaluator {
                     pass: pass[row],
                     value: f64::from(value[row]),
                     score: f64::from(score[row]),
+                    score_stdev: f64::from(stdev[row]),
                     geometry: geometries[row].take(),
                 });
                 self.stats.cache_evictions +=
@@ -352,6 +360,7 @@ impl OnnxEvaluator {
                 result[i] = Some(Evaluation {
                     value: queries[i].1.value,
                     score: queries[i].1.score,
+                    score_stdev: queries[i].1.score_stdev,
                     // Dense IDs are only the search interface, not dense rules work.
                     logits: vec![f32::NEG_INFINITY; COORDINATE_ACTIONS as usize + 1],
                     legal: vec![0; COORDINATE_ACTIONS as usize],

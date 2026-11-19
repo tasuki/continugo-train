@@ -36,7 +36,7 @@ from .features import (
 )
 from .losses import joint_loss
 from .memory import GpuMemorySampler
-from .model import POLICY_VERSION, NetworkConfig, PolicyValueNet
+from .model import POLICY_VERSION, VALUE_VERSION, NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
 from .progress import data_history, network_name
 from .progress import initialize as initialize_progress
@@ -111,6 +111,7 @@ def feature_spec(density, *, schema=SCHEMA_VERSION):
     return {
         "schema": schema,
         "policy": POLICY_VERSION,
+        "value": VALUE_VERSION,
         "targets": TARGET_VERSION,
         "coarse": list(planes),
         "moves": list(move_features(schema)),
@@ -209,7 +210,8 @@ def run_phase(
     samples = steps = policy_samples = 0
     samples_by_size = Counter()
     totals = [0.0] * 5
-    score_abs = score_bias = consistency = 0.0
+    score_abs = score_bias = consistency = score_squared = 0.0
+    stdev_sum = standardized_squared = within_one_sigma = 0.0
     prediction_sums = torch.zeros(3, dtype=torch.float64)
     prediction_squares = torch.zeros(3, dtype=torch.float64)
     wait = compute = 0.0
@@ -264,8 +266,8 @@ def run_phase(
                 # Same operations as PolicyValueNet.forward_all; synchronization is
                 # diagnostic-only and may change overlap/throughput.
                 with stage("encoder"):
-                    spatial, pass_logit, values, scores, ownership = model.encode_training(
-                        batch.coarse
+                    spatial, pass_logit, values, scores, ownership, score_stdev = (
+                        model.encode_training(batch.coarse)
                     )
                 with stage("scorer"):
                     logits = model.policy(
@@ -273,7 +275,7 @@ def run_phase(
                     )
                 del spatial, pass_logit
             else:
-                logits, values, scores, ownership = model.forward_all(
+                logits, values, scores, ownership, score_stdev = model.forward_all(
                     batch.coarse, batch.exact, batch.actions, batch.legal
                 )
             with stage("loss_backward_optimizer"):
@@ -287,6 +289,7 @@ def run_phase(
                     batch.outcomes,
                     batch.scores,
                     batch.ownership,
+                    score_stdev=score_stdev,
                     score_weight=options.score_loss_weight,
                     ownership_weight=options.ownership_loss_weight,
                     policy_weights=batch.policy_weights,
@@ -314,6 +317,10 @@ def run_phase(
                 error = scores - batch.scores
                 score_abs += error.abs().sum().item()
                 score_bias += error.sum().item()
+                score_squared += error.square().sum().item()
+                stdev_sum += score_stdev.sum().item()
+                standardized_squared += (error / score_stdev).square().sum().item()
+                within_one_sigma += (error.abs() <= score_stdev).sum().item()
                 weights = ownership_weights(ownership.shape[-1], device=device)
                 integrated = (ownership * weights).sum(dim=(-2, -1))
                 consistency += (scores - integrated).abs().sum().item()
@@ -322,7 +329,7 @@ def run_phase(
                 prediction_squares += predictions.square().sum(dim=1)
             samples += count
             steps += 1
-            del batch, cpu_batch, logits, values, scores, ownership, loss
+            del batch, cpu_batch, logits, values, scores, ownership, score_stdev, loss
     if samples == 0:
         raise ValueError("phase produced no training positions")
     elapsed = time.perf_counter() - started
@@ -334,7 +341,11 @@ def run_phase(
         "loss": totals[0] / samples,
         "policy_ce": totals[1] / policy_samples if policy_samples else 0.0,
         "value_mse": totals[2] / samples,
-        "score_mse": totals[3] / samples,
+        "score_nll": totals[3] / samples,
+        "score_mse": score_squared / samples,
+        "score_stdev_mean": stdev_sum / samples,
+        "score_standardized_mse": standardized_squared / samples,
+        "score_one_sigma_coverage": within_one_sigma / samples,
         "ownership_mse": totals[4] / samples,
         "score_mae": score_abs / samples,
         "score_bias": score_bias / samples,
@@ -415,12 +426,13 @@ def parse_args(argv=None):
         "chunk_size",
         "top_cells",
         "exploration_cells",
+        "value_channels",
     ]:
         parser.add_argument("--" + name.replace("_", "-"), type=int)
     parser.add_argument(
         "--value-activation",
         choices=["relu", "leaky_relu"],
-        help="value-head activation (leaky_relu slope 0.1); changing a checkpoint requires --warm-start",
+        help="shared value/score dense activation (leaky_relu slope 0.1); changing a checkpoint requires --warm-start",
     )
     args = parser.parse_args(argv)
     if args.warm_start_optimizer is not None and args.warm_start is None:
@@ -525,6 +537,7 @@ def train(args):
         "chunk_size",
         "top_cells",
         "exploration_cells",
+        "value_channels",
     ]:
         value = getattr(args, name)
         if value is not None:
@@ -706,7 +719,7 @@ def train(args):
                     if progress["samples_seen"] is not None:
                         progress["samples_seen"] += result["samples"]
                 log(
-                    f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} score_mse={result['score_mse']:.6f} ownership_mse={result['ownership_mse']:.6f} score_mae={result['score_mae']:.6f} score_bias={result['score_bias']:.6f} prediction_std={result['prediction_std']} samples={result['samples']} policy_samples={result['policy_samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
+                    f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} score_nll={result['score_nll']:.6f} score_mse={result['score_mse']:.6f} score_stdev_mean={result['score_stdev_mean']:.6f} score_standardized_mse={result['score_standardized_mse']:.6f} score_one_sigma_coverage={result['score_one_sigma_coverage']:.6f} ownership_mse={result['ownership_mse']:.6f} score_mae={result['score_mae']:.6f} score_bias={result['score_bias']:.6f} prediction_std={result['prediction_std']} samples={result['samples']} policy_samples={result['policy_samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
                 )
             improved = metrics["validation"]["loss"] < best
             best = min(best, metrics["validation"]["loss"])

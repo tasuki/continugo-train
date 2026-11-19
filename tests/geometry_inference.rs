@@ -32,6 +32,7 @@ fn geometry_policy_preserves_pass_cache_batching_and_value_only_semantics() {
     assert!(default_rows < full_rows / 2);
     assert_eq!(default.value, baseline.value);
     assert_eq!(default.score, baseline.score);
+    assert_eq!(default.score_stdev, baseline.score_stdev);
     assert!(evaluator.configure_geometry(Some(0)).is_err());
     evaluator.configure_geometry(Some(16)).unwrap();
     assert_eq!(evaluator.stats.cache_entries, 0);

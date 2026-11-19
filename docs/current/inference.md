@@ -50,7 +50,8 @@ cargo run --locked --release -- --engine neural --device cpu --model scratch/mod
 Export atomically publishes two opset-17 graphs as one new directory:
 
 - `encoder.onnx`: coarse inputs → projected spatial context, cell logits, pass
-  logit, outcome value, and normalized expected final score. Ownership remains
+  logit, outcome value, normalized expected final score and score standard deviation
+  (`score_stdev`, in normalized-area units). Ownership remains
   training-only; see [auxiliary supervision](auxiliary.md).
 - `policy.onnx`: context + exact candidate features + per-position int64 IDs `[B,N]` →
   raw placement logits. Batch, spatial, and candidate axes are dynamic.
@@ -63,7 +64,7 @@ include binary `splits_friendly_region`; the user-authorized revision of unused
 schema 5 rejects the former footprint feature metadata. Existing schema-4 score/ownership models keep all twelve
 original point-sampled inputs, selected explicitly from this metadata.
 Re-exporting does not upgrade or truncate a model's inputs. There is no metadata sidecar. Loading rejects incompatible
-metadata or mixed graph pairs; `cells-v1` is required and old dense bundles must
+metadata or mixed graph pairs; `cells-v1` and `shared-gaussian-v1` are required and old bundles must
 be retrained/re-exported. Chunking avoids rerunning the encoder; default
 chunks are 65,536 coordinates. See [features](features.md) for input semantics.
 
@@ -124,15 +125,18 @@ CPU feature extraction and GPU execution alternate without pipelining.
 ## Search semantics
 
 Search defaults to `--score-weight 0.5`, using
-`(1-weight)*outcome + weight*normalized_score`: equal bounded contributions.
-Weight 1 is score-only and 0 outcome-only. This replaces the old relative-weight
-formula; native fingerprints change. Terminal, neural and completed-rollout
+`(1-weight)*outcome + weight*E[(2/pi)*atan(score/(2/SZ))]`: equal bounded
+contributions. Score utility integrates the predicted Gaussian mean/standard
+deviation; authoritative terminal scores have zero uncertainty. This is a static
+zero-centered curve, not dynamic score centering. Weight 1 is curved-score-only
+and 0 outcome-only. Old raw-margin weights need retuning; native fingerprints
+change. See [score utility](auxiliary.md#search-utility). Terminal, neural and completed-rollout
 values share the objective. Known terminal jigos count as a loss for both players;
 search preserves their shared penalty through backups instead of negating it.
 At weight 0.5 an empty-board jigo is -0.5 for each. Ordinary neural leaves retain
 sign-flipping, assuming negligible unobserved draw probability; no network head is
 added. Actual results and ratings still count jigo as a draw.
-Old policy/value-only ONNX graphs are rejected.
+Old independent value/score ONNX graphs are rejected; retrain from scratch.
 
 Neural and unguided `--engine mcts` share PUCT, progressive widening, side-to-move
 backup signs, terminal scoring, and visit-count move sampling. Terminal outcomes

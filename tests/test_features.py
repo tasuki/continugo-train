@@ -176,7 +176,7 @@ class RealFeatureTests(unittest.TestCase):
         self.assertTrue(sample.legal.all())
         model = PolicyValueNet(NetworkConfig(channels=4, blocks=1, policy_hidden=4, value_hidden=8))
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-        logits, values, scores, ownership = model.forward_all(*sample.network_inputs())
+        logits, values, scores, ownership, stdev = model.forward_all(*sample.network_inputs())
         indices, counts = sample.policy_targets()
         loss = joint_loss(
             logits,
@@ -188,6 +188,7 @@ class RealFeatureTests(unittest.TestCase):
             torch.tensor([sample.outcome]),
             torch.tensor([sample.score]),
             sample.ownership[None],
+            score_stdev=stdev,
         )
         loss.total.backward()
         for parameter in model.parameters():

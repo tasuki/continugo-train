@@ -52,8 +52,7 @@ class NnViewerTests(unittest.TestCase):
                 blocks=1,
                 policy_hidden=4,
                 value_hidden=4,
-                score_hidden=4,
-                ownership_hidden=4,
+                value_channels=4,
                 top_cells=2,
             )
         ).eval()
@@ -167,12 +166,18 @@ class NnViewerTests(unittest.TestCase):
         with FeatureClient() as client, torch.inference_mode():
             f = frame(client, self.sgf, 1, loaded, info)
             sample = client.load(self.sgf, 1, cells=[])
-            _, _, value, score, _ = self.model.encode_training(sample.coarse[None])
+            _, _, value, score, _, stdev = self.model.encode_training(sample.coarse[None])
         self.assertAlmostEqual(f["value"], value.item())
         self.assertAlmostEqual(f["score"], score.item())
         self.assertAlmostEqual(f["pass"], f["coarse_pass"] if f["legal"] else 1.0)
         self.assertAlmostEqual(f["policy_mass"], 1.0, places=5)
-        self.assertAlmostEqual(f["utility"], (value.item() + score.item()) / 2)
+        from continugo_train.utility import score_utility
+
+        self.assertAlmostEqual(f["score_stdev"], stdev.item())
+        self.assertAlmostEqual(
+            f["utility"],
+            (value.item() + score_utility(score.item(), stdev.item(), sample.board_size)) / 2,
+        )
         self.assertLessEqual(sum(row["p"] for row in f["candidates"]), 1.00001)
 
     def test_truncation_has_no_fabricated_labels_or_ownership_target(self):
@@ -208,7 +213,7 @@ class NnViewerTests(unittest.TestCase):
     def test_distinct_white_checkpoint_is_used_and_terminal_view_framing_recovers(self):
         black_hash = hashlib.sha256(self.checkpoint.read_bytes()).hexdigest()
         with torch.no_grad():
-            self.model.value_head[2].bias.fill_(0.8)
+            self.model.value_head[0].bias.fill_(0.8)
         white = self.root / "white.pt"
         torch.save(
             {

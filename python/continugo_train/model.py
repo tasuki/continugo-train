@@ -19,6 +19,8 @@ from .features import COARSE_PLANES, MOVE_FEATURES
 COORD_RANGE = 1000
 COORDINATE_ACTIONS = COORD_RANGE**2
 POLICY_VERSION = "cells-v1"
+VALUE_VERSION = "shared-gaussian-v1"
+SCORE_STDEV_FLOOR = 0.001
 
 
 def cell_ids(actions: Tensor, resolution: int) -> Tensor:
@@ -64,8 +66,7 @@ class NetworkConfig:
     blocks: int = 8
     policy_hidden: int = 16
     value_hidden: int = 32
-    score_hidden: int = 32
-    ownership_hidden: int = 16
+    value_channels: int = 16
     chunk_size: int = 65536
     top_cells: int = 32
     exploration_cells: int = 8
@@ -119,33 +120,49 @@ class PolicyValueNet(nn.Module):
         self.policy_exact = nn.Linear(config.move_features, config.policy_hidden, bias=False)
         self.policy_score = nn.Linear(config.policy_hidden, 1)
         self.pass_head = nn.Linear(config.channels, 1)
-        self.value_head = nn.Sequential(
-            nn.Linear(config.channels, config.value_hidden),
+        self.value_spatial = nn.Sequential(
+            nn.Conv2d(config.channels, config.value_channels, 1),
+            nn.LeakyReLU(0.1),
+        )
+        self.value_shared = nn.Sequential(
+            nn.Linear(3 * config.value_channels, config.value_hidden),
             nn.LeakyReLU(negative_slope=0.1)
             if config.value_activation == "leaky_relu"
             else nn.ReLU(),
-            nn.Linear(config.value_hidden, 1),
-            nn.Tanh(),
         )
-
-        self.score_head = nn.Sequential(
-            nn.Linear(config.channels, config.score_hidden),
-            nn.LeakyReLU(0.1),
-            nn.Linear(config.score_hidden, 1),
-            nn.Tanh(),
-        )
-        self.ownership_head = nn.Sequential(
-            nn.Conv2d(config.channels, config.ownership_hidden, 1),
-            nn.LeakyReLU(0.1),
-            nn.Conv2d(config.ownership_hidden, 1, 1),
-            nn.Tanh(),
-        )
+        self.value_head = nn.Sequential(nn.Linear(config.value_hidden, 1), nn.Tanh())
+        self.score_head = nn.Sequential(nn.Linear(config.value_hidden, 1), nn.Tanh())
+        self.score_uncertainty = nn.Linear(config.value_hidden, 1)
+        self.ownership_head = nn.Sequential(nn.Conv2d(config.value_channels, 1, 1), nn.Tanh())
 
     def _encode(self, coarse: Tensor):
         trunk = self.trunk(coarse)
         pooled = trunk.mean(dim=(-2, -1))
         spatial = self.policy_spatial(trunk) + self.policy_global(pooled)[:, :, None, None]
-        return trunk, pooled, spatial, self.pass_head(pooled), self.value_head(pooled).squeeze(-1)
+        value_spatial = self.value_spatial(trunk)
+        # Mean, mean-square and max retain both diffuse and localized evidence.
+        value_pooled = torch.cat(
+            (
+                value_spatial.mean((-2, -1)),
+                value_spatial.square().mean((-2, -1)),
+                value_spatial.amax((-2, -1)),
+            ),
+            dim=1,
+        )
+        shared = self.value_shared(value_pooled)
+        return (
+            value_spatial,
+            shared,
+            spatial,
+            self.pass_head(pooled),
+            self.value_head(shared).squeeze(-1),
+        )
+
+    def score_stdev(self, shared: Tensor) -> Tensor:
+        # Margins are in [-1,1], so their standard deviation cannot exceed 1.
+        return SCORE_STDEV_FLOOR + (1 - SCORE_STDEV_FLOOR) * torch.sigmoid(
+            self.score_uncertainty(shared).squeeze(-1)
+        )
 
     def encode(self, coarse: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         _, _, spatial, pass_logit, value = self._encode(coarse)
@@ -154,7 +171,13 @@ class PolicyValueNet(nn.Module):
     def encode_search(self, coarse: Tensor):
         """Production inference omits the training-only ownership head."""
         _, pooled, spatial, pass_logit, value = self._encode(coarse)
-        return spatial, pass_logit, value, self.score_head(pooled).squeeze(-1)
+        return (
+            spatial,
+            pass_logit,
+            value,
+            self.score_head(pooled).squeeze(-1),
+            self.score_stdev(pooled),
+        )
 
     def encode_training(self, coarse: Tensor):
         trunk, pooled, spatial, pass_logit, value = self._encode(coarse)
@@ -164,15 +187,22 @@ class PolicyValueNet(nn.Module):
             value,
             self.score_head(pooled).squeeze(-1),
             self.ownership_head(trunk).squeeze(1),
+            self.score_stdev(pooled),
         )
 
     def forward_search(self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor):
-        spatial, pass_logit, value, score = self.encode_search(coarse)
-        return self.policy(spatial, pass_logit, exact, actions, legal), value, score
+        spatial, pass_logit, value, score, stdev = self.encode_search(coarse)
+        return self.policy(spatial, pass_logit, exact, actions, legal), value, score, stdev
 
     def forward_all(self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor):
-        spatial, pass_logit, value, score, ownership = self.encode_training(coarse)
-        return self.policy(spatial, pass_logit, exact, actions, legal), value, score, ownership
+        spatial, pass_logit, value, score, ownership, stdev = self.encode_training(coarse)
+        return (
+            self.policy(spatial, pass_logit, exact, actions, legal),
+            value,
+            score,
+            ownership,
+            stdev,
+        )
 
     def coarse_logits(self, spatial: Tensor, pass_logit: Tensor) -> Tensor:
         return torch.cat((self.cell_head(spatial).flatten(1), pass_logit), dim=1)

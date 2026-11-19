@@ -1,10 +1,11 @@
 # Final score and ownership supervision
 
-The network jointly trains policy, win/loss/draw outcome, final score and final
-ownership. This implementation requires **fresh training**: old policy/value-only
-checkpoints, exports, feature packets and loop control files are incompatible.
-No migration or historical campaign rewrite is performed. Source SGFs remain
-usable after ordinary authoritative validation.
+The network jointly trains policy, win/loss/draw outcome, final score mean and
+uncertainty, and final ownership. The value architecture is **`shared-gaussian-v1`**;
+previous scalar-only score checkpoints/exports are incompatible. Start from scratch.
+Validated SGFs and their final-area targets/feature packets remain usable.
+No checkpoint migration or historical campaign rewrite is performed; do not
+resume old loop control files with the new model/runtime.
 
 ## Labels and resolution
 
@@ -42,16 +43,25 @@ Schema-4 inference and schema-5 checkpoint/ONNX feature metadata both require
 
 ## Heads and objective
 
-- Outcome: globally pooled trunk → existing hidden layer → tanh. Fresh models
-  default to **leaky-ReLU, slope 0.1**, avoiding the old inactive-ReLU failure.
-- Score: pooled trunk → 32 hidden units, leaky-ReLU → scalar/tanh. Predicts
-  expected normalized final margin in [-1,1].
-- Ownership: spatial trunk → 16 channels, leaky-ReLU → one channel/tanh. Predicts
-  expected final signed ownership fractions. It is supervision only, never a
-  legality mask, life/death rule, pass proof or handcrafted search reward.
+- Shared spatial features: trunk → 1×1 projection to **16 channels** → leaky-ReLU.
+  Concatenate spatial mean, mean-square and maximum; **48 → 32** dense units plus
+  leaky-ReLU form the shared outcome/score representation. Configure these widths
+  with `--value-channels` and `--value-hidden`.
+- Outcome: shared representation → scalar/tanh.
+- Score mean: shared representation → scalar/tanh, in normalized final-margin units.
+- Score standard deviation: shared representation → scalar, mapped by sigmoid to
+  **[0.001, 1]**, in the same units as the score mean. It models conditional final-score
+  variability, not epistemic uncertainty or a full multimodal score distribution.
+- Ownership: shared spatial features → one channel/tanh. Predicts expected final
+  signed ownership fractions. It is supervision only, never a legality mask,
+  life/death rule, pass proof or handcrafted search reward.
+
+Outcome and score signs are not forced to agree: being likely to win narrowly can
+coexist with a negative expected margin because of occasional large losses.
 
 ```
-loss = policy_CE + outcome_MSE + 0.5*score_MSE + 0.5*ownership_MSE
+score_NLL = mean(log(sigma) + 0.5*((final_margin - score_mean)/sigma)**2)
+loss = policy_CE + outcome_MSE + 0.5*score_NLL + 0.5*ownership_MSE
 ```
 
 `--score-loss-weight` and `--ownership-loss-weight` configure the last two factors
@@ -60,6 +70,8 @@ Per the user's instruction, cg9 keeps its inherited score coefficient **1.0** an
 ownership coefficient **0.25**. For identical errors, cg9 gives score loss twice
 and ownership loss half the influence of the new defaults. These ratios describe
 the individual loss terms and their gradients, not the total loss/gradient.
+The score coefficient now weights Gaussian NLL rather than MSE, so inherited
+coefficients are not directly comparable. NLL omits its constant and may be negative.
 Targets and predictions keep the same normalized scale. This is independent of
 search's `score_weight=0.5` below; raw loss scales and shared-trunk gradient
 interactions matter, so no coefficient is automatically better.
@@ -67,23 +79,32 @@ interactions matter, so no coefficient is automatically better.
 Ownership MSE is weighted by physical cell
 area within each position and then averaged across positions. Report raw losses
 separately; the logged total includes the configured factors. Saved metrics also
-include score MAE/bias, score-versus-integrated-ownership discrepancy and prediction
-spread. Best validation loss is not a strength rating.
+include score NLL/MSE/MAE/bias, mean predicted standard deviation, standardized
+squared residuals, one-sigma coverage, score-versus-integrated-ownership discrepancy
+and prediction spread. Training diagnostics use training games; validation is
+inference-only, never optimizer input. Under a calibrated Gaussian, standardized
+MSE is approximately 1 and one-sigma coverage approximately 68%; non-Gaussian
+score distributions can depart from the latter. Best validation loss is not a
+strength rating.
 
 Production ONNX exports include the score scalar but **omit ownership**. Full
 policy and cheap value-only native requests both return outcome and score;
-context caching and cross-game batching retain both. Eager training diagnostics
+context caching and cross-game batching retain outcome, score mean and standard
+deviation. Eager training diagnostics
 can inspect ownership without adding a dense output to every MCTS leaf.
 
 ## Search utility
 
 ```
-utility = (1 - score_weight)*outcome + score_weight*normalized_score
-score_weight = 0.5  # default: equal outcome/score; 1 = score only, 0 = outcome only
+scale = 2 / board_size
+f(margin) = (2/pi) * atan(margin / scale)
+score_utility = E[f(S)], S ~ Normal(score_mean, score_stdev**2)
+utility = (1 - score_weight)*outcome + score_weight*score_utility
+score_weight = 0.5  # default; 1 = curved score only, 0 = outcome only
 ```
 
 Outcome is `P(win)-P(loss)`, with draws contributing zero, not raw win probability.
-At the default, both bounded head estimates contribute equally. Displayed win
+At the default, outcome and expected bounded score utility contribute equally. Displayed win
 percentage is an affine transform of outcome, not a number directly averaged with
 raw SGF points. Neural leaves, root initialization, completed rollouts and exact
 terminal backups share this utility and side-to-move sign flips.
@@ -94,15 +115,20 @@ with placements. A first pass does not assume a cooperative reply. Higher utilit
 can justify continuing despite an available guaranteed win; passing can still be
 best when continuation is worse. Truncated playouts remain unknown.
 
-Weights must be finite and in [0,1]. This is a **linear fraction**, not the old
-relative-weight formula (where 1 still meant a 50/50 blend). Changed native
-fingerprints isolate protocols; do not resume old frozen campaigns with this
-implementation. Search weights are separate from training loss weights.
+Weights must be finite and in [0,1]. The weight is still a linear blend, but the
+score contribution is now nonlinear and uncertainty-aware. Retune old weights;
+`0.5` is not equivalent to the old raw-margin `0.5` or KataGo's coefficients.
+Search weights are separate from training loss weights. Changed native
+fingerprints isolate protocols; do not resume old frozen campaigns.
 
-A bounded score term can still trade winning chances for margin. KataGo's
-standard factors (1.0 outcome, 0.1 static score, 0.3 dynamic score) use different,
-nonlinear score transforms and are not directly equivalent to this simpler mix.
-No dynamic centering or score-distribution head is implemented.
+The static curve is centered at zero, with diminishing returns for large margins.
+Scale is **2 / board_size in normalized area**, equivalent to two square roots of
+board area when measuring area in `board_size²` point-equivalents; it is unrelated
+to feature-raster resolution. Numerical Gaussian integration uses paired Simpson
+quadrature on [-8,8] standard deviations, 256 intervals. Exact terminal scores
+have sigma zero and use the curve directly. Raw displayed score stays the expected
+margin, not utility. A bounded score term can still trade win probability for margin.
+No dynamic centering, score-distribution head, or sign-agreement penalty is implemented.
 
 ## Diagnostics before a large fresh run
 

@@ -42,6 +42,7 @@ impl InferenceDevice {
 pub struct Evaluation {
     pub value: f64,
     pub score: f64,
+    pub score_stdev: f64,
     /// Inference log probabilities in action-ID order, pass at 1,000,000.
     /// Unselected/illegal coordinates are -inf. Selected nonempty cells share
     /// the full placement mass, preserving the global coarse P(pass).
@@ -56,12 +57,19 @@ pub struct Evaluation {
 pub struct LeafEstimate {
     pub value: f64,
     pub score: f64,
+    pub score_stdev: f64,
 }
 
 impl LeafEstimate {
-    pub fn utility(self, weight: f64) -> Result<f64, String> {
+    pub fn utility(self, weight: f64, board_size: f64) -> Result<f64, String> {
         if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
             return Err("score weight must be finite and in [0,1]".into());
+        }
+        if !board_size.is_finite() || board_size <= 0.0 {
+            return Err("board size must be finite and positive".into());
+        }
+        if !self.score_stdev.is_finite() || !(0.0..=1.0).contains(&self.score_stdev) {
+            return Err("score standard deviation must be finite and in [0,1]".into());
         }
         if [self.value, self.score]
             .iter()
@@ -72,7 +80,12 @@ impl LeafEstimate {
                 self.value, self.score
             ));
         }
-        Ok((1.0 - weight) * self.value + weight * self.score)
+        if weight == 0.0 {
+            return Ok(self.value);
+        }
+        Ok((1.0 - weight) * self.value
+            + weight
+                * crate::score_utility::score_utility(self.score, self.score_stdev, board_size))
     }
 }
 
@@ -81,16 +94,29 @@ mod utility_tests {
     use super::*;
 
     #[test]
-    fn score_weight_is_a_linear_fraction_with_equal_weight_at_half() {
+    fn blends_outcome_with_expected_curved_score_and_validates_uncertainty() {
         let estimate = LeafEstimate {
             value: 0.8,
             score: -0.2,
+            score_stdev: 0.3,
         };
-        assert!((estimate.utility(0.5).unwrap() - 0.3).abs() < 1e-12);
-        assert_eq!(estimate.utility(1.0).unwrap(), estimate.score);
-        assert_eq!(estimate.utility(0.0).unwrap(), estimate.value);
+        let score = crate::score_utility::score_utility(-0.2, 0.3, 9.0);
+        assert!((estimate.utility(0.5, 9.0).unwrap() - (0.4 + 0.5 * score)).abs() < 1e-12);
+        assert_eq!(estimate.utility(1.0, 9.0).unwrap(), score);
+        assert_eq!(estimate.utility(0.0, 9.0).unwrap(), estimate.value);
         for invalid in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
-            assert!(estimate.utility(invalid).is_err());
+            assert!(estimate.utility(invalid, 9.0).is_err());
+            assert!(
+                LeafEstimate {
+                    score_stdev: invalid,
+                    ..estimate
+                }
+                .utility(0.5, 9.0)
+                .is_err()
+            );
+        }
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(estimate.utility(0.5, invalid).is_err());
         }
     }
 }
@@ -111,6 +137,7 @@ pub trait Evaluator {
         Ok(LeafEstimate {
             value: evaluation.value,
             score: evaluation.score,
+            score_stdev: evaluation.score_stdev,
         })
     }
     fn value(&mut self, game: &Game) -> Result<f64, String> {
@@ -122,6 +149,7 @@ pub trait Evaluator {
 struct FeatureSpec {
     schema: u32,
     policy: String,
+    value: String,
     targets: String,
     coarse: Vec<String>,
     moves: Vec<String>,
@@ -377,7 +405,8 @@ impl OnnxEvaluator {
         })?;
         let spec = &metadata.feature_spec;
         let planes = coarse_planes(spec.schema)?;
-        if spec.policy != "cells-v1"
+        if spec.value != "shared-gaussian-v1"
+            || spec.policy != "cells-v1"
             || spec.coarse != planes
             || spec.moves != move_features(spec.schema)?
             || spec.samples_per_diameter == 0

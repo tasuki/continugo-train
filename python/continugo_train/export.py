@@ -30,8 +30,8 @@ class Encoder(nn.Module):
         self.model = model
 
     def forward(self, coarse):
-        spatial, pass_logit, value, score = self.model.encode_search(coarse)
-        return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1), score
+        spatial, pass_logit, value, score, stdev = self.model.encode_search(coarse)
+        return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1), score, stdev
 
 
 class Scorer(nn.Module):
@@ -65,12 +65,16 @@ def _assert_parity(output, reference, *, spatial=False, logits=False):
     atol = 1e-4 if logits else (5e-4 if spatial else 1e-5)
     np.testing.assert_allclose(output, reference, rtol=1e-4, atol=atol, equal_nan=False)
     if logits:
+
         def probabilities(values):
             weights = np.exp(values - values.max(axis=-1, keepdims=True))
             return weights / weights.sum(axis=-1, keepdims=True)
 
         np.testing.assert_allclose(
-            probabilities(output), probabilities(reference), rtol=1e-4, atol=1e-5,
+            probabilities(output),
+            probabilities(reference),
+            rtol=1e-4,
+            atol=1e-5,
             equal_nan=False,
         )
 
@@ -98,13 +102,14 @@ def verify(model, directory):
             exact = torch.rand(batch, count, model.config.move_features, generator=rng)
             actions = torch.randint(1000000, (batch, count), generator=rng)
             actions[:, :6] = torch.tensor([0, 999, 1000, 999999, 500500, 500501])
-            spatial, pass_logit, value, score = model.encode_search(coarse)
+            spatial, pass_logit, value, score, stdev = model.encode_search(coarse)
             expected = [
                 spatial,
                 pass_logit,
                 value,
                 model.cell_head(spatial).flatten(1),
                 score,
+                stdev,
                 model.score_chunk(spatial, exact, actions),
             ]
             actual = encoder.run(None, {"coarse": coarse.numpy()})
@@ -113,7 +118,7 @@ def verify(model, directory):
             )
             for index, (reference, output) in enumerate(zip(expected, actual, strict=True)):
                 _assert_parity(
-                    output, reference.numpy(), spatial=index == 0, logits=index in (1, 3, 5)
+                    output, reference.numpy(), spatial=index == 0, logits=index in (1, 3, 6)
                 )
                 maximum = max(maximum, float(np.max(np.abs(output - reference.numpy()))))
     return maximum
@@ -161,13 +166,14 @@ def export_checkpoint(checkpoint, output):
                 (coarse,),
                 str(directory / "encoder.onnx"),
                 input_names=["coarse"],
-                output_names=["spatial", "pass_logit", "value", "cells", "score"],
+                output_names=["spatial", "pass_logit", "value", "cells", "score", "score_stdev"],
                 dynamic_axes={
                     "coarse": {0: "batch", 2: "height", 3: "width"},
                     "spatial": {0: "batch", 2: "height", 3: "width"},
                     "pass_logit": {0: "batch"},
                     "value": {0: "batch"},
                     "score": {0: "batch"},
+                    "score_stdev": {0: "batch"},
                     "cells": {0: "batch", 1: "cells"},
                 },
                 opset_version=17,

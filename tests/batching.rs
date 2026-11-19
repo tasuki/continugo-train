@@ -70,6 +70,8 @@ fn native_batch_parity_and_worker_lifecycle() {
         close(value.value, expected.value);
         close(value.score, expected.score);
         close(actual.score, expected.score);
+        close(value.score_stdev, expected.score_stdev);
+        close(actual.score_stdev, expected.score_stdev);
         assert_eq!(actual.legal, expected.legal);
         assert_eq!(actual.logits.len(), 1_000_001);
         for (&a, &b) in actual.logits.iter().zip(&expected.logits) {
@@ -244,6 +246,7 @@ fn native_batch_parity_and_worker_lifecycle() {
             let actual = handle.join().unwrap();
             close(actual.value, singles[0].value);
             close(actual.score, singles[0].score);
+            close(actual.score_stdev, singles[0].score_stdev);
         }
         worker.join().unwrap()
     });

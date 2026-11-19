@@ -1,9 +1,11 @@
 # Offline policy/value training
 
 This is a real SGF → Rust features → PyTorch training job, without ONNX.
-It now trains final score and ownership alongside policy/outcome; see
+It trains final score mean/uncertainty and ownership alongside policy/outcome, with
+shared value/score features (`shared-gaussian-v1`); see
 [auxiliary supervision](auxiliary.md). Start **from scratch**: old policy/value-only
-checkpoints are incompatible and have no migration path. It learns
+checkpoints and previous independent value/score checkpoints are incompatible and
+have no migration path. It learns
 from saved MCTS games; this command does **not** generate self-play or establish
 playing strength. Use the separate [native neural self-play command](inference.md)
 after exporting a checkpoint. Training loss and checkpoint selection are not
@@ -44,8 +46,8 @@ Explicit output paths remain literal; resume defaults to its checkpoint's existi
 directory rather than allocating a new one. `--device auto` chooses CUDA when available,
 otherwise CPU; `--device cpu` forces CPU. Inspect options with
 `mise run train -- --help`. Architecture options include `--channels`, `--blocks`, `--policy-hidden`,
-`--value-hidden`, and `--chunk-size`. Defaults are the existing 32-channel/4-block
-network, FP32 eager mode, SGD lr 0.01 / momentum 0.9 / weight decay 1e-4, gradient
+`--value-channels`, `--value-hidden`, and `--chunk-size`. Defaults are the 64-channel/8-block
+network with 16 shared value spatial channels and 32 shared dense units, FP32 eager mode, SGD lr 0.01 / momentum 0.9 / weight decay 1e-4, gradient
 norm clipping at 5, batch size 64, and six feature workers. Execution is FP32 eager;
 memory use depends on batch size, feature buffers, and resolution. `--workers`
 remains configurable; checkpoint-based runs retain saved worker settings unless

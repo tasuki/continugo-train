@@ -11,20 +11,24 @@ schema-6 training starts fresh. See the [schema-6 feature contract](features.md#
 
 `PolicyValueNet` defaults to 64 channels and eight BatchNorm/ReLU residual blocks.
 One set of weights handles multiple spatial resolutions; batches group matching
-resolutions. The value head globally pools the trunk and predicts side-to-move
-outcome in [-1,1]. Pass also uses global pooling.
+resolutions. A shared value/score branch projects the trunk to 16 spatial channels
+with leaky-ReLU, concatenates spatial mean/mean-square/max, and maps 48 pooled
+features to 32 hidden units. Separate scalar outputs predict side-to-move outcome,
+score mean and score standard deviation. Ownership projects the shared spatial
+features to one channel. Pass independently uses global trunk pooling.
 
-The value head is linear → activation → linear → tanh. Its checkpoint setting
+The shared dense layer uses linear → activation; outcome and score mean use
+linear → tanh. Its checkpoint setting
 `value_activation` is `relu` or `leaky_relu` (fixed negative slope **0.1**).
-Fresh models default to `leaky_relu`. Policy/value-only checkpoints from before
-the auxiliary-head contract are not supported; start fresh training.
+Fresh models default to `leaky_relu`. The `shared-gaussian-v1` architecture requires fresh training; earlier independent
+value/score checkpoints are not supported.
 A parameter-free activation change is supported by an explicit training
 warm-start, preserving all weights and optionally SGD momentum; strict resume
 cannot change it. It does not change the policy head, feature schema or parameter
 shapes. Activation choice is recorded in checkpoint and ONNX metadata.
 
 The network also predicts **final score and ownership** using authoritative
-completed-game targets. Score is a pooled scalar; ownership has the coarse raster
+completed-game targets. Score predicts a mean and uncertainty; ownership has the coarse raster
 resolution and is training-only. See [auxiliary supervision](auxiliary.md) for
 labels, losses, search utility and diagnostics.
 
@@ -56,9 +60,10 @@ area integration or raster dilation. This is a learned geometric input, not an
 explicit eye reward or proof of life. Exact features are never interpolated. Pass is always
 available. Legacy schema-4 models retain ten exact features.
 
-With default widths and schema-6 inputs, the network has **607,654 trainable
-parameters**: trunk 600,064; policy branches including pass 2,307; outcome 2,113;
-score 2,113; ownership 1,057.
+With default widths and schema-6 inputs, the network has **605,095 trainable
+parameters**: trunk 600,064; policy branches including pass 2,307; shared value
+spatial/dense branch 2,608; outcome/score mean/score stdev outputs 33 each;
+ownership 17.
 Region indices are shared within a position; exact captured-survivor indices use
 a bounded cache. See the [feature definition](features.md#binary-splitting-predicate)
 and [replacement costs](../history/2026-11-08-friendly-region-splitting.md).
@@ -100,8 +105,8 @@ Training uses genuine sparse MCTS visit counts and natural game outcomes:
 - Value MSE has equal configured weight to total coarse-plus-local policy CE.
   Randomized-budget SGFs mask cheap positions out of policy CE only, normalizing
   over enabled positions per batch (zero when none). Value uses all sampled
-  positions; score MSE and area-weighted ownership MSE do too, each with weight
-  0.25 by default. See [loop budgets](loop.md#randomized-policy-search-budget).
+  positions; Gaussian score NLL and area-weighted ownership MSE do too, each with
+  weight 0.5 by default. See [loop budgets](loop.md#randomized-policy-search-budget).
 
 `joint_loss` adds the auxiliary terms to `hierarchical_policy_value_loss`, which
 implements this factorized proposal objective.
@@ -118,7 +123,8 @@ estimating their partition function. Coverage and playing strength require valid
 
 ## Format and benchmarks
 
-Checkpoint and ONNX metadata require policy version **`cells-v1`**. The old dense
+Checkpoint and ONNX metadata require policy version **`cells-v1`** and value
+version **`shared-gaussian-v1`**. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. New training uses feature
 schema 6 with fourteen coarse planes: antialiased occupancy, connected group

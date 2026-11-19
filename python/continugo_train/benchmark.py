@@ -140,8 +140,8 @@ def main() -> None:
             spatial, pass_logit, _ = model.encode(coarse)
 
             def encode():
-                context, pass_score, value, score = model.encode_search(coarse)
-                return context, pass_score, value, score, model.cell_head(context)
+                context, pass_score, value, score, stdev = model.encode_search(coarse)
+                return context, pass_score, value, score, stdev, model.cell_head(context)
 
             measure(encode, diameter, resolution, batch, "coarse_infer", count)
             measure(
@@ -180,7 +180,7 @@ def main() -> None:
 
         def full_step() -> None:
             optimizer.zero_grad(set_to_none=True)
-            logits, values, scores, owned = model.forward_all(coarse, exact, actions, legal)
+            logits, values, scores, owned, stdev = model.forward_all(coarse, exact, actions, legal)
             losses = joint_loss(
                 logits,
                 values,
@@ -191,6 +191,7 @@ def main() -> None:
                 outcomes,
                 outcomes,
                 torch.zeros_like(owned),
+                score_stdev=stdev,
             )
             if not torch.isfinite(losses.total):
                 raise RuntimeError("nonfinite training loss")

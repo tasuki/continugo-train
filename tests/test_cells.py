@@ -138,7 +138,7 @@ class CellPolicyTests(unittest.TestCase):
 
         def loss(samples):
             batch = collate(samples)
-            logits, values, scores, ownership = self.model.forward_all(
+            logits, values, scores, ownership, stdev = self.model.forward_all(
                 batch.coarse, batch.exact, batch.actions, batch.legal
             )
             return joint_loss(
@@ -151,6 +151,7 @@ class CellPolicyTests(unittest.TestCase):
                 batch.outcomes,
                 batch.scores,
                 batch.ownership,
+                score_stdev=stdev,
             )
 
         combined = loss([first, second])

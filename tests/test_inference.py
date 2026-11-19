@@ -332,7 +332,7 @@ class NativeInferenceTests(unittest.TestCase):
                 actions += legal[[0, legal.numel() // 2, -1]].tolist()
             with torch.inference_mode():
                 logits, value = self.model(*sample.network_inputs())
-                spatial, pass_logit, _, score = self.model.encode_search(sample.coarse[None])
+                spatial, pass_logit, _, score, stdev = self.model.encode_search(sample.coarse[None])
                 coarse_logp = self.model.coarse_logits(spatial, pass_logit).log_softmax(dim=1)
                 # Native inference preserves the global placement/pass strata,
                 # then conditions only the placement distribution on legal cells.
@@ -349,6 +349,7 @@ class NativeInferenceTests(unittest.TestCase):
             )
             self.assertAlmostEqual(result["value"], value.item(), places=5)
             self.assertAlmostEqual(result["score"], score.item(), places=5)
+            self.assertAlmostEqual(result["score_stdev"], stdev.item(), places=5)
             value_only = self.infer(source, actions, value_only=True)
             self.assertEqual(value_only.returncode, 0, value_only.stderr)
             self.assertAlmostEqual(
@@ -356,6 +357,9 @@ class NativeInferenceTests(unittest.TestCase):
             )
             self.assertAlmostEqual(
                 json.loads(value_only.stdout)["score"], result["score"], places=7
+            )
+            self.assertAlmostEqual(
+                json.loads(value_only.stdout)["score_stdev"], result["score_stdev"], places=7
             )
             self.assertIn("calls: 0, value_calls: 1", value_only.stderr)
             for action, actual in zip(actions, result["logits"], strict=True):
@@ -395,7 +399,7 @@ class NativeInferenceTests(unittest.TestCase):
             sample = load_position(source, 1, actions=[500500], feature_schema=schema)
             self.assertEqual(sample.coarse.shape[0], 12)
             with torch.inference_mode():
-                _, _, value, score = model.encode_search(sample.coarse[None])
+                _, _, value, score, _ = model.encode_search(sample.coarse[None])
             native = self.infer(source, [500500, 1000000], model=bundle)
             self.assertEqual(native.returncode, 0, native.stderr)
             result = json.loads(native.stdout)
@@ -413,10 +417,10 @@ class NativeInferenceTests(unittest.TestCase):
         model = PolicyValueNet(replace(self.model.config, value_activation="leaky_relu")).eval()
         model.load_state_dict(self.model.state_dict())
         with torch.no_grad():
-            model.value_head[0].weight.fill_(0.01)
-            model.value_head[0].bias.fill_(-1)
-            model.value_head[2].weight.fill_(0.1)
-            model.value_head[2].bias.zero_()
+            model.value_shared[0].weight.fill_(0.001)
+            model.value_shared[0].bias.fill_(-1)
+            model.value_head[0].weight.fill_(0.1)
+            model.value_head[0].bias.zero_()
         checkpoint = self.root / "leaky.pt"
         torch.save(
             {
@@ -464,7 +468,13 @@ class NativeInferenceTests(unittest.TestCase):
             self.assertEqual(a["visits"], b["visits"])
             self.assertEqual(a["best"], b["best"])
             self.assertEqual(sum(v["visits"] for v in a["visits"]), 8)
-            self.assertAlmostEqual(a["utility"], (1 - weight) * a["value"] + weight * a["score"])
+            from continugo_train.utility import score_utility
+
+            self.assertAlmostEqual(
+                a["utility"],
+                (1 - weight) * a["value"]
+                + weight * score_utility(a["score"], a["score_stdev"], 13),
+            )
             self.assertAlmostEqual(
                 a["eye_fill_visit_fraction"],
                 sum(v["visits"] for v in a["visits"] if v["eye_fill"]) / 8,
