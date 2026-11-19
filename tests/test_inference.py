@@ -38,7 +38,14 @@ class NativeInferenceTests(unittest.TestCase):
         cls.addClassCleanup(cls.directory.cleanup)
         cls.root = Path(cls.directory.name)
         cls.model = PolicyValueNet(
-            NetworkConfig(channels=4, blocks=1, policy_hidden=4, value_hidden=4)
+            NetworkConfig(
+                channels=4,
+                blocks=1,
+                policy_hidden=4,
+                value_hidden=4,
+                gpool_every=1,
+                gpool_channels=2,
+            )
         ).eval()
         cls.checkpoint = cls.root / "checkpoint.pt"
         torch.save(

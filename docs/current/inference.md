@@ -64,7 +64,8 @@ include binary `splits_friendly_region`; the user-authorized revision of unused
 schema 5 rejects the former footprint feature metadata. Existing schema-4 score/ownership models keep all twelve
 original point-sampled inputs, selected explicitly from this metadata.
 Re-exporting does not upgrade or truncate a model's inputs. There is no metadata sidecar. Loading rejects incompatible
-metadata or mixed graph pairs; `cells-v1` and `shared-gaussian-v1` are required and old bundles must
+metadata or mixed graph pairs; `cells-v1`, `shared-gaussian-v1`, and
+`global-pooling-v1` are required and old bundles must
 be retrained/re-exported. Chunking avoids rerunning the encoder; default
 chunks are 65,536 coordinates. See [features](features.md) for input semantics.
 

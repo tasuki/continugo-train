@@ -46,9 +46,13 @@ Explicit output paths remain literal; resume defaults to its checkpoint's existi
 directory rather than allocating a new one. `--device auto` chooses CUDA when available,
 otherwise CPU; `--device cpu` forces CPU. Inspect options with
 `mise run train -- --help`. Architecture options include `--channels`, `--blocks`, `--policy-hidden`,
-`--value-channels`, `--value-hidden`, and `--chunk-size`. Defaults are the 64-channel/8-block
-network with 16 shared value spatial channels and 32 shared dense units, FP32 eager mode, SGD lr 0.01 / momentum 0.9 / weight decay 1e-4, gradient
-norm clipping at 5, batch size 64, and six feature workers. Execution is FP32 eager;
+`--value-channels`, `--value-hidden`, `--gpool-every`, `--gpool-channels`, and
+`--chunk-size`. Defaults are the 64-channel/8-block network with 16 global-context
+channels in every third residual block, 16 shared value spatial channels and
+32 shared dense units. `--gpool-every 0` disables trunk global pooling. Models
+require the `global-pooling-v1` trunk contract; start fresh training. Other defaults
+are SGD lr 0.01 / momentum 0.9 / weight decay 1e-4, gradient norm clipping at 5,
+batch size 64, and six feature workers. Execution is FP32 eager;
 memory use depends on batch size, feature buffers, and resolution. `--workers`
 remains configurable; checkpoint-based runs retain saved worker settings unless
 explicitly overridden.

@@ -36,7 +36,7 @@ from .features import (
 )
 from .losses import joint_loss
 from .memory import GpuMemorySampler
-from .model import POLICY_VERSION, VALUE_VERSION, NetworkConfig, PolicyValueNet
+from .model import POLICY_VERSION, TRUNK_VERSION, VALUE_VERSION, NetworkConfig, PolicyValueNet
 from .paths import new_run_directory
 from .progress import data_history, network_name
 from .progress import initialize as initialize_progress
@@ -112,6 +112,7 @@ def feature_spec(density, *, schema=SCHEMA_VERSION):
         "schema": schema,
         "policy": POLICY_VERSION,
         "value": VALUE_VERSION,
+        "trunk": TRUNK_VERSION,
         "targets": TARGET_VERSION,
         "coarse": list(planes),
         "moves": list(move_features(schema)),
@@ -427,6 +428,8 @@ def parse_args(argv=None):
         "top_cells",
         "exploration_cells",
         "value_channels",
+        "gpool_every",
+        "gpool_channels",
     ]:
         parser.add_argument("--" + name.replace("_", "-"), type=int)
     parser.add_argument(
@@ -538,6 +541,8 @@ def train(args):
         "top_cells",
         "exploration_cells",
         "value_channels",
+        "gpool_every",
+        "gpool_channels",
     ]:
         value = getattr(args, name)
         if value is not None:

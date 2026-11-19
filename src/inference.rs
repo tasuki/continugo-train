@@ -150,6 +150,7 @@ struct FeatureSpec {
     schema: u32,
     policy: String,
     value: String,
+    trunk: String,
     targets: String,
     coarse: Vec<String>,
     moves: Vec<String>,
@@ -405,7 +406,8 @@ impl OnnxEvaluator {
         })?;
         let spec = &metadata.feature_spec;
         let planes = coarse_planes(spec.schema)?;
-        if spec.value != "shared-gaussian-v1"
+        if spec.trunk != "global-pooling-v1"
+            || spec.value != "shared-gaussian-v1"
             || spec.policy != "cells-v1"
             || spec.coarse != planes
             || spec.moves != move_features(spec.schema)?

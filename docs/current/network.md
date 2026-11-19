@@ -10,6 +10,18 @@ schema-6 training starts fresh. See the [schema-6 feature contract](features.md#
 ## Architecture
 
 `PolicyValueNet` defaults to 64 channels and eight BatchNorm/ReLU residual blocks.
+Blocks **3 and 6** additionally use learned global pooling (`global-pooling-v1`).
+A parallel 3×3 convolution → BatchNorm → ReLU produces **16 global channels**;
+concatenated spatial mean/max are linearly projected to 64 channels and broadcast
+across the local branch, after its first BatchNorm and before ReLU. Later spatial
+layers can therefore condition local decisions on whole-board context, rather
+than leaving global information only to the output heads.
+
+`--gpool-every 3` and `--gpool-channels 16` configure the interval and width;
+`--gpool-every 0` disables trunk pooling for ablations. Block numbering is one-based.
+This follows KataGo's pool/project/broadcast mechanism, not its exact architecture:
+we omit the board-size-scaled mean, since raster dimensions also depend on feature
+density. No board padding/mask is needed; training batches share raster dimensions.
 One set of weights handles multiple spatial resolutions; batches group matching
 resolutions. A shared value/score branch projects the trunk to 16 spatial channels
 with leaky-ReLU, concatenates spatial mean/mean-square/max, and maps 48 pooled
@@ -60,8 +72,8 @@ area integration or raster dilation. This is a learned geometric input, not an
 explicit eye reward or proof of life. Exact features are never interpolated. Pass is always
 available. Legacy schema-4 models retain ten exact features.
 
-With default widths and schema-6 inputs, the network has **605,095 trainable
-parameters**: trunk 600,064; policy branches including pass 2,307; shared value
+With default widths and schema-6 inputs, the network has **627,687 trainable
+parameters**: trunk 622,656 (including 22,592 for global context); policy branches including pass 2,307; shared value
 spatial/dense branch 2,608; outcome/score mean/score stdev outputs 33 each;
 ownership 17.
 Region indices are shared within a position; exact captured-survivor indices use
@@ -124,7 +136,8 @@ estimating their partition function. Coverage and playing strength require valid
 ## Format and benchmarks
 
 Checkpoint and ONNX metadata require policy version **`cells-v1`** and value
-version **`shared-gaussian-v1`**. The old dense
+version **`shared-gaussian-v1`**, plus trunk version **`global-pooling-v1`**.
+The trunk change requires fresh training and new exports. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. New training uses feature
 schema 6 with fourteen coarse planes: antialiased occupancy, connected group

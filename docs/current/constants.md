@@ -318,6 +318,7 @@ inputs, are in [features.md](features.md), not duplicated here.
 | `NetworkConfig` field | Default |
 |---|---:|
 | `channels` / residual `blocks` | 64 / 8 |
+| `gpool_every` / `gpool_channels` | 3 / 16; blocks 3 and 6; interval 0 disables |
 | `policy_hidden` | 16 |
 | `value_hidden` (shared outcome/score) | 32 |
 | `value_channels` (shared spatial value/ownership) | 16 |
@@ -326,7 +327,10 @@ inputs, are in [features.md](features.md), not duplicated here.
 | `value_activation` | `leaky_relu`, slope 0.1; `relu` is supported |
 
 The trunk and each residual convolution use 3×3 kernels, padding 1, no convolution
-bias before BatchNorm. Spatial policy/ownership projections use 1×1 kernels.
+bias before BatchNorm. Every third residual block adds a parallel 3×3 global
+branch with BatchNorm/ReLU, mean/max pooling, and a linear projection broadcast
+back into the first local convolution's normalized output. Spatial policy/ownership
+projections use 1×1 kernels.
 Shared value spatial features use leaky-ReLU slope 0.1; outcome, score mean and
 ownership end in tanh. Score standard deviation is sigmoid-mapped to [0.001,1].
 Score training uses Gaussian NLL. Search curves score with `(2/pi)*atan(score/(2/SZ))`,

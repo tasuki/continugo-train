@@ -20,6 +20,7 @@ COORD_RANGE = 1000
 COORDINATE_ACTIONS = COORD_RANGE**2
 POLICY_VERSION = "cells-v1"
 VALUE_VERSION = "shared-gaussian-v1"
+TRUNK_VERSION = "global-pooling-v1"
 SCORE_STDEV_FLOOR = 0.001
 
 
@@ -64,6 +65,8 @@ class NetworkConfig:
     move_features: int = len(MOVE_FEATURES)
     channels: int = 64
     blocks: int = 8
+    gpool_every: int = 3
+    gpool_channels: int = 16
     policy_hidden: int = 16
     value_hidden: int = 32
     value_channels: int = 16
@@ -81,8 +84,10 @@ class NetworkConfig:
         for name, value in vars(self).items():
             if name == "value_activation":
                 continue
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
+            minimum = 0 if name == "gpool_every" else 1
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                requirement = "nonnegative" if minimum == 0 else "positive"
+                raise ValueError(f"{name} must be a {requirement} integer")
 
 
 def resolution_for_diameter(diameter: int, samples_per_diameter: int = 4) -> int:
@@ -104,6 +109,29 @@ class ResidualBlock(nn.Module):
         return F.relu(x + self.bn2(self.conv2(residual)))
 
 
+class GlobalPoolingBlock(ResidualBlock):
+    """Residual block with learned whole-board context broadcast to each location.
+
+    Uses mean/max pooling, like KataGo's global-context mechanism, but omits its
+    board-size-scaled mean: our raster size also depends on feature density.
+    """
+
+    def __init__(self, channels: int, gpool_channels: int) -> None:
+        super().__init__(channels)
+        self.gpool_conv = nn.Conv2d(channels, gpool_channels, 3, padding=1, bias=False)
+        self.gpool_bn = nn.BatchNorm2d(gpool_channels)
+        self.gpool_linear = nn.Linear(2 * gpool_channels, channels, bias=False)
+
+    def forward(self, x: Tensor) -> Tensor:
+        global_features = F.relu(self.gpool_bn(self.gpool_conv(x)))
+        pooled = torch.cat((global_features.mean((-2, -1)), global_features.amax((-2, -1))), dim=1)
+        context = self.gpool_linear(pooled)[:, :, None, None]
+        # Add after local normalization so a per-position global signal isn't
+        # immediately canceled by normalization of the local branch.
+        residual = F.relu(self.bn1(self.conv1(x)) + context)
+        return F.relu(x + self.bn2(self.conv2(residual)))
+
+
 class PolicyValueNet(nn.Module):
     def __init__(self, config: NetworkConfig | None = None) -> None:
         super().__init__()
@@ -112,7 +140,12 @@ class PolicyValueNet(nn.Module):
             nn.Conv2d(config.input_planes, config.channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(config.channels),
             nn.ReLU(),
-            *(ResidualBlock(config.channels) for _ in range(config.blocks)),
+            *(
+                GlobalPoolingBlock(config.channels, config.gpool_channels)
+                if config.gpool_every and (i + 1) % config.gpool_every == 0
+                else ResidualBlock(config.channels)
+                for i in range(config.blocks)
+            ),
         )
         self.policy_spatial = nn.Conv2d(config.channels, config.policy_hidden, 1)
         self.policy_global = nn.Linear(config.channels, config.policy_hidden, bias=False)
