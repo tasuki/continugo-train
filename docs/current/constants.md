@@ -69,7 +69,7 @@ Sources: [search](../../src/search.rs), [self-play](../../src/selfplay.rs),
 | Setting | Loop default | Standalone self-play / `SearchConfig` default |
 |---|---:|---:|
 | Cheap / fixed simulations | 100 | 32 |
-| Expensive `policy_simulations` | 400 | 256 (CLI; inactive by default) |
+| Expensive `policy_simulations` | 500 | 256 (CLI; inactive by default) |
 | `policy_search_probability` | 0.25 | 0 (fixed-budget, all-policy) |
 | PUCT coefficient `cpuct` | 1.5 | 1.5 |
 | Progressive-widening coefficient | 2.0 | 2.0 |

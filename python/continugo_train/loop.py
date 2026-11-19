@@ -44,7 +44,7 @@ class LoopConfig:
     games_per_iteration: int = 100
     seed: int = 0
     simulations: int = 100
-    policy_simulations: int = 400
+    policy_simulations: int = 500
     policy_search_probability: float = 0.25
     chosen_move_temperature_early: float = 0.75
     chosen_move_temperature: float = 0.15
