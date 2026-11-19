@@ -122,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             score_weight: args.score_weight,
             bootstrap_avoid_eyes: false,
             rollout: args.rollout.config(),
+            ..Default::default()
         },
     };
     config.validate()?;

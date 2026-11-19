@@ -307,6 +307,48 @@ class LoopHarness(unittest.TestCase):
 
 
 class LoopTests(LoopHarness):
+    def test_move_temperature_settings_are_forwarded_and_frozen(self):
+        defaults = loop.LoopConfig()
+        self.assertEqual(
+            (defaults.chosen_move_temperature_early, defaults.chosen_move_temperature,
+             defaults.chosen_move_temperature_halflife),
+            (0.75, 0.15, 19.0),
+        )
+        output = self.root / "temperatures"
+        self.run_loop(output, extra=[
+            "--chosen-move-temperature-early", "0.9",
+            "--chosen-move-temperature", "0.1",
+            "--chosen-move-temperature-halflife", "38",
+        ])
+        generation = next(c for c in self.jobs.calls if "--engine" in c)
+        for name, expected in [("early", "0.9"), ("halflife", "38.0")]:
+            flag = "--chosen-move-temperature-" + name
+            self.assertEqual(generation[generation.index(flag) + 1], expected)
+        self.run_loop(output, resume=True)
+        with self.assertRaisesRegex(ValueError, "conflicting override"):
+            self.run_loop(output, resume=True, extra=["--chosen-move-temperature", "0.2"])
+        for name in ("chosen_move_temperature_early", "chosen_move_temperature",
+                     "chosen_move_temperature_halflife"):
+            for bad in (-1.0, float("nan"), float("inf")):
+                with self.assertRaisesRegex(ValueError, "temperature"):
+                    loop.LoopConfig(**{name: bad}).validate()
+        with self.assertRaisesRegex(ValueError, "half-life"):
+            loop.LoopConfig(chosen_move_temperature_halflife=0).validate()
+        loop.LoopConfig(chosen_move_temperature=0, chosen_move_temperature_early=0).validate()
+
+    def test_old_loop_missing_temperature_settings_keeps_legacy_sampling(self):
+        output = self.root / "legacy-temperature"
+        self.run_loop(output)
+        state = torch.load(output / "loop.pt", weights_only=True)
+        for name in ("chosen_move_temperature_early", "chosen_move_temperature",
+                     "chosen_move_temperature_halflife"):
+            del state["config"][name]
+        atomic_checkpoint(output / "loop.pt", state)
+        restored = self.run_loop(output, resume=True)
+        self.assertEqual(restored["config"]["chosen_move_temperature_early"], 1.0)
+        self.assertEqual(restored["config"]["chosen_move_temperature"], 1.0)
+        self.assertEqual(restored["config"]["chosen_move_temperature_halflife"], 19.0)
+
     def test_randomized_policy_caps_are_frozen_and_replayed_with_masks(self):
         defaults = loop.LoopConfig()
         self.assertEqual(

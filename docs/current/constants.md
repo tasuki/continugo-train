@@ -101,9 +101,19 @@ These are choices, with the following formulas and constraints:
   The weight is a fraction in `[0,1]`, **not** an additive coefficient. Observed
   terminal jigo is a loss for both sides: outcome `-1`, score `0`; backup retains
   the shared penalty `1-score_weight` rather than turning it into a win by negation.
-- Self-play samples root visits at temperature **1** throughout the game.
-  Evaluation takes maximum visits, randomly breaking ties. There is no move-number
-  temperature schedule. Winning passes are not forced.
+- Self-play samples moves proportional to `visits**(1/T)`, using the same
+  temperature schedule for cheap and expensive searches. Defaults match KataGo's
+  published `selfplay8mainb18.cfg`: `chosen_move_temperature_early=0.75`,
+  `chosen_move_temperature=0.15`, `chosen_move_temperature_halflife=19`.
+  For square board width `B` and `m` individual moves already played,
+  `T = late + (early-late)*2**(-m*19/(halflife*B))`.
+  All three settings are configurable through matching kebab-case CLI flags in
+  both the generator and training loop. Temperatures must be finite and nonnegative;
+  half-life must be finite and positive. `T=0` selects maximum visits; setting both
+  temperatures to 1 restores legacy sampling. Older resumed loops retain `T=1`.
+  The schedule changes played moves, not policy-training visit targets.
+  Evaluation still takes maximum visits, randomly breaking ties. Winning passes
+  are not forced.
 - Rollouts average naturally completed evidence only. Unfinished playouts are
   unknown, not draws; no completed evidence yields no value observation.
 

@@ -16,6 +16,11 @@ class EvaluationConfig(LoopConfig):
     gate_simulations: int = 128
     gate_max_moves: int = 512
 
+    def search(self):
+        # Evaluation always selects maximum visits; self-play temperatures are
+        # neither arena CLI settings nor part of the frozen rating protocol.
+        return {name: value for name, value in super().search().items() if name in ratings.SEARCH_TYPES}
+
     @classmethod
     def from_config(cls, config):
         """Accept both current training settings and historical evaluation settings."""

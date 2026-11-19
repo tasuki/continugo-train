@@ -54,6 +54,15 @@ struct Args {
     /// Randomization requires --simulations >= 32. Cheap moves keep value labels.
     #[arg(long, default_value_t = 0.0)]
     policy_search_probability: f64,
+    /// Initial self-play move-selection temperature (both search budgets).
+    #[arg(long, default_value_t = 0.75)]
+    chosen_move_temperature_early: f64,
+    /// Asymptotic late-game self-play temperature; 0 selects maximum visits.
+    #[arg(long, default_value_t = 0.15)]
+    chosen_move_temperature: f64,
+    /// Temperature decay half-life in moves on 19x19, scaled by board width.
+    #[arg(long, default_value_t = 19.0)]
+    chosen_move_temperature_halflife: f64,
     #[arg(long, default_value_t = 1.5)]
     cpuct: f64,
     #[arg(long, default_value_t = 2.0)]
@@ -164,6 +173,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }),
         search: SearchConfig {
             simulations: args.simulations,
+            chosen_move_temperature_early: args.chosen_move_temperature_early,
+            chosen_move_temperature: args.chosen_move_temperature,
+            chosen_move_temperature_halflife: args.chosen_move_temperature_halflife,
             cpuct: args.cpuct,
             widening: args.widening,
             widening_exponent: args.widening_exponent,

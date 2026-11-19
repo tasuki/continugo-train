@@ -37,6 +37,50 @@ impl Drop for TestDir {
 }
 
 #[test]
+fn move_temperature_cli_records_defaults_overrides_and_rejects_invalid_values() {
+    for (extra, expected) in [
+        (vec![], [0.75, 0.15, 19.0]),
+        (
+            vec![
+                "--chosen-move-temperature-early",
+                "0.9",
+                "--chosen-move-temperature",
+                "0",
+                "--chosen-move-temperature-halflife",
+                "38",
+            ],
+            [0.9, 0.0, 38.0],
+        ),
+    ] {
+        let output = cli()
+            .args(["--max-moves", "1", "--simulations", "2"])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        let record = sgf::decode_record(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+        let search = &comment(&record.root)["search"];
+        for (name, value) in [
+            "chosen_move_temperature_early",
+            "chosen_move_temperature",
+            "chosen_move_temperature_halflife",
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            assert_eq!(search[name].as_f64(), Some(value));
+        }
+    }
+    for args in [
+        ["--chosen-move-temperature", "NaN"],
+        ["--chosen-move-temperature-early", "inf"],
+        ["--chosen-move-temperature-halflife", "0"],
+    ] {
+        assert!(!cli().args(args).output().unwrap().status.success());
+    }
+}
+
+#[test]
 fn policy_search_cli_records_budgets_and_rejects_sub_32_cheap_search() {
     let directory = TestDir::new("policy-search");
     let output = cli()

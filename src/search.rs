@@ -13,6 +13,11 @@ use rollout::{RolloutConfig, RolloutStats};
 #[derive(Clone, Debug, Serialize)]
 pub struct SearchConfig {
     pub simulations: u32,
+    /// Self-play move sampling schedule; evaluation always uses maximum visits.
+    pub chosen_move_temperature_early: f64,
+    pub chosen_move_temperature: f64,
+    /// Half-life in individual moves on a 19x19 board, scaled by board width.
+    pub chosen_move_temperature_halflife: f64,
     pub cpuct: f64,
     pub widening: f64,
     pub widening_exponent: f64,
@@ -34,6 +39,9 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             simulations: 32,
+            chosen_move_temperature_early: 0.75,
+            chosen_move_temperature: 0.15,
+            chosen_move_temperature_halflife: 19.0,
             cpuct: 1.5,
             widening: 2.0,
             widening_exponent: 0.5,
@@ -47,7 +55,27 @@ impl Default for SearchConfig {
 }
 
 impl SearchConfig {
+    pub fn move_temperature(&self, moves_played: usize, board_size: i32) -> f64 {
+        let halflives = moves_played as f64 / self.chosen_move_temperature_halflife * 19.0
+            / f64::from(board_size);
+        let early_weight = 0.5_f64.powf(halflives);
+        self.chosen_move_temperature * (1.0 - early_weight)
+            + self.chosen_move_temperature_early * early_weight
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if !self.chosen_move_temperature_early.is_finite()
+            || self.chosen_move_temperature_early < 0.0
+            || !self.chosen_move_temperature.is_finite()
+            || self.chosen_move_temperature < 0.0
+            || !self.chosen_move_temperature_halflife.is_finite()
+            || self.chosen_move_temperature_halflife <= 0.0
+        {
+            return Err(
+                "move temperatures must be finite and nonnegative, with positive finite half-life"
+                    .into(),
+            );
+        }
         if !self.score_weight.is_finite() || !(0.0..=1.0).contains(&self.score_weight) {
             return Err("score weight must be finite and in [0,1]".into());
         }
@@ -100,17 +128,50 @@ impl SearchResult {
             .action
     }
 
-    /// Temperature 1: sample exactly in proportion to root visit counts.
-    pub fn sample(&self, rng: &mut impl Rng) -> Action {
-        let total: u32 = self.policy.iter().map(|entry| entry.visits).sum();
-        let mut ticket = rng.random_range(0..total);
+    /// Sample proportional to visits^(1/temperature), without changing targets.
+    /// Zero temperature selects maximum visits with random tie breaks.
+    pub fn sample(&self, temperature: f64, rng: &mut impl Rng) -> Action {
+        assert!(temperature.is_finite() && temperature >= 0.0);
+        if temperature == 0.0 {
+            return self.best(rng);
+        }
+        // Preserve the exact integer sampler (and RNG behavior) for legacy T=1.
+        if temperature == 1.0 {
+            let total: u32 = self.policy.iter().map(|entry| entry.visits).sum();
+            let mut ticket = rng.random_range(0..total);
+            for entry in &self.policy {
+                if ticket < entry.visits {
+                    return entry.action;
+                }
+                ticket -= entry.visits;
+            }
+            unreachable!("nonempty search policy")
+        }
+        let max_visits = self
+            .policy
+            .iter()
+            .map(|entry| entry.visits)
+            .max()
+            .expect("nonempty search policy");
+        assert!(max_visits > 0);
+        // Normalize before exponentiation to avoid overflow at low temperatures.
+        let weight = |entry: &Visit| {
+            (f64::from(entry.visits) / f64::from(max_visits)).powf(1.0 / temperature)
+        };
+        let total: f64 = self.policy.iter().map(weight).sum();
+        let mut ticket = rng.random_range(0.0..total);
+        let mut last_positive = None;
         for entry in &self.policy {
-            if ticket < entry.visits {
+            let mass = weight(entry);
+            if mass > 0.0 {
+                last_positive = Some(entry.action);
+            }
+            if ticket < mass {
                 return entry.action;
             }
-            ticket -= entry.visits;
+            ticket -= mass;
         }
-        unreachable!("nonempty search policy")
+        last_positive.expect("positive sampling mass")
     }
 }
 
@@ -638,6 +699,81 @@ mod tests {
     use super::*;
     use continugo_rules::Spot;
     use rand::{SeedableRng, rngs::StdRng};
+
+    #[test]
+    fn temperature_schedule_scales_by_board_width_and_is_configurable() {
+        let mut config = SearchConfig::default();
+        for size in [9, 13, 19] {
+            for (halflives, expected) in [(0, 0.75), (1, 0.45), (2, 0.30), (3, 0.225)] {
+                assert!(
+                    (config.move_temperature(halflives * size as usize, size) - expected).abs()
+                        < 1e-12
+                );
+            }
+            assert!((config.move_temperature(10000, size) - 0.15).abs() < 1e-12);
+        }
+        config.chosen_move_temperature_early = 1.0;
+        config.chosen_move_temperature = 1.0;
+        assert_eq!(config.move_temperature(100, 9), 1.0);
+        config.chosen_move_temperature_early = 0.9;
+        config.chosen_move_temperature = 0.1;
+        config.chosen_move_temperature_halflife = 38.0;
+        assert!((config.move_temperature(18, 9) - 0.5).abs() < 1e-12);
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            let invalid = SearchConfig {
+                chosen_move_temperature: bad,
+                ..Default::default()
+            };
+            assert!(invalid.validate().is_err());
+            let invalid = SearchConfig {
+                chosen_move_temperature_early: bad,
+                ..Default::default()
+            };
+            assert!(invalid.validate().is_err());
+        }
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let invalid = SearchConfig {
+                chosen_move_temperature_halflife: bad,
+                ..Default::default()
+            };
+            assert!(invalid.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn temperature_sampling_matches_visit_powers_without_mutating_targets() {
+        let result = SearchResult {
+            policy: vec![
+                Visit {
+                    action: Action::PASS,
+                    visits: 80,
+                },
+                Visit {
+                    action: Action::from_index(500_500).unwrap(),
+                    visits: 20,
+                },
+                Visit {
+                    action: Action::from_index(600_600).unwrap(),
+                    visits: 0,
+                },
+            ],
+            rollout_stats: RolloutStats::default(),
+        };
+        for (temperature, expected) in [(1.0, 0.8), (0.5, 16.0 / 17.0), (0.0, 1.0), (1e-300, 1.0)] {
+            let mut rng = StdRng::seed_from_u64(7);
+            let mut passes = 0;
+            for _ in 0..20000 {
+                let action = result.sample(temperature, &mut rng);
+                assert_ne!(action, result.policy[2].action);
+                passes += usize::from(action == Action::PASS);
+            }
+            assert!((passes as f64 / 20000.0 - expected).abs() < 0.015);
+        }
+        assert_eq!(
+            result.policy.iter().map(|v| v.visits).collect::<Vec<_>>(),
+            vec![80, 20, 0]
+        );
+    }
 
     #[test]
     fn counts_are_conserved_and_candidates_are_legal_unique_and_widened() {

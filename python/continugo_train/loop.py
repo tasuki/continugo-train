@@ -46,6 +46,9 @@ class LoopConfig:
     simulations: int = 100
     policy_simulations: int = 400
     policy_search_probability: float = 0.25
+    chosen_move_temperature_early: float = 0.75
+    chosen_move_temperature: float = 0.15
+    chosen_move_temperature_halflife: float = 19.0
     max_moves: int = 512
     cpuct: float = 1.5
     widening: float = 2.0
@@ -110,6 +113,15 @@ class LoopConfig:
                 "policy search needs probability in 0..1, positive u32 policy simulations, "
                 "and when enabled: cheap simulations >= 32 and policy simulations >= cheap simulations"
             )
+        if (
+            not math.isfinite(self.chosen_move_temperature_early)
+            or self.chosen_move_temperature_early < 0
+            or not math.isfinite(self.chosen_move_temperature)
+            or self.chosen_move_temperature < 0
+            or not math.isfinite(self.chosen_move_temperature_halflife)
+            or self.chosen_move_temperature_halflife <= 0
+        ):
+            raise ValueError("move temperatures must be finite and nonnegative, with positive finite half-life")
         positive = [
             "games_per_iteration",
             "simulations",
@@ -171,6 +183,9 @@ class LoopConfig:
                 "proposal_attempts",
                 "independent_exploration",
                 "score_weight",
+                "chosen_move_temperature_early",
+                "chosen_move_temperature",
+                "chosen_move_temperature_halflife",
             ]
         }
 
@@ -626,13 +641,22 @@ class LoopRunner:
                     self.log(f"retain invalid partial record without adopting: {path}: {error}")
                     continue
                 root = info.get("root_comment")
+                # Old SGFs predate the schedule and used T=1 throughout.
+                recorded_search = root.get("search") if isinstance(root, dict) else None
+                if isinstance(recorded_search, dict):
+                    recorded_search = {
+                        "chosen_move_temperature_early": 1.0,
+                        "chosen_move_temperature": 1.0,
+                        "chosen_move_temperature_halflife": 19.0,
+                        **recorded_search,
+                    }
                 if (
                     not isinstance(root, dict)
                     or info["board_size"] != size
                     or root.get("seed") != seed
                     or root.get("model") != iteration["parent_model"]["checkpoint_sha256"]
                     or root.get("opponent") is not None
-                    or root.get("search") != self.config.search()
+                    or recorded_search != self.config.search()
                     or root.get("policy_search") != self.config.policy_search()
                     or not 0 < info["moves"] <= self.config.max_moves
                     or not self.config.valid_policy_visits(info)
@@ -1246,6 +1270,10 @@ def run_loop(args):
                 detach_evaluation(state)
             for field in fields(LoopConfig):
                 # Preserve frozen generation settings of older campaigns.
+                if field.name in {"chosen_move_temperature_early", "chosen_move_temperature"}:
+                    state["config"].setdefault(field.name, 1.0)
+                if field.name == "chosen_move_temperature_halflife":
+                    state["config"].setdefault(field.name, 19.0)
                 if field.name == "save_model_every":
                     state["config"].setdefault(field.name, 10)
                 if field.name == "training_window_fraction":

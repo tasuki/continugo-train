@@ -97,7 +97,7 @@ pub struct GameMetadata {
 struct GameComment<'a> {
     seed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    search: Option<&'a SearchConfig>,
+    search: Option<SearchComment<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy_search: Option<&'a PolicySearchConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,11 +112,34 @@ struct GameComment<'a> {
     rollout_stats: Option<&'a RolloutStats>,
 }
 
+/// Move temperatures are self-play settings, not part of evaluation protocols.
+struct SearchComment<'a> {
+    config: &'a SearchConfig,
+    evaluation: bool,
+}
+
+impl Serialize for SearchComment<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !self.evaluation {
+            return self.config.serialize(serializer);
+        }
+        let mut value = serde_json::to_value(self.config).map_err(serde::ser::Error::custom)?;
+        let settings = value.as_object_mut().expect("search settings object");
+        settings.remove("chosen_move_temperature_early");
+        settings.remove("chosen_move_temperature");
+        settings.remove("chosen_move_temperature_halflife");
+        value.serialize(serializer)
+    }
+}
+
 impl GameMetadata {
     fn comment(&self) -> GameComment<'_> {
         GameComment {
             seed: self.seed,
-            search: (!matches!(self.config.engine, Engine::Random)).then_some(&self.config.search),
+            search: (!matches!(self.config.engine, Engine::Random)).then_some(SearchComment {
+                config: &self.config.search,
+                evaluation: self.opponent.is_some(),
+            }),
             policy_search: self.config.policy_search.as_ref(),
             model: self.model.as_deref(),
             profile: self.profile.as_ref(),
@@ -270,7 +293,7 @@ pub fn generate_neural(
 }
 
 /// Color-specific frozen networks, same search budget/rules. Evaluation chooses
-/// maximum visits (random tie breaks), not training's temperature-one sampling.
+/// maximum visits (random tie breaks), not training's scheduled-temperature sampling.
 pub fn generate_match(
     board: Board,
     config: &SelfplayConfig,
@@ -406,6 +429,7 @@ fn generate_inner<const PROFILE: bool>(
             && config
                 .policy_search
                 .is_none_or(|policy| cap_rng.random_bool(policy.probability));
+        let temperature = config.search.move_temperature(policies.len(), board.size());
         let mut search_config = config.search.clone();
         if train_policy && let Some(policy) = config.policy_search {
             search_config.simulations = policy.simulations;
@@ -431,7 +455,7 @@ fn generate_inner<const PROFILE: bool>(
                     let action = if evaluation_game {
                         result.best(&mut rng)
                     } else {
-                        result.sample(&mut rng)
+                        result.sample(temperature, &mut rng)
                     };
                     (action.apply(&game)?, Some(result.policy))
                 }
@@ -450,7 +474,7 @@ fn generate_inner<const PROFILE: bool>(
                     let action = if evaluation_game {
                         result.best(&mut rng)
                     } else {
-                        result.sample(&mut rng)
+                        result.sample(temperature, &mut rng)
                     };
                     (action.apply(&game)?, Some(result.policy))
                 }

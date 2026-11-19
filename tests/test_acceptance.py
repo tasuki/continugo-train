@@ -38,7 +38,7 @@ class ArenaJobs(helpers.FakeJobs):
             return self.reference(command, value, candidate)
         incumbent = (Path(value("incumbent")) / "encoder.onnx").read_text()
         search = {
-            name: type(default)(value(name)) for name, default in loop.LoopConfig().search().items()
+            name: type(default)(value(name)) for name, default in EvaluationConfig().search().items()
         }
         count = search["simulations"]
         cycle = weighted_sizes(tuple(map(int, value("sizes").split(","))), value("size_weights"))
@@ -82,7 +82,7 @@ class ArenaJobs(helpers.FakeJobs):
 
     def reference(self, command, value, candidate):
         search = {
-            name: type(default)(value(name)) for name, default in loop.LoopConfig().search().items()
+            name: type(default)(value(name)) for name, default in EvaluationConfig().search().items()
         }
         count = search["simulations"]
         cycle = weighted_sizes(tuple(map(int, value("sizes").split(","))), value("size_weights"))
