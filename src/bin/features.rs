@@ -29,7 +29,8 @@ struct Args {
     ply: usize,
     #[arg(long, default_value_t = 4)]
     samples_per_diameter: usize,
-    /// 5 = spatial groups/liberty centers/footprints; 4 = original scalar/flag planes.
+    /// 7 = three recent moves; 6 = group liberty area; 5 = spatial liberties;
+    /// 4 = original scalar/flag planes.
     #[arg(long, default_value_t = SCHEMA_VERSION)]
     feature_schema: u32,
     #[arg(long, value_delimiter = ',', num_args = 1.., value_parser = clap::value_parser!(u32).range(0..COORDINATE_ACTIONS as i64))]

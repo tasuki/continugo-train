@@ -13,16 +13,14 @@ playing-strength measurements.
 
 ## First run
 
-New training uses **schema 5**, revised with explicit user approval on 2026-11-08, with twelve coarse planes: antialiased stone
-occupancy, connected group size, liberty-center unions, liberty-footprint unions
-and borders. Scalar liberty area and capturable-in-one planes/calculations are
-removed. Start a fresh checkpoint: schema-4 resume/warm-start is rejected rather
-than silently reinterpreting the same-width channels. Existing score/ownership models still use
-their original twelve inputs in inference and the viewer.
-Eleven exact fields include binary `splits_friendly_region`, immediately before
-borders. The user reopened unused schema 5 to replace the former local footprint;
-old footprint metadata is incompatible. Training starts only when explicitly requested. Validated source SGFs can be
-reused; discard incompatible derived tensor caches.
+New training uses **schema 7**, with seventeen coarse planes: antialiased stone
+occupancy, three recent-move location markers (enemy, friendly, enemy), connected
+group size, per-group liberty area, liberty-center/footprint unions and borders.
+Nine exact fields include binary `splits_friendly_region`; legality is a separate
+mask. Start a fresh checkpoint and regenerate derived caches. Schemas 4/5/6 keep
+their original inference/viewer contracts, not resume/warm-start compatibility.
+See the [feature contract](features.md#schema-7-contract). Training starts only
+when explicitly requested; validated source SGFs can be reused.
 
 Policy comments use only compact `[SGF-coordinate, visits]` pairs, sorted most
 visited first; `""` denotes pass. Legacy numeric-action objects are rejected, not

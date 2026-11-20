@@ -1,11 +1,13 @@
 # PyTorch policy/value network
 
-**Schema 6 inputs: 14 coarse planes and 9 exact fields (fresh-training default).** Group size
+**Schema 7 inputs: 17 coarse planes and 9 exact fields (fresh-training default).**
+Three antialiased recent-stone-disc planes follow friendly/enemy stones, newest
+first (enemy, friendly, enemy); passes consume blank slots. Group size
 and total per-group liberty area use capped log scaling, saturating at 100.
 Exact legality and resulting group size are removed; the separate legality mask
 is unchanged. Both spatial liberty representations and exact splitting remain.
-Schema-4 and schema-5 inference keep their own input contracts and scaling;
-schema-6 training starts fresh. See the [schema-6 feature contract](features.md#schema-6-contract).
+Schema-4/5/6 inference keeps its own input contracts and scaling;
+schema-7 training starts fresh. See the [schema-7 feature contract](features.md#schema-7-contract).
 
 ## Architecture
 
@@ -57,14 +59,14 @@ options `--top-cells` and `--exploration-cells` (both positive). Exploration use
 the game's search RNG seed and position, independent of batching/cache order.
 Thus different games can explore different cells even at the same opening.
 
-Default schema-6 inference uses the [geometry proposal policy](geometry-proposals.md)
+Default schema-7 inference uses the [geometry proposal policy](geometry-proposals.md)
 to choose coordinates inside selected cells; only those coordinates receive
 exact move analysis. It reuses the same encoder/scorer without changing the
 training contract. Legacy schema-4 models and `infer --complete-cells` analyze
 every integer coordinate inside selected cells. No overlapping windows or full-board exact scan. Within each cell,
 the coordinate scorer bilinearly samples 16-channel projected coarse context,
 adds a shared linear projection of nine exact features, applies ReLU, and reads
-out a scalar. Schema-6 column 4 is binary `splits_friendly_region`: using actual
+out a scalar. Schema-7 column 4 is binary `splits_friendly_region`: using actual
 child survivors, does placing the new stone split one friendly-bounded
 available-center region into at least two nonempty components? Exact integer
 scanline connectivity retains narrow splitting moves; there is no per-candidate
@@ -72,8 +74,8 @@ area integration or raster dilation. This is a learned geometric input, not an
 explicit eye reward or proof of life. Exact features are never interpolated. Pass is always
 available. Legacy schema-4 models retain ten exact features.
 
-With default widths and schema-6 inputs, the network has **627,687 trainable
-parameters**: trunk 622,656 (including 22,592 for global context); policy branches including pass 2,307; shared value
+With default widths and schema-7 inputs, the network has **629,415 trainable
+parameters**: trunk 624,384 (including 22,592 for global context); policy branches including pass 2,307; shared value
 spatial/dense branch 2,608; outcome/score mean/score stdev outputs 33 each;
 ownership 17.
 Region indices are shared within a position; exact captured-survivor indices use
@@ -140,13 +142,15 @@ version **`shared-gaussian-v1`**, plus trunk version **`global-pooling-v1`**.
 The trunk change requires fresh training and new exports. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. New training uses feature
-schema 6 with fourteen coarse planes: antialiased occupancy, connected group
-size, spatial liberty centers/footprints, per-group total liberty area and borders;
+schema 7 with seventeen coarse planes: antialiased occupancy, three recent-move
+locations, connected group size, spatial liberty centers/footprints, per-group
+total liberty area and borders;
 no capturability flags. Schema-4 score/ownership inference and viewing explicitly preserve all
 twelve original coarse inputs and ten exact fields. Schema-5 inference/viewing uses
 its own twelve coarse planes and eleven exact fields, restored from Git commit
 `71f8daf`. Mixed-schema arenas extract inputs independently for each model;
-schema-5 checkpoints/tensors cannot initialize schema-6 training. Metadata names
+Schema-6 inference keeps fourteen coarse planes and nine exact fields, without
+history. Earlier-schema checkpoints/tensors cannot initialize schema-7 training. Metadata names
 and widths must match the selected numbered schema.
 See [features](features.md).
 The pass-preserving normalization correction changes native execution only, not

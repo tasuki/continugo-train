@@ -1,11 +1,45 @@
-# Real neural features — schema version 6
+# Real neural features — schema version 7
+
+## Schema 7 contract
+
+Fresh training/extraction uses **schema 7: 17 coarse planes and 9 exact fields**.
+It adds three recent-move location planes immediately after occupancy; all
+schema-6 geometry, scaling, exact fields, legality and labels remain unchanged.
+
+| Channels | Contents |
+|---|---|
+| 0–1 | Friendly/enemy physical stone-disc area coverage |
+| 2 | Enemy move one turn ago |
+| 3 | Friendly move two turns ago |
+| 4 | Enemy move three turns ago |
+| 5–6 | Friendly/enemy connected group stone count |
+| 7–8 | Friendly/enemy per-group liberty area |
+| 9–10 | Friendly/enemy liberty-center union coverage |
+| 11–12 | Friendly/enemy liberty-footprint union coverage |
+| 13–16 | Left/right/top/bottom border distances |
+
+History is relative to the **pre-move player**, newest first. Each recorded
+placement paints one **physical stone disc**, using the same analytic
+circle/pixel area antialiasing as occupancy. Coverage values are in [0,1];
+subcell motion changes boundary coverage rather than collapsing to one cell.
+Passes consume a slot but leave its plane zero; absent history is zero-padded.
+Captured placements retain their recorded coordinates and disc shape. There is no separate previous-pass input;
+initial empty history and an opening pass both have blank history planes.
+D4 augmentation transforms the markers spatially without changing recency order.
+
+CGFEAT02 keeps its header layout, with schema 7, coarse shape `[17,H,W]` and exact
+shape `[N,9]`. Checkpoint/ONNX channel names must match. Start fresh weights and
+regenerate derived caches; validated source SGFs remain usable. Schemas 4/5/6
+remain supported for extraction, inference, viewing and mixed-schema evaluation
+under their original contracts, never silently reinterpreted as schema 7.
+The unused schema-7 one-cell prototype is superseded: coverage channel names
+reject its checkpoint metadata; discard its packets/caches and regenerate previews.
 
 ## Schema 6 contract
 
-Fresh training/extraction uses **schema 6: 14 coarse planes and 9 exact fields**.
-Schemas 4 and 5 remain supported for extraction, inference, viewing and evaluation
-with their own original contracts. Schema-5 tensors/checkpoints are never treated
-as schema 6: fresh schema-6 training requires regenerated tensors and new weights.
+Schema 6 retains **14 coarse planes and 9 exact fields**. Schema-5 tensors/checkpoints
+are never treated as schema 6; schema-6 weights/caches likewise cannot initialize
+schema-7 training.
 Validated source SGFs remain usable. Packet dimensions and schema are checked in
 Rust/Python, and checkpoint/ONNX feature names must match. The user reordered
 unused schema 6 to place group liberty area immediately after group size.
@@ -85,7 +119,7 @@ schema is 6, coarse-plane count 14 and exact width 9; payload shapes are
 **The remainder describes schema 5 and shared geometry, labels and transport.
 Its channel indices, uncapped counts, 0.30-radius group bridges and absence of
 per-group area integration remain the schema-5 inference contract; they do not
-apply to schema 6. Schema 6 is the fresh-training default above.**
+apply to schemas 6/7. Schema 7 is the fresh-training default above.**
 
 **On 2026-11-08 the user explicitly reopened unused schema 5 and replaced the
 local-liberty-footprint scalar with binary `splits_friendly_region`.** There are

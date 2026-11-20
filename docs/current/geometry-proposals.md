@@ -4,7 +4,7 @@ The geometry proposal policy replaces exhaustive coordinate enumeration inside
 selected coarse cells with a small set of geometric alternatives. The coarse NN,
 exact shortlisted features, fine NN scorer and MCTS are unchanged.
 
-The policy is the **schema-5 inference default**, with soft budget 16, including
+The policy is the **schema-5/6/7 inference default**, with soft budget 16, including
 neural self-play, arena and `infer`. `infer --geometry-budget N` overrides the
 budget; `infer --complete-cells` selects complete-cell reference analysis.
 Legacy schema-4 models retain complete-cell inference. `proposal-view` visualizes

@@ -1,12 +1,13 @@
 """Numbered feature contracts. Schema 5 is recovered from Git commit 71f8daf.
 
-Extraction/inference may select a supported schema; fresh training defaults to 6.
+Extraction/inference may select a supported schema; fresh training defaults to 7.
 Never infer schema semantics from tensor dimensions alone.
 """
 
 SCHEMA4 = 4
 SCHEMA5 = 5
 SCHEMA6 = 6
+SCHEMA7 = 7
 SCHEMA4_COARSE_PLANES = (
     "friendly_stones",
     "enemy_stones",
@@ -41,6 +42,13 @@ SCHEMA6_COARSE_PLANES = (
     "enemy_group_liberty_area",
     *SCHEMA5_COARSE_PLANES[4:],
 )
+SCHEMA7_COARSE_PLANES = (
+    *SCHEMA6_COARSE_PLANES[:2],
+    "enemy_move_1_ago_coverage",
+    "friendly_move_2_ago_coverage",
+    "enemy_move_3_ago_coverage",
+    *SCHEMA6_COARSE_PLANES[2:],
+)
 SCHEMA4_MOVE_FEATURES = (
     "legal",
     "connected_groups",
@@ -63,26 +71,29 @@ SCHEMA6_MOVE_FEATURES = (
     "splits_friendly_region",
     *SCHEMA4_MOVE_FEATURES[6:],
 )
-SUPPORTED_SCHEMAS = (SCHEMA4, SCHEMA5, SCHEMA6)
+SCHEMA7_MOVE_FEATURES = SCHEMA6_MOVE_FEATURES
+SUPPORTED_SCHEMAS = (SCHEMA4, SCHEMA5, SCHEMA6, SCHEMA7)
 
 
-def coarse_planes(schema=SCHEMA6):
+def coarse_planes(schema=SCHEMA7):
     try:
         return {
             SCHEMA4: SCHEMA4_COARSE_PLANES,
             SCHEMA5: SCHEMA5_COARSE_PLANES,
             SCHEMA6: SCHEMA6_COARSE_PLANES,
+            SCHEMA7: SCHEMA7_COARSE_PLANES,
         }[schema]
     except KeyError:
         raise ValueError(f"unsupported feature schema {schema}") from None
 
 
-def move_features(schema=SCHEMA6):
+def move_features(schema=SCHEMA7):
     try:
         return {
             SCHEMA4: SCHEMA4_MOVE_FEATURES,
             SCHEMA5: SCHEMA5_MOVE_FEATURES,
             SCHEMA6: SCHEMA6_MOVE_FEATURES,
+            SCHEMA7: SCHEMA7_MOVE_FEATURES,
         }[schema]
     except KeyError:
         raise ValueError(f"unsupported feature schema {schema}") from None

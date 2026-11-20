@@ -280,8 +280,8 @@ See [features](features.md), [network](network.md) and [auxiliary targets](auxil
 | Coordinate range | `COORD_RANGE=1000`; integer coordinates 0–999 |
 | Action IDs | `x + 1000*y`; `COORDINATE_ACTIONS=1,000,000`; pass ID `1,000,000` |
 | Board area | `BOARD_AREA=1,000,000` coordinate-area units |
-| Current / supported legacy feature schema | `SCHEMA_VERSION=5` / `POINT_SAMPLED_SCHEMA=4` |
-| Coarse planes / exact columns | Schema 5: 12 / 11; schema 4: 12 / 10; names/order are part of the contract |
+| Current / supported legacy feature schema | `SCHEMA_VERSION=7` / schemas 4, 5, 6 (`POINT_SAMPLED_SCHEMA=4`) |
+| Coarse planes / exact columns | Schema 7: 17 / 9; schema 6: 14 / 9; schema 5: 12 / 11; schema 4: 12 / 10; names/order are part of the contract |
 | Policy / target version | `cells-v1` / `final-area-v1` |
 | `samples_per_diameter` | 4 by default; positive integer |
 | Raster side length `R` | `ceil(999*density/stone_diameter)+1`; maximum 2048 |
@@ -339,7 +339,7 @@ Sources: [geometry proposals](../../src/geometry_proposals.rs),
 
 | Choice / contract | Current value |
 |---|---|
-| Schema-5 default proposal contract | `geometry-v2-frontier` |
+| Schema-5/6/7 default proposal contract | `geometry-v2-frontier` |
 | Legacy schema-4 / reference mode | `complete-cells-v1`; `infer --complete-cells` opts in |
 | Geometry `DEFAULT_BUDGET` | 16 per selected cell, **soft**, not a hard candidate cap |
 | `infer --geometry-budget` range | 1–128 |

@@ -288,8 +288,8 @@ impl OnnxEvaluator {
         if budget.is_some_and(|b| b == 0 || b > 128) {
             return Err("geometry budget must be in 1..=128".into());
         }
-        if budget.is_some() && !matches!(self.feature_schema(), 5 | 6) {
-            return Err("geometry proposals require feature schema 5 or 6".into());
+        if budget.is_some() && !matches!(self.feature_schema(), 5..=7) {
+            return Err("geometry proposals require feature schema 5, 6 or 7".into());
         }
         if self.geometry_budget != budget {
             self.cache.lock().unwrap().clear();
@@ -425,9 +425,9 @@ impl OnnxEvaluator {
         {
             return Err("incompatible feature/architecture metadata".into());
         }
-        // Schema 4 uses complete cells; schemas 5/6 use geometry proposals.
+        // Schema 4 uses complete cells; schemas 5/6/7 use geometry proposals.
         let geometry_budget =
-            matches!(spec.schema, 5 | 6).then_some(crate::geometry_proposals::DEFAULT_BUDGET);
+            matches!(spec.schema, 5..=7).then_some(crate::geometry_proposals::DEFAULT_BUDGET);
         Ok(Self {
             encoder,
             scorer,

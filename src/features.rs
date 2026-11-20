@@ -1,7 +1,6 @@
-//! Version-6 inputs: antialiased stones, connected group size and liberty area,
-//! spatial liberty-center and liberty-footprint unions, and borders. Exact move
-//! rows omit redundant legality/resulting size and retain binary region splitting.
-//! Schemas 4 and 5 retain their separately versioned inputs for inference.
+//! Version-7 inputs: schema-6 geometry with three recent-move location planes
+//! immediately after friendly/enemy stones. Exact move fields are unchanged.
+//! Schemas 4, 5 and 6 retain their separately versioned inputs for inference.
 
 use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
@@ -10,6 +9,7 @@ use continugo_rules::{
 mod raster;
 pub mod schema5;
 pub mod schema6;
+pub mod schema7;
 mod spatial;
 mod splitting;
 
@@ -47,6 +47,7 @@ pub struct RasterProfile {
     /// not per plane. Canvas allocation is separate.
     pub group_shared_shapes: Stage,
     pub occupancy: Stage,
+    pub history: Stage,
     pub liberty_union: Stage,
     pub group_reduce: Stage,
     pub group_liberty_reduce: Stage,
@@ -77,6 +78,7 @@ impl CoarseProfile {
                 &other.raster.group_shared_shapes,
             ),
             (&mut self.raster.occupancy, &other.raster.occupancy),
+            (&mut self.raster.history, &other.raster.history),
             (&mut self.raster.liberty_union, &other.raster.liberty_union),
             (&mut self.raster.group_reduce, &other.raster.group_reduce),
             (
@@ -99,8 +101,8 @@ impl CoarseProfile {
     }
 }
 
-// The default extraction/training schema is 6; inference uses model metadata.
-pub use schema6::{
+// The default extraction/training schema is 7; inference uses model metadata.
+pub use schema7::{
     COARSE_PLANES, MOVE_FEATURES, VERSION as SCHEMA_VERSION, count_feature, scalar_feature,
 };
 pub const POINT_SAMPLED_SCHEMA: u32 = 4;
@@ -108,7 +110,7 @@ pub const POINT_SAMPLED_SCHEMA: u32 = 4;
 pub fn validate_schema(schema: u32) -> Result<(), String> {
     if matches!(
         schema,
-        POINT_SAMPLED_SCHEMA | schema5::VERSION | schema6::VERSION
+        POINT_SAMPLED_SCHEMA | schema5::VERSION | schema6::VERSION | schema7::VERSION
     ) {
         Ok(())
     } else {
@@ -120,6 +122,7 @@ pub fn coarse_planes(schema: u32) -> Result<&'static [&'static str], String> {
     Ok(match schema {
         schema5::VERSION => &schema5::COARSE_PLANES,
         schema6::VERSION => &schema6::COARSE_PLANES,
+        schema7::VERSION => &schema7::COARSE_PLANES,
         _ => &SCHEMA4_COARSE_PLANES,
     })
 }
@@ -156,6 +159,7 @@ pub fn move_features(schema: u32) -> Result<&'static [&'static str], String> {
     Ok(match schema {
         schema5::VERSION => &schema5::MOVE_FEATURES,
         schema6::VERSION => &schema6::MOVE_FEATURES,
+        schema7::VERSION => &schema7::MOVE_FEATURES,
         _ => &SCHEMA4_MOVE_FEATURES,
     })
 }
@@ -184,7 +188,7 @@ fn schema45_count_feature(count: usize) -> f32 {
 }
 
 pub struct MoveFeatures {
-    /// Candidate-major [N, fields]: schema 4 has 10, schema 5 has 11, schema 6 has 9.
+    /// Candidate-major [N, fields]: schema 4 has 10, schema 5 has 11, schemas 6/7 have 9.
     /// Illegal tactical/splitting columns are zero.
     pub exact: Vec<f32>,
     pub legal: Vec<u8>,
@@ -196,7 +200,7 @@ pub struct FeatureExtractor<'a> {
     move_fields: usize,
     splitting: splitting::Cache,
     pub resolution: usize,
-    /// Plane-major [planes, H, W]: schemas 4/5 have 12 planes, schema 6 has 14.
+    /// Plane-major [planes, H, W]: schemas 4/5 have 12, schema 6 has 14, schema 7 has 17.
     pub coarse: Vec<f32>,
     /// Opt-in exact per-group source geometry, before colour union/rasterization.
     pub geometry: Option<std::sync::Arc<Geometry>>,
@@ -236,8 +240,11 @@ impl<'a> FeatureExtractor<'a> {
         schema: u32,
         profile: bool,
     ) -> Result<(Self, CoarseProfile), String> {
-        if !matches!(schema, schema5::VERSION | schema6::VERSION) {
-            return Err("geometry proposals require feature schema 5 or 6".into());
+        if !matches!(
+            schema,
+            schema5::VERSION | schema6::VERSION | schema7::VERSION
+        ) {
+            return Err("geometry proposals require feature schema 5, 6 or 7".into());
         }
         if profile {
             Self::build::<true>(game, density, schema, true)
@@ -255,6 +262,9 @@ impl<'a> FeatureExtractor<'a> {
         validate_schema(schema)?;
         if schema == schema5::VERSION {
             return schema5::build::<PROFILE>(game, samples_per_diameter, retain_geometry);
+        }
+        if schema == schema7::VERSION {
+            return schema7::build::<PROFILE>(game, samples_per_diameter, retain_geometry);
         }
         let mut profile = CoarseProfile::default();
         let tick = PROFILE.then(Instant::now);
@@ -276,7 +286,7 @@ impl<'a> FeatureExtractor<'a> {
             profile.painting.record(tick);
             profile.raster.allocation.record(tick);
         }
-        let grid = (schema == SCHEMA_VERSION).then(|| spatial::Grid::new(&edges));
+        let grid = (schema == schema6::VERSION).then(|| spatial::Grid::new(&edges));
         let mut sizes: [Option<Vec<f32>>; 2] = [None, None];
         let mut group_areas: [Option<Vec<f32>>; 2] = [None, None];
         let mut liberties = [Vec::new(), Vec::new()];
@@ -287,7 +297,7 @@ impl<'a> FeatureExtractor<'a> {
                 if PROFILE {
                     profile.groups += 1;
                 }
-                let size = if schema == SCHEMA_VERSION {
+                let size = if schema == schema6::VERSION {
                     count_feature(members.len())
                 } else {
                     schema45_count_feature(members.len())

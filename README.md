@@ -4,17 +4,17 @@ Rust self-play experiments using shared ContinuGo rules, plus a configurable PyT
 
 The [neural policy](docs/current/network.md) selects non-overlapping coarse cells
 before exact coordinate analysis, with whole-board exploration and pass.
-Schema-6 inference defaults to [geometric move proposals](docs/current/geometry-proposals.md)
+Schema-7 inference defaults to [geometric move proposals](docs/current/geometry-proposals.md)
 inside those cells rather than enumerating every coordinate; `infer --complete-cells`
 provides the complete-cell reference mode.
-New training uses [fourteen coarse input planes](docs/current/features.md)
-(schema 6): antialiased stones, connected group size, liberty centers,
+New training uses [seventeen coarse input planes](docs/current/features.md)
+(schema 7): antialiased stones, three recent-move location markers, connected group size, liberty centers,
 liberty footprints, per-group total liberty area and borders. Scalar counts and
-liberty areas saturate at 100. Existing schema-4 models retain their original inputs.
+liberty areas saturate at 100. Existing schema-4/5/6 models retain their original inputs.
 The nine exact move inputs omit redundant legality/resulting size and include a
 binary **friendly-region splitting** bit using actual captures. Splitting remains
 exact-only and preserves single-coordinate splits without per-candidate footprint
-integration. Schema-5 tensors/checkpoints/exports are incompatible. The network also learns [final score and ownership](docs/current/auxiliary.md).
+integration. Earlier-schema tensors/checkpoints cannot initialize fresh schema-7 training. The network also learns [final score and ownership](docs/current/auxiliary.md).
 Fresh score/ownership training is required; old policy/value-only checkpoints,
 exports and loop controls are not migrated. Validated source SGFs remain usable.
 Search defaults to `0.5*outcome + 0.5*normalized_score`; ownership is auxiliary.

@@ -165,7 +165,8 @@ class AuxiliaryTests(unittest.TestCase):
         coarse = torch.randn(2, len(COARSE_PLANES), 8, 8)
         score_target = torch.tensor([0.7, -0.7])
         ownership_target = torch.stack((torch.ones(8, 8), -torch.ones(8, 8)))
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
+        # Avoid saturating the tiny eval-mode tanh heads after input-width changes.
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
         initial = None
         for _ in range(65):
             optimizer.zero_grad(set_to_none=True)

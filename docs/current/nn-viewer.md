@@ -83,19 +83,22 @@ Each page is a **pre-move position**, relative to the player about to move:
   Navigation uses original SGF plies, including passes and skipped analysis turns;
   recorded policy overlays are disabled so they do not obscure diagnostic maps.
   Rust replay remains authoritative for all diagnostic features and labels.
-- Every coarse input plane, named and scaled: schema 6 has fourteen, ordered
-  as friendly/enemy occupancy (0–1), group size (2–3), per-group total liberty
-  area (4–5), liberty centers (6–7), liberty footprints (8–9), then four borders
-  (10–13). Size and group area use capped logarithmic scaling, saturating at 100;
+- Every coarse input plane, named and scaled: schema 7 has seventeen, ordered
+  as friendly/enemy occupancy (0–1), three recent-move locations (2–4, newest
+  first: enemy/friendly/enemy), group size (5–6), per-group total liberty area
+  (7–8), liberty centers (9–10), liberty footprints (11–12), then four borders
+  (13–16). History uses the same antialiased physical discs as occupancy;
+  passes/absent slots are blank.
+  Size and group area use capped logarithmic scaling, saturating at 100;
   their connected shapes carry scalar-valued bridges of radius 0.40 stone radii.
-  Occupancy remains physical discs only. All schema-6 maps use fixed [0,1] scales.
+  Occupancy remains physical discs only. All schema-6/7 maps use fixed [0,1] scales.
   Legacy schema 4 keeps its twelve original point-sampled inputs and flags;
   its uncapped scalar liberty area is shown in raw stone-disc units, not clipped
-  to one. Schema-5 checkpoints are rejected, not silently reinterpreted.
+  to one. Schemas 5/6 retain their own original channel order and widths.
 - Coarse cell logits and global softmax probabilities, plus separate pass mass.
 - Diagnostic selected-cell coverage, exact legal raw logits, conditional
   `P(move | cell)`, and redistributed final placement probabilities.
-- All nine schema-6 exact coordinate input features: connection group/stone
+- All nine schema-6/7 exact coordinate input features: connection group/stone
   counts, capture group/stone counts, binary friendly-region splitting, then four
   border distances. Legality remains a separate mask; redundant neural legality
   and resulting group size columns are removed. Splitting uses actual child

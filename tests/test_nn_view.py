@@ -111,11 +111,15 @@ class NnViewerTests(unittest.TestCase):
         self.assertIn('id="sgfcopy"', text)
         self.assertEqual(data["frames"][1]["view"]["stones"], [[200, 200, 0]])
         self.assertEqual(data["frames"][0]["view"]["action"], 200200)
-        self.assertEqual(data["frames"][1]["coarse"][5]["high"], 1)
-        self.assertEqual(data["frames"][1]["coarse"][5]["name"], "enemy_group_liberty_area")
-        self.assertEqual(data["frames"][1]["coarse"][7]["name"], "enemy_liberty_centers")
-        self.assertEqual(data["frames"][1]["coarse"][9]["name"], "enemy_liberty_footprints")
-        for index in (2, 3, 4, 5):
+        self.assertEqual(data["frames"][1]["coarse"][8]["high"], 1)
+        self.assertEqual(data["frames"][1]["coarse"][8]["name"], "enemy_group_liberty_area")
+        self.assertEqual(data["frames"][1]["coarse"][10]["name"], "enemy_liberty_centers")
+        self.assertEqual(data["frames"][1]["coarse"][12]["name"], "enemy_liberty_footprints")
+        for index in (2, 3, 4):
+            self.assertIn(
+                "area-antialiased physical disc", data["frames"][1]["coarse"][index]["note"]
+            )
+        for index in (5, 6, 7, 8):
             note = data["frames"][1]["coarse"][index]["note"]
             self.assertIn("saturates at 100", note)
             self.assertIn("bridge radius 0.40 stone radii", note)

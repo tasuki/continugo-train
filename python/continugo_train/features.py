@@ -24,17 +24,18 @@ from .feature_schemas import (
     SCHEMA4,
     SCHEMA5,
     SCHEMA6,
-    SCHEMA6_COARSE_PLANES,
-    SCHEMA6_MOVE_FEATURES,
+    SCHEMA7,
+    SCHEMA7_COARSE_PLANES,
+    SCHEMA7_MOVE_FEATURES,
     SUPPORTED_SCHEMAS,
     coarse_planes,
     move_features,
 )
 
-SCHEMA_VERSION = SCHEMA6  # Default extraction/training schema.
+SCHEMA_VERSION = SCHEMA7  # Default extraction/training schema.
 POINT_SAMPLED_SCHEMA = SCHEMA4
-COARSE_PLANES = SCHEMA6_COARSE_PLANES
-MOVE_FEATURES = SCHEMA6_MOVE_FEATURES
+COARSE_PLANES = SCHEMA7_COARSE_PLANES
+MOVE_FEATURES = SCHEMA7_MOVE_FEATURES
 
 
 PASS = 1_000_000
@@ -200,7 +201,7 @@ def decode_sample(
     if (
         not np.isfinite(coarse).all()
         or ((coarse[:2] < 0) | (coarse[:2] > 1)).any()
-        or (version == SCHEMA_VERSION and ((coarse < 0) | (coarse > 1)).any())
+        or (version in (SCHEMA6, SCHEMA7) and ((coarse < 0) | (coarse > 1)).any())
         or (version == POINT_SAMPLED_SCHEMA and ((coarse[:2] != 0) & (coarse[:2] != 1)).any())
         or (version == POINT_SAMPLED_SCHEMA and ((coarse[6:8] != 0) & (coarse[6:8] != 1)).any())
         or (version == SCHEMA5 and ((coarse[4:8] < 0) | (coarse[4:8] > 1)).any())
@@ -213,9 +214,9 @@ def decode_sample(
         )
         or (version == SCHEMA5 and ((exact[:, 6] != 0) & (exact[:, 6] != 1)).any())
         or (version == SCHEMA5 and (exact[raw_legal == 0, :7] != 0).any())
-        or (version == SCHEMA_VERSION and ((exact < 0) | (exact > 1)).any())
-        or (version == SCHEMA_VERSION and (exact[raw_legal == 0, :5] != 0).any())
-        or (version == SCHEMA_VERSION and ((exact[:, 4] != 0) & (exact[:, 4] != 1)).any())
+        or (version in (SCHEMA6, SCHEMA7) and ((exact < 0) | (exact > 1)).any())
+        or (version in (SCHEMA6, SCHEMA7) and (exact[raw_legal == 0, :5] != 0).any())
+        or (version in (SCHEMA6, SCHEMA7) and ((exact[:, 4] != 0) & (exact[:, 4] != 1)).any())
     ):
         raise ValueError(
             "nonfinite features, invalid capture flags/actions or inconsistent legality"

@@ -69,14 +69,14 @@ class RealFeatureTests(unittest.TestCase):
         self.assertEqual(white.legal.tolist(), [False, True])
         self.assertEqual(white.coarse[0].count_nonzero(), 0)
         self.assertGreater(white.coarse[1].count_nonzero(), 0)
-        self.assertGreater(white.coarse[7].sum().item(), 0)  # Enemy liberty-center coverage.
+        self.assertGreater(white.coarse[10].sum().item(), 0)  # Enemy liberty-center coverage.
         self.assertTrue(((white.coarse >= 0) & (white.coarse <= 1)).all())
-        self.assertGreater(white.coarse[9].sum().item(), white.coarse[7].sum().item())
+        self.assertGreater(white.coarse[12].sum().item(), white.coarse[10].sum().item())
         self.assertEqual(white.policy_targets()[0].tolist(), [2])
         black = self.load(2, actions=[276200])
         self.assertEqual(black.outcome, 1)
         self.assertGreater(black.coarse[0].count_nonzero(), 0)
-        torch.testing.assert_close(black.coarse[6], white.coarse[7])
+        torch.testing.assert_close(black.coarse[9], white.coarse[10])
         with self.assertRaises(ValueError):
             black.policy_targets()  # No fabricated targets for an unannotated node.
 
@@ -121,11 +121,11 @@ class RealFeatureTests(unittest.TestCase):
         with FeatureClient(self.binary) as client:
             aa = client.load(self.sgf, 1, cells=[])
             hard = client.load(self.sgf, 1, cells=[], feature_schema=4)
-            self.assertEqual(aa.feature_schema, 6)
-            self.assertEqual(len(COARSE_PLANES), 14)
+            self.assertEqual(aa.feature_schema, 7)
+            self.assertEqual(len(COARSE_PLANES), 17)
             self.assertFalse(any("capturable" in name for name in COARSE_PLANES))
             self.assertEqual(
-                COARSE_PLANES[4:10],
+                COARSE_PLANES[7:13],
                 (
                     "friendly_group_liberty_area",
                     "enemy_group_liberty_area",
@@ -138,17 +138,18 @@ class RealFeatureTests(unittest.TestCase):
             self.assertEqual(hard.feature_schema, 4)
             self.assertTrue(((aa.coarse[1] > 0) & (aa.coarse[1] < 1)).any())
             self.assertTrue(((hard.coarse[1] == 0) | (hard.coarse[1] == 1)).all())
-            torch.testing.assert_close(aa.coarse[10:], hard.coarse[8:], rtol=0, atol=0)
-            self.assertEqual(aa.coarse[4].count_nonzero(), 0)
-            self.assertGreater(aa.coarse[5].sum().item(), 0)
+            torch.testing.assert_close(aa.coarse[13:], hard.coarse[8:], rtol=0, atol=0)
+            self.assertEqual(aa.coarse[7].count_nonzero(), 0)
+            self.assertGreater(aa.coarse[8].sum().item(), 0)
             explicit = client.load(self.sgf, 1, cells=[], feature_schema=6)
             self.assertEqual(explicit.coarse.shape[0], 14)
-            torch.testing.assert_close(aa.coarse, explicit.coarse, rtol=0, atol=0)
+            torch.testing.assert_close(aa.coarse[:2], explicit.coarse[:2], rtol=0, atol=0)
+            torch.testing.assert_close(aa.coarse[5:], explicit.coarse[2:], rtol=0, atol=0)
             schema5 = client.load(self.sgf, 1, cells=[], feature_schema=5)
             self.assertEqual(schema5.coarse.shape[0], 12)
             self.assertEqual(schema5.exact.shape[1], 11)
             torch.testing.assert_close(schema5.coarse[:2], aa.coarse[:2], rtol=0, atol=0)
-            torch.testing.assert_close(schema5.coarse[4:8], aa.coarse[6:10], rtol=0, atol=0)
+            torch.testing.assert_close(schema5.coarse[4:8], aa.coarse[9:13], rtol=0, atol=0)
             import math
 
             covered = (aa.coarse[1] * ownership_weights(aa.resolution)).sum().item()

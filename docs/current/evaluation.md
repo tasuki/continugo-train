@@ -92,12 +92,13 @@ Publication remains a separate explicit user decision; see [model storage](model
 
 ## Numbered schemas and evaluator runtime upgrades
 
-A match may pair schema-4, schema-5 and schema-6 models. Each model's metadata
+A match may pair schema-4, schema-5, schema-6 and schema-7 models. Each model's metadata
 selects its own channel names, scalar normalization, geometry and exact-field
 width. Policy version, target format and raster density must agree. Schema-5
 inputs are recovered from Git commit `71f8daf` (not a frozen campaign binary);
-schema-6 inputs remain unchanged. Regression fixtures compare all three schemas
-bit-for-bit against executables compiled from Git history.
+schema-6 inputs remain unchanged. Schema 7 adds three recent-move planes after
+occupancy, with unchanged schema-6 geometry/exact fields. Regression fixtures
+compare schemas 4/5/6 against Git history and preserve their bits under schema 7.
 
 The shared evaluator can be upgraded explicitly without resetting the champion,
 ratings, completed trials or SGFs:

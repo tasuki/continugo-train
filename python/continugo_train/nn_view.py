@@ -149,7 +149,12 @@ def coarse_plane_image(name, values, index, schema):
             "Liberty-footprint union coverage",
         )
         note = notes[index // 2] if index < 8 else ""
+    elif schema == 7 and 2 <= index < 5:
+        owner = "Friendly" if index == 3 else "Enemy"
+        note = f"{owner} move {index - 1} ago; area-antialiased physical disc; pass/absent history blank"
     else:
+        if schema == 7 and index >= 5:
+            index -= 3
         notes = (
             "Area-antialiased",
             "Connected groups; log size; saturates at 100; bridge radius 0.40 stone radii",

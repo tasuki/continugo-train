@@ -42,7 +42,7 @@ fn group_liberty_area_is_per_group_not_the_colour_union() {
         let features = FeatureExtractor::new(&game, 4).unwrap();
         let area = features.resolution.pow(2);
         assert!(
-            features.coarse[5 * area..6 * area]
+            features.coarse[8 * area..9 * area]
                 .iter()
                 .all(|&x| x == 0.0)
         );
@@ -58,15 +58,15 @@ fn group_liberty_area_is_per_group_not_the_colour_union() {
             // Schema 6 now uses the approved 8x-coarser area integral; legacy
             // schema 4 remains precise. Test per-group semantics, allowing only
             // the measured small normalized precision difference.
-            assert!((features.coarse[4 * area + cell] - expected).abs() < 0.002);
+            assert!((features.coarse[7 * area + cell] - expected).abs() < 0.002);
         }
         assert_ne!(values[0], values[1]);
         let record = game.record();
         let white = Game::from_record_on(board, &record[..record.len() - 1]).unwrap();
         let enemy = FeatureExtractor::new(&white, 4).unwrap();
         assert_eq!(
-            &features.coarse[4 * area..5 * area],
-            &enemy.coarse[5 * area..6 * area]
+            &features.coarse[7 * area..8 * area],
+            &enemy.coarse[8 * area..9 * area]
         );
     }
 }
@@ -82,7 +82,7 @@ fn empty_positions_have_real_borders_and_legal_masks_across_sizes() {
             COARSE_PLANES.len() * resolution * resolution
         );
         assert!(
-            features.coarse[..10 * resolution * resolution]
+            features.coarse[..13 * resolution * resolution]
                 .iter()
                 .all(|&v| v == 0.0)
         );
@@ -119,7 +119,7 @@ fn profiled_coarse_features_preserve_bits_and_count_work() {
         assert_eq!(profile.preparation.calls, 1);
         assert_eq!(profile.liberty_spans.calls, 2);
         assert_eq!(profile.capturability.calls, 0);
-        assert_eq!(COARSE_PLANES.len(), 14);
+        assert_eq!(COARSE_PLANES.len(), 17);
         assert!(
             COARSE_PLANES
                 .iter()
@@ -128,13 +128,14 @@ fn profiled_coarse_features_preserve_bits_and_count_work() {
         let (legacy, legacy_profile) = FeatureExtractor::profiled_with_schema(&game, 4, 4).unwrap();
         assert_eq!(legacy_profile.capturability.calls, 2);
         let area = ordinary.resolution.pow(2);
-        assert_eq!(&ordinary.coarse[10 * area..], &legacy.coarse[8 * area..]);
+        assert_eq!(&ordinary.coarse[13 * area..], &legacy.coarse[8 * area..]);
         assert_eq!(profile.liberty_area.calls, 2);
         assert_eq!(profile.raster.group_canvas_allocation.calls, 2);
         assert_eq!(profile.raster.group_shared_shapes.calls, 2);
         assert_eq!(profile.raster.group_reduce.calls, 2);
         assert_eq!(profile.raster.group_liberty_reduce.calls, 2);
-        assert_eq!(profile.painting.calls, 5); // allocation, two groups, antialiasing, borders
+        assert_eq!(profile.raster.history.calls, 1);
+        assert_eq!(profile.painting.calls, 6); // allocation, groups, occupancy, borders, history
         let mut total = continugo_train::features::CoarseProfile::default();
         total.merge(&profile);
         total.merge(&profile);
@@ -169,7 +170,7 @@ fn parallel_move_features_match_serial_bits_and_action_order() {
         .num_threads(4)
         .build()
         .unwrap();
-    for (size, schema) in [(9, 4), (13, 4), (19, 4), (9, 6), (13, 6), (19, 6)] {
+    for (size, schema) in [(9, 4), (13, 4), (19, 4), (9, 6), (13, 6), (19, 6), (9, 7)] {
         let board = Board::new(size).unwrap();
         let r = board.stone_radius();
         let game = Game::new(board).play(Spot { x: r, y: r }).unwrap();
@@ -262,7 +263,7 @@ fn one_move_capture_planes_use_legal_opposing_moves_not_liberty_counts() {
 }
 
 #[test]
-fn features_do_not_depend_on_the_last_four_moves() {
+fn legacy_features_do_not_depend_on_the_last_four_moves() {
     let mut first = Game::default();
     let mut second = Game::default();
     for (x, y) in [(200, 200), (600, 600), (400, 400), (800, 800)] {
@@ -272,8 +273,8 @@ fn features_do_not_depend_on_the_last_four_moves() {
         second = second.play(Spot { x, y }).unwrap();
     }
     assert_ne!(first.record(), second.record());
-    let first = FeatureExtractor::new(&first, 4).unwrap();
-    let second = FeatureExtractor::new(&second, 4).unwrap();
+    let first = FeatureExtractor::with_schema(&first, 4, 6).unwrap();
+    let second = FeatureExtractor::with_schema(&second, 4, 6).unwrap();
     assert_eq!(first.coarse, second.coarse);
     let actions = [action(200, 200), action(276, 200), action(500, 500)];
     assert_eq!(
@@ -466,7 +467,7 @@ fn antialiased_occupancy_preserves_disc_area_and_other_features() {
                     .iter()
                     .all(|&v| v == 0.0 || v == 1.0)
             );
-            assert_eq!(&aa.coarse[10 * area..], &hard.coarse[8 * area..]);
+            assert_eq!(&aa.coarse[13 * area..], &hard.coarse[8 * area..]);
             assert!(
                 aa.coarse
                     .iter()
@@ -527,9 +528,13 @@ fn adjacent_stone_coverage_sums_and_is_history_independent() {
     let game = make(400, 510);
     let reversed = make(510, 400);
     let aa = FeatureExtractor::new(&game, 4).unwrap();
-    assert_eq!(
-        aa.coarse,
-        FeatureExtractor::new(&reversed, 4).unwrap().coarse
+    let reversed = FeatureExtractor::new(&reversed, 4).unwrap();
+    let area = aa.resolution.pow(2);
+    assert_eq!(&aa.coarse[..2 * area], &reversed.coarse[..2 * area]);
+    assert_eq!(&aa.coarse[5 * area..], &reversed.coarse[5 * area..]);
+    assert_ne!(
+        &aa.coarse[2 * area..5 * area],
+        &reversed.coarse[2 * area..5 * area]
     );
     let n = aa.resolution;
     let edges = continugo_train::targets::raster_bounds(n);

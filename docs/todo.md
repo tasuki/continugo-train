@@ -4,12 +4,15 @@ This is a living document.
 Remove tasks when implemented.
 Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 
-## Feature planes
+## Feature planes — next fresh run
 
-- [ ] Investigate feature planes
-- [ ] Add a **last move** feature plane.
-- [ ] Add **komi** as a network input.
-- [ ] Investigate Benson pass-alive speed and feasibility for feature plane.
+Keep existing inputs; use a new schema for fresh training.
+
+- [ ] Add **actual stone diameter / board width** as an input; ensure scalar
+  inputs survive normalization.
+- [ ] Add **komi** as an input, with consistent scoring and SGF support.
+- [ ] Trial friendly/enemy **Benson pass-alive planes**; measure integrated cost
+  and benefit before including them.
 
 ## Move penalties
 

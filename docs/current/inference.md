@@ -57,7 +57,10 @@ Export atomically publishes two opset-17 graphs as one new directory:
   raw placement logits. Batch, spatial, and candidate axes are dynamic.
 
 Both graphs embed matching feature definitions, density, architecture, checkpoint
-hash, and epoch. Schema-5 models have twelve coarse planes: antialiased
+hash, and epoch. Fresh schema-7 models have seventeen coarse planes, including
+three recent-move location markers immediately after occupancy, and nine exact
+fields. Schema 6 retains fourteen coarse planes and nine exact fields, without
+history. Schema-5 models have twelve coarse planes: antialiased
 occupancy, connected group size, spatial liberty centers/footprints and borders,
 without scalar liberty area or capturability flags. Their eleven exact fields
 include binary `splits_friendly_region`; the user-authorized revision of unused
@@ -190,7 +193,7 @@ compares unguided search against the direct reference without ONNX.
 ### Huge-action-space adaptation
 
 Expanded nodes select **32 top coarse cells plus 8 exploratory cells** by default,
-then generate direct geometric proposals inside them for schema-5 models. Only
+then generate direct geometric proposals inside them for schema-5/6/7 models. Only
 those proposals receive exact legality/features. Legacy schema-4 models and
 `infer --complete-cells` analyze complete selected cells. Cells do not overlap. Exploration is seeded from each tree's RNG, so opening coverage can
 vary across games without depending on queue/batch order. Both budgets are pinned
@@ -225,7 +228,7 @@ coordinates omitted by geometry proposals.
 
 ### Geometry proposals
 
-Schema-5 models default to direct **Extend (including Hug) / Join / Capture /
+Schema-5/6/7 models default to direct **Extend (including Hug) / Join / Capture /
 Random** proposals (`geometry-v2-frontier`), with soft budget 16. This applies to
 neural self-play, arena and `infer`. `infer --geometry-budget N` changes the budget;
 `infer --complete-cells` restores complete-cell analysis for reference comparisons.
