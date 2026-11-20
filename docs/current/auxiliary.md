@@ -7,6 +7,15 @@ Validated SGFs and their final-area targets/feature packets remain usable.
 No checkpoint migration or historical campaign rewrite is performed; do not
 resume old loop control files with the new model/runtime.
 
+## Score presentation compatibility
+
+SGF `RE`, move annotations and viewers now express margins in board points:
+normalized score × `SZ²`, so a whole 9×9 board is 81 points. This presentation
+change applies across feature schemas, including schema 7; normalized neural
+outputs, targets, caches and checkpoints are unchanged. Old stone-area SGF `RE`
+values fail authoritative replay validation; regenerate or migrate those records
+before rebuilding caches. Existing historical annotations are not rewritten.
+
 ## Labels and resolution
 
 Only naturally completed games with `RE` verified against shared-rule scoring

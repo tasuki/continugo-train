@@ -343,7 +343,7 @@ def frame(client, sgf, ply, loaded, info):
         "points_pct": 50 * (value.item() + 1),
         "score": score,
         "score_stdev": stdev,
-        "score_stones": score * 1_000_000 / (math.pi * (sample.diameter / 2) ** 2),
+        "score_points": score * sample.board_size**2,
         "outcome": sample.outcome,
         "score_target": sample.score,
         "coarse_pass": float(coarse_probs[-1]),
@@ -450,7 +450,7 @@ return '['+alphabet[Math.floor(x/52)]+alphabet[x%52]+alphabet[Math.floor(y/52)]+
 }
 function show(i){if(!frames.length)return;index=Math.max(0,Math.min(frames.length-1,i));const f=frames[index];$('slider').value=index;$('prev').disabled=!index;$('next').disabled=index===frames.length-1;$('position').textContent=`Move ${f.ply+1} / ${data.moves||frames.length} · view ${index+1}/${frames.length}`;$('turn').textContent=`${f.player?'White':'Black'} to play ${moveCode(f.view.action)}${f.counterfactual?' · counterfactual NN':''}`;
 $('stats').replaceChildren();
-for(const [label,value] of [[`Value ${signed(f.value)}`,`${fmt(f.points_pct,1)}%`],[`Score ${signed(f.score)}`,signed(f.score_stones)],['Head utility',signed(f.utility)],[`Final Score ${signed(f.score_target)}`,signed(f.score_target==null?null:f.score_target*1000000/(Math.PI*(f.diameter/2)**2))],[`P(pass) ${fmt(f.coarse_pass,2)} / final ${fmt(f.pass,2)}`,null],[`Playouts ${f.visits}`,`${f.pass_visits} pass`]]){
+for(const [label,value] of [[`Value ${signed(f.value)}`,`${fmt(f.points_pct,1)}%`],[`Score ${signed(f.score)}`,signed(f.score_points)],['Head utility',signed(f.utility)],[`Final Score ${signed(f.score_target)}`,signed(f.score_target==null?null:f.score_target*f.board_size**2)],[`P(pass) ${fmt(f.coarse_pass,2)} / final ${fmt(f.pass,2)}`,null],[`Playouts ${f.visits}`,`${f.pass_visits} pass`]]){
 if(value===null){const row=document.createElement('div');row.textContent=label;$('stats').append(row);continue}
 const row=document.createElement('div'),left=document.createElement('span'),right=document.createElement('span');
 row.className='stat-row';right.className='stat-number';left.textContent=label;right.textContent=value;row.append(left,right);$('stats').append(row);

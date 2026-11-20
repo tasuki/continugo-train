@@ -160,7 +160,7 @@ impl GameMetadata {
 pub struct MoveEvaluation {
     /// Expected points percentage: draws count as half, not strict P(win).
     pub win_pct: Option<f64>,
-    /// Expected final signed margin in SGF stone-area units, not raw board area.
+    /// Expected final signed margin in board points (the whole board is size²).
     pub score: Option<f64>,
 }
 
@@ -189,14 +189,14 @@ impl MoveEvaluation {
             return Ok(Self::default());
         };
         estimate.utility(0.0, game.board().size() as f64)?; // Reject invalid estimates, rather than emitting fake nulls.
-        let stone_area = std::f64::consts::PI * f64::from(game.board().stone_radius()).powi(2);
+        let board_points = f64::from(game.board().size()).powi(2);
         let rounded = |value: f64| {
             let value = (value * 10.0).round() / 10.0;
             if value == 0.0 { 0.0 } else { value } // Avoid a displayed negative zero.
         };
         Ok(Self {
             win_pct: Some(rounded(50.0 * (estimate.value + 1.0))),
-            score: Some(rounded(estimate.score * BOARD_AREA / stone_area)),
+            score: Some(rounded(estimate.score * board_points)),
         })
     }
 }
@@ -688,9 +688,9 @@ mod tests {
     }
 
     #[test]
-    fn post_move_annotations_flip_both_heads_and_convert_physical_score_units() {
+    fn post_move_annotations_flip_both_heads_and_convert_to_board_points() {
         use continugo_rules::Spot;
-        for (size, expected_score) in [(9, 10.5), (13, 22.0), (19, 47.1)] {
+        for (size, expected_score) in [(9, 8.1), (13, 16.9), (19, 36.1)] {
             let after_black = Game::new(Board::new(size).unwrap())
                 .play(Spot { x: 500, y: 500 })
                 .unwrap();
@@ -799,8 +799,7 @@ mod tests {
             overshot |= areas.black > BOARD_AREA;
             let annotation = MoveEvaluation::after_move(&game, None).unwrap();
             assert_eq!(annotation.win_pct, Some(100.0));
-            let stone_area = std::f64::consts::PI * f64::from(game.board().stone_radius()).powi(2);
-            let expected = (BOARD_AREA / stone_area * 10.0).round() / 10.0;
+            let expected = f64::from(game.board().size()).powi(2);
             assert_eq!(annotation.score, Some(expected));
         }
         assert!(
@@ -860,7 +859,7 @@ mod tests {
             assert!(comment.starts_with("{\"win_pct\":"));
             assert!(comment.find("\"score\"").unwrap() < comment.find("\"policy\"").unwrap());
             assert_eq!(value["win_pct"], if ply % 2 == 0 { 36.6 } else { 63.4 });
-            assert_eq!(value["score"], if ply % 2 == 0 { -22.0 } else { 22.0 });
+            assert_eq!(value["score"], if ply % 2 == 0 { -16.9 } else { 16.9 });
         }
         replay(&record);
     }

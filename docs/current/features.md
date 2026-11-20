@@ -431,8 +431,8 @@ Generated move comments put post-move evaluation first, then the alternatives:
 **mover's perspective**, using that mover's frozen neural model. Both are numeric,
 rounded to one decimal. `win_pct = 50*(1 + outcome)` is expected points percentage
 (draws count half), not a separate estimate of strict win probability. Score is
-expected final signed margin in the same stone-area units as SGF `RE`, converting
-normalized area by `1_000_000 / (pi * stone_radius²)`. Positive favors the mover.
+expected final signed margin in the same board points as SGF `RE`, converting
+normalized area by `SZ²` (81 total points on 9×9). Positive favors the mover.
 These are raw neural head estimates, not the score-weighted search utility.
 Neural annotations use a value-only query (reusing cached context when available),
 not another search or extra simulations in the policy visit counts.

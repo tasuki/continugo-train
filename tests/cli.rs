@@ -392,9 +392,9 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
         territory::Outcome::Win(color, margin) => {
             let (winner, score) = result.split_once('+').unwrap();
             assert_eq!(winner, if color == Color::Black { "B" } else { "W" });
-            let stone_area = std::f64::consts::PI * f64::from(game.board().stone_radius()).powi(2);
+            let point_area = 1_000_000.0 / f64::from(game.board().size()).powi(2);
             assert_eq!(score.split_once('.').unwrap().1.len(), 1);
-            assert!((score.parse::<f64>().unwrap() - margin / stone_area).abs() <= 0.05 + 1e-9);
+            assert!((score.parse::<f64>().unwrap() - margin / point_area).abs() <= 0.05 + 1e-9);
         }
     }
     assert_eq!(record.move_properties.len(), record.plays.len());
@@ -412,9 +412,8 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
     let (win_pct, score) = match territory::result(territory::areas(game.position().stones())) {
         territory::Outcome::Draw => (50.0, 0.0),
         territory::Outcome::Win(winner, margin) => {
-            let stone_area =
-                std::f64::consts::PI * f64::from(board_from_sgf(&record).stone_radius()).powi(2);
-            let margin = (margin / stone_area * 10.0).round() / 10.0;
+            let point_area = 1_000_000.0 / f64::from(board_from_sgf(&record).size()).powi(2);
+            let margin = (margin / point_area * 10.0).round() / 10.0;
             if winner == mover {
                 (100.0, margin)
             } else {

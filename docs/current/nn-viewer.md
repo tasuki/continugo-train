@@ -106,7 +106,7 @@ Each page is a **pre-move position**, relative to the player about to move:
   (display pixels average inputs). Legacy schema-4 models retain their original
   ten fields. Action-table columns follow each
   frame's schema, including reports containing different actors.
-- Outcome value, expected points percentage, normalized score and stone-unit
+- Outcome value, expected points percentage, normalized score and board-point
   score, their score-weighted head utility, final labels when available, and
   policy-training eligibility.
 - Ownership prediction, validated final ownership and prediction error when the
