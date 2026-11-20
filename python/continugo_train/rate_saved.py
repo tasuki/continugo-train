@@ -253,8 +253,6 @@ def evaluate(runner, registry):
     for number, candidate in enumerate(state["candidates"], 1):
         if registry["evaluated"].get(candidate, {}).get("complete") or candidate in skipped:
             continue
-        if registry["pending"] not in {None, candidate}:
-            raise ValueError("resume the pending candidate before changing the queue")
         family, round_text = candidate.rsplit("-r", 1)
         round_number = int(round_text)
         cadence = state.get("family_evaluation_every", {}).get(family)
@@ -268,6 +266,8 @@ def evaluate(runner, registry):
                 f"Skipped {candidate}: all evaluation is restricted to multiples of {evaluation_every}"
             )
             continue
+        if registry["pending"] not in {None, candidate}:
+            raise ValueError("resume the pending candidate before changing the queue")
         registry["pending"] = candidate
         save_champions(runner.root, registry)
         if candidate not in state["trials"]:
