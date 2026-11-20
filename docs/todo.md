@@ -4,16 +4,6 @@ This is a living document.
 Remove tasks when implemented.
 Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 
-## Ratings and position accounting
-
-- [ ] Replace the fixed 50% training-window rule with KataGo's formula:
-    `W = min(N, 250_000 + (0.4 * 250_000**0.35 / 0.65) * (max(N, 250_000)**0.65 - 250_000**0.65))`,
-    where `N = d` is the total number of self-play positions in this lineage and
-    `W` is the window size in positions. Select the window first, then split it
-    into training/validation data. Show a sample table for
-    `N = 100, 100_000, 1_000_000, ...` positions, including the 250,000-position
-    threshold.
-
 ## Feature planes
 
 - [ ] Investigate feature planes

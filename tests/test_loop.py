@@ -282,12 +282,6 @@ class LoopHarness(unittest.TestCase):
                 "1",
                 "--validation-positions-per-game",
                 "1",
-                "--training-window-fraction",
-                "0",
-                "--window-games",
-                "16",
-                "--window-iterations",
-                "1",
                 "--threads",
                 "1",
             ]
@@ -430,13 +424,49 @@ class LoopTests(LoopHarness):
         self.assertEqual(len(state["iterations"]), 3)
         self.assertTrue(state["iterations"][-1]["completed"])
 
-    def test_growing_replay_pins_separate_pools_and_survives_resume(self):
+    def test_katago_window_uses_current_d_and_freezes_combined_window(self):
+        output = self.root / "katago-window"
+        state = self.run_loop(output)
+        first = state["iterations"][0]
+        budget = first["replay_budget"]
+        self.assertNotIn("training_window_fraction", state["config"])
+        self.assertEqual(budget["policy"], "katago")
+        self.assertEqual(budget["cumulative_data_positions"], first["data_positions"])
+        self.assertEqual(
+            budget["window_target"], loop.training_window_size(first["data_positions"])
+        )
+        self.assertEqual(
+            budget["window_selected"], budget["training_selected"] + budget["validation_selected"]
+        )
+        self.assertNotIn("training_target", budget)
+        self.assertGreater(budget["validation_selected"], 0)
+        parent = loop.load_training(output / first["parent_checkpoint"]["path"])
+        self.assertGreater(budget["window_target"], parent["progress"]["data_positions"])
+        pins = dict(state["replay_pool_splits"])
+        corpus = first["corpus_fingerprint"]
+        resumed = self.run_loop(output, resume=True, extra=["--iterations", "2"])
+        self.assertEqual(resumed["iterations"][0]["corpus_fingerprint"], corpus)
+        self.assertTrue(
+            all(resumed["replay_pool_splits"][key] == value for key, value in pins.items())
+        )
+        second = resumed["iterations"][1]
+        self.assertEqual(
+            second["replay_budget"]["window_target"],
+            loop.training_window_size(second["data_positions"]),
+        )
+        saved = loop.load_training(output / second["checkpoint"]["path"])
+        self.assertEqual(saved["progress"]["data_positions"], second["data_positions"])
+
+    def test_window_pins_survive_resume_and_removed_config_is_discarded(self):
         output = self.root / "growing"
-        state = self.run_loop(output, extra=["--training-window-fraction", "0.3333333333333333"])
+        state = self.run_loop(output)
         first = state["iterations"][0]
         parent = loop.load_training(output / first["parent_checkpoint"]["path"])
-        count = parent["progress"]["data_positions"]
-        self.assertEqual(first["replay_budget"]["training_target"], max(1, (count + 2) // 3))
+        self.assertEqual(
+            first["replay_budget"]["window_target"], loop.training_window_size(first["data_positions"])
+        )
+        state["config"].update(training_window_fraction=0.5, window_games=2, window_iterations=1)
+        atomic_checkpoint(output / "loop.pt", state)
         self.assertGreater(first["replay_budget"]["validation_selected"], 0)
         pins = dict(state["replay_pool_splits"])
         first_saved = loop.load_training(output / first["checkpoint"]["path"])
@@ -445,6 +475,8 @@ class LoopTests(LoopHarness):
         self.assertEqual(set(trainer.checkpoint_splits(first_saved)), expected_used)
         state = self.run_loop(output, resume=True, extra=["--iterations", "2"])
         self.assertTrue(all(state["replay_pool_splits"][k] == v for k, v in pins.items()))
+        for name in ("training_window_fraction", "window_games", "window_iterations"):
+            self.assertNotIn(name, state["config"])
         second = state["iterations"][1]
         saved = loop.load_training(output / second["checkpoint"]["path"])
         for game in saved["manifest"]:
@@ -479,7 +511,10 @@ class LoopTests(LoopHarness):
             info = inspect_game(output / record["path"])
             self.assertEqual(info["root_comment"]["model"], first["checkpoint"]["sha256"])
         self.assertTrue(
-            all(r["path"].startswith(("iteration-0002/", "bootstrap/")) for r in second["replay"])
+            all(
+                r["path"].startswith(("iteration-0001/", "iteration-0002/", "bootstrap/"))
+                for r in second["replay"]
+            )
         )
         self.assertLessEqual(len(second["replay"]), 16)
         self.assertEqual(before, {path: loop.digest(output / path) for path in before})
@@ -489,7 +524,8 @@ class LoopTests(LoopHarness):
 
     def test_generated_rows_outside_replay_are_known_to_future_offline_imports(self):
         output = self.root / "small-replay"
-        state = self.run_loop(output, extra=["--window-games", "2"])
+        with patch.object(loop, "training_window_size", return_value=4):
+            state = self.run_loop(output)
         iteration = state["iterations"][0]
         checkpoint = output / iteration["checkpoint"]["path"]
         saved = loop.load_training(checkpoint)
@@ -574,8 +610,11 @@ class LoopTests(LoopHarness):
     def test_resumed_epoch_cannot_drop_ancestral_splits_absent_from_its_window(self):
         output = self.root / "lost-history"
         self.jobs.fault = "epoch_gap"
-        with self.assertRaises(KeyboardInterrupt):
-            self.run_loop(output, extra=["--train-epochs", "2", "--window-games", "4"])
+        with (
+            patch.object(loop, "training_window_size", return_value=10),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.run_loop(output, extra=["--train-epochs", "2"])
         path = next(output.rglob("epoch-0001.pt"))
         saved = loop.load_training(path)
         current_ids = {g["game_id"] for g in saved["manifest"]}
@@ -803,10 +842,6 @@ class LoopTests(LoopHarness):
             "0",
             "--threads",
             "1",
-            "--window-iterations",
-            "1",
-            "--window-games",
-            "64",
         ]
         # Interrupt a real supervisor after native SGFs start appearing. Its
         # handler must reap the child group and release the inherited loop lock.

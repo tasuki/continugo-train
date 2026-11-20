@@ -62,9 +62,6 @@ class LoopConfig:
     inference_threads: int = 1
     feature_threads: int = 6
     cache_positions: int = 64
-    window_iterations: int = 4
-    window_games: int = 256
-    training_window_fraction: float = 1 / 2
     train_epochs: int = 1
     steps_per_epoch: int = 0
     positions_per_game: int = 0
@@ -91,13 +88,6 @@ class LoopConfig:
         if self.feature_cache not in MODES:
             raise ValueError(f"feature_cache must be one of {MODES}")
         weighted_sizes(self.sizes, self.size_weights)
-        if (
-            not math.isfinite(self.training_window_fraction)
-            or not 0 <= self.training_window_fraction <= 1
-        ):
-            raise ValueError(
-                "training-window-fraction must be in 0..1 (0 uses legacy fixed windows)"
-            )
         if not self.sizes or any(size not in range(9, 20) for size in self.sizes):
             raise ValueError("sizes must be nonempty and in 9..19")
         if not 1 <= self.games_per_iteration < 2**32 or not 1 <= self.simulations < 2**32:
@@ -129,15 +119,12 @@ class LoopConfig:
             "proposal_attempts",
             "inference_threads",
             "feature_threads",
-            "window_iterations",
             "train_epochs",
             "batch_size",
             "threads",
         ]
-        if any(getattr(self, name) <= 0 for name in positive) or self.window_games < 2:
-            raise ValueError(
-                "positive game/search/training/thread limits and window-games >= 2 required"
-            )
+        if any(getattr(self, name) <= 0 for name in positive):
+            raise ValueError("positive game/search/training/thread limits required")
         nonnegative = [
             "seed",
             "steps_per_epoch",
@@ -242,7 +229,7 @@ class LoopConfig:
 
 
 def training_config(config):
-    """Read compatible campaign settings without removed evaluation controls."""
+    """Read current campaign settings, dropping obsolete window/evaluation controls."""
     names = {field.name for field in fields(LoopConfig)}
     if any(name.startswith("replay_") for name in config):
         raise ValueError(
@@ -420,8 +407,21 @@ def select_replay(records, limit, size_weights=DEFAULT_SIZE_WEIGHTS):
     return selected
 
 
+def training_window_size(positions):
+    """KataGo window W(N), rounded up to a position, with N = lineage d."""
+    if type(positions) is not int or positions < 0:
+        raise ValueError("position-based replay requires known cumulative data positions")
+    threshold = 250_000
+    if positions <= threshold:
+        return positions
+    window = threshold + (0.4 * threshold**0.35 / 0.65) * (positions**0.65 - threshold**0.65)
+    return min(positions, math.ceil(window))
+
+
 def select_position_replay(records, target, size_weights=DEFAULT_SIZE_WEIGHTS):
     """Keep whole games in replay order until the eligible-position target is met."""
+    if target == 0:
+        return []
     ordered = select_replay(records, len(records), size_weights)
     selected, positions = [], 0
     for record in ordered:
@@ -433,37 +433,6 @@ def select_position_replay(records, target, size_weights=DEFAULT_SIZE_WEIGHTS):
         if positions >= target:
             break
     return selected
-
-
-def select_growing_replay(
-    records,
-    splits,
-    cumulative_data_positions,
-    fraction,
-    validation_fraction,
-    size_weights=DEFAULT_SIZE_WEIGHTS,
-):
-    """Budget eligible positions, retaining whole games and separate pinned holdouts.
-
-    The historical data counter includes validation and generated positions no longer
-    accessible in replay. Training exposures do not increase this counter.
-    """
-    if type(cumulative_data_positions) is not int or cumulative_data_positions < 0:
-        raise ValueError("position-based replay requires known cumulative data positions")
-    train_limit = max(1, math.ceil(cumulative_data_positions * fraction))
-    train = select_position_replay(
-        [r for r in records if splits.get(r["game_id"]) == "train"], train_limit, size_weights
-    )
-    training_positions = sum(r["eligible_positions"] for r in train)
-    validation_limit = max(
-        1, math.ceil(training_positions * validation_fraction / (1 - validation_fraction))
-    )
-    validation = select_position_replay(
-        [r for r in records if splits.get(r["game_id"]) == "validation"],
-        validation_limit,
-        size_weights,
-    )
-    return train + validation, train_limit
 
 
 class LoopRunner:
@@ -807,67 +776,44 @@ class LoopRunner:
         options = self.config.training_options(parent, iteration["number"])
         history = checkpoint_splits(parent)
         if iteration["replay"] is None:
-            growing = self.config.training_window_fraction > 0
-            recent = self.state["iterations"][
-                0
-                if growing
-                else max(0, iteration["number"] - self.config.window_iterations) : iteration[
-                    "number"
-                ]
-            ]
+            recent = self.state["iterations"][: iteration["number"]]
             candidates = [record for previous in reversed(recent) for record in previous["games"]]
             candidates.extend(self.state["bootstrap"])
-            if growing:
-                # Pool assignments include unselected games but are not counted as
-                # cumulative training evidence until selected into a checkpoint.
-                splits = merge_split_assignments(history, parent.get("replay_pool_splits", {}))
-                splits = merge_split_assignments(splits, self.state.get("replay_pool_splits", {}))
-                unseen = select_replay(
-                    [r for r in candidates if r["game_id"] not in splits],
-                    len(candidates),
-                    self.config.size_weights,
+            # Select the combined window WITHOUT consulting split labels.
+            # Current generation is included in N, not just the parent.
+            cumulative = iteration["data_positions"]
+            target = training_window_size(cumulative)
+            selected = select_position_replay(candidates, target, self.config.size_weights)
+            splits = merge_split_assignments(history, parent.get("replay_pool_splits", {}))
+            splits = merge_split_assignments(splits, self.state.get("replay_pool_splits", {}))
+            if selected:
+                games, _ = inspect_corpus(
+                    [str(self.check(r)) for r in selected],
+                    options.samples_per_diameter,
+                    self.config.feature_binary,
                 )
-                if unseen:
-                    games, _ = inspect_corpus(
-                        [str(self.check(r)) for r in unseen],
-                        options.samples_per_diameter,
-                        self.config.feature_binary,
-                    )
-                    _, _, splits = assign_splits(
-                        games, options.seed, options.validation_fraction, splits
-                    )
-                cumulative = checkpoint_progress(parent)["data_positions"]
-                selected, target = select_growing_replay(
-                    candidates,
-                    splits,
-                    cumulative,
-                    self.config.training_window_fraction,
-                    options.validation_fraction,
-                    self.config.size_weights,
+                _, _, splits = assign_splits(
+                    games, options.seed, options.validation_fraction, splits
                 )
-                self.state["replay_pool_splits"] = splits
-                iteration["replay_pool_splits"] = splits
-                iteration["replay_splits"] = {r["game_id"]: splits[r["game_id"]] for r in selected}
-                iteration["replay_budget"] = {
-                    "unit": "positions",
-                    "cumulative_data_positions": cumulative,
-                    "training_target": target,
-                    "training_selected": sum(
-                        r["eligible_positions"] for r in selected if splits[r["game_id"]] == "train"
-                    ),
-                    "validation_selected": sum(
-                        r["eligible_positions"]
-                        for r in selected
-                        if splits[r["game_id"]] == "validation"
-                    ),
-                }
-                self.log(
-                    f"iteration {iteration['number']}: training/validation window budget {iteration['replay_budget']}"
-                )
-            else:
-                selected = select_replay(
-                    candidates, self.config.window_games, self.config.size_weights
-                )
+            self.state["replay_pool_splits"] = splits
+            iteration["replay_pool_splits"] = splits
+            iteration["replay_splits"] = {r["game_id"]: splits[r["game_id"]] for r in selected}
+            iteration["replay_budget"] = {
+                "unit": "positions",
+                "policy": "katago",
+                "cumulative_data_positions": cumulative,
+                "window_target": target,
+                "window_selected": sum(r["eligible_positions"] for r in selected),
+                "training_selected": sum(
+                    r["eligible_positions"] for r in selected if splits[r["game_id"]] == "train"
+                ),
+                "validation_selected": sum(
+                    r["eligible_positions"] for r in selected if splits[r["game_id"]] == "validation"
+                ),
+            }
+            self.log(
+                f"iteration {iteration['number']}: training/validation window budget {iteration['replay_budget']}"
+            )
         else:
             selected = iteration["replay"]
         history.update(iteration.get("replay_splits", {}))
@@ -1273,8 +1219,6 @@ def run_loop(args):
                     state["config"].setdefault(field.name, 19.0)
                 if field.name == "save_model_every":
                     state["config"].setdefault(field.name, 10)
-                if field.name == "training_window_fraction":
-                    state["config"].setdefault(field.name, 0.0)
                 if field.name in {"policy_simulations", "policy_search_probability"}:
                     state["config"].setdefault(
                         field.name,

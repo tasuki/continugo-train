@@ -174,8 +174,6 @@ def prepare(root, run, recipe):
     expected = fork_checkpoint(parent, recipe["family"], parent_path, recipe["parent_sha256"])
     atomic_checkpoint(derived, expected)
     config = dict(loop.training_config(state["config"]))
-    # A new fork adopts today's window policy, not an ancestor's legacy window.
-    config["training_window_fraction"] = loop.LoopConfig().training_window_fraction
     config.update(recipe["overrides"])
     config.update(
         selfplay_binary=str(run / "bin/continugo-train"),

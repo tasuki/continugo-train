@@ -33,9 +33,10 @@ frozen campaigns; their runtime files do not need modification.
 A recipe pins a completed source round/checkpoint and gives only family, output,
 iteration/rating cadence and loop-setting overrides. The runner inherits the
 parent's search/training configuration, model, SGD momentum, cumulative counters,
-D4 setting and ancestral split ledger. New forks adopt the default one-half cumulative
-eligible-data-position training-window policy (retaining whole games), even when the parent used a fixed window; a recipe may
-explicitly set `training_window_fraction: 0` for legacy fixed windows. See [training/validation windows](loop.md#training-and-validation-windows).
+D4 setting and ancestral split ledger. All new forks use the KataGo combined
+position window (retaining whole games), even when the parent used a legacy
+window. There are no fractional or fixed-window recipe overrides. See
+[training/validation windows](loop.md#training-and-validation-windows).
 It copies the round's ordered training/validation windows,
 validates game hashes/caches and changes checkpoint family identity only.
 `launch.json` records effective settings, seed counts and checkpoint/runtime hashes.

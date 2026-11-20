@@ -133,39 +133,33 @@ The trainer's `best.pt` is a within-job diagnostic. The loop exports the **lates
 completed epoch**, not a loss-selected promotion. Training always starts from the
 latest candidate.
 
-New loops and new campaign forks default to **`--training-window-fraction 0.5`**.
-Each round targets `ceil(parent progress.data_positions / 2)` eligible training
-positions, retaining whole newest games until the target is reached (possibly
-overshooting by the last game), or the available eligible training pool is exhausted.
-The minimum target is one position. The historical counter includes validation and
-generated/imported positions, not repeated optimizer exposures; unknown historical
-position totals are rejected. A fresh initial checkpoint may use `--data-positions`
-to supply an agreed historical estimate (900000 for cg10); new generation then
-increases the counter without requiring old SGFs to be imported. All earlier local rounds and explicit
-bootstrap games are candidates, not just the last few rounds. Board-size selection
-remains weighted round-robin, newest-first within each size; canonical duplicates
-count once. Legacy fixed-window limits `--window-games` and `--window-iterations` do not cap this mode.
+Training uses **KataGo's combined position window**, based on `d` after the
+current self-play round:
 
-**Validation is separate.** New identities get a permanent split before window selection.
-From the validation-only pool, target `ceil(selected training positions *
-validation_fraction / (1-validation_fraction))` positions (at least one), retaining
-whole games with the same boundary overshoot and availability rules.
-Changing window size or random seed never moves a held-out identity into training.
-Pool pins survive checkpoint continuation/forks, including assigned-but-unselected
-games. These extra pins are stored separately from the used-game ledger: unselected
-training games do not inflate the ancestral used-game ledger. The replay budget
-uses the separate historical data-position counter, not that ledger's size. Selected
-corpora, budgets and splits are frozen per round for restartability. Validation
-subsets may change, so validation loss is not a fixed-cohort benchmark.
+```text
+W = min(d, 250_000 + (0.4 * 250_000**0.35 / 0.65)
+        * (max(d, 250_000)**0.65 - 250_000**0.65))
+```
 
-`--training-window-fraction 0` restores legacy fixed windows: `--window-iterations`
-(default 4) admits current/previous N−1 generated rounds, and `--window-games`
-(default 256) limits the combined train/validation corpus. CLI flags, recipes and
-saved configuration use only `training_window_fraction`, `window_games` and
-`window_iterations` (hyphenated on the CLI). There are no aliases for the old
-replay-setting names; older saved configurations must be explicitly migrated.
-cg9's saved configuration is migrated and upgraded starting with round 36,
-without changing completed rounds or automatically resuming it.
+Round `W` up to an integer position. Select the **combined window first**, without
+consulting train/validation labels: whole newest eligible games until `ceil(W)`
+positions are reached, or the accessible eligible pool is exhausted. The final
+game may overshoot the budget. All local rounds and explicit bootstrap games are
+candidates; board sizes use weighted round-robin, newest-first within each size,
+and canonical duplicates count once. Fixed game/iteration limits do not cap this mode.
+
+**Split the selected window afterward**, using `validation_fraction` (default 2%)
+and permanent game-level holdouts stratified by resolution. Existing assignments,
+including inherited pool pins, never change. Only selected unseen games get new
+assignments; there is no separately filled validation window and no pulling older
+held-out games from outside the chosen window. Both splits must be nonempty; a
+window lacking a usable holdout fails rather than leaking validation into training.
+Corpora, budgets and splits are frozen per round for recovery. Validation subsets
+may change, so validation loss is not a fixed-cohort benchmark. See the
+[formula sample table](constants.md#katago-position-window-the-default).
+
+KataGo is the only window policy; there are no fraction, fixed-game or
+fixed-iteration overrides.
 
 Supply `--bootstrap-data` explicitly; source manifests do not import an original
 corpus. Missing ancestral SGFs cannot be sampled merely because their identities

@@ -126,42 +126,39 @@ Sources: [window selection and `LoopConfig`](../../python/continugo_train/loop.p
 **policy choices**, not consequences of the rules or network architecture.
 See [window semantics](loop.md#training-and-validation-windows).
 
-### Growing windows (the default)
+### KataGo position window (the default)
 
-| Symbol / setting | Default / meaning |
-|---|---|
-| `f = training_window_fraction` | `1/2`; valid range `[0,1]`; zero selects legacy mode |
-| `v = validation_fraction` | `0.02`; strictly between 0 and 1 |
-| `D` | Cumulative eligible data positions in the **parent checkpoint's `progress.data_positions`** |
-| Training target | `T_target = max(1, ceil(D*f))` positions |
-| Selected training positions | Whole newest games until the target is reached, or the eligible accessible positive-weight pool is exhausted |
-| Validation target | `V_target = max(1, ceil(T*v/(1-v)))`, where `T` is actually selected training positions |
-| Selected validation positions | Whole newest games from the separate pinned validation pool until its target is reached or the pool is exhausted |
+This is the only window policy, using `d` after the current self-play round:
 
-At the defaults, request half of historical eligible data positions for training
-and one validation position per 49 **actually selected** training positions.
-Both targets can overshoot by the final selected game's position count.
-For example, `D=900000` targets 450000 training positions; with only 430000
-available, retain all of them and target 8776 validation positions.
-There is no fixed game-count cap in this mode.
+```text
+W = min(d, 250_000 + (0.4 * 250_000**0.35 / 0.65)
+        * (max(d, 250_000)**0.65 - 250_000**0.65))
+window_target = ceil(W)
+```
 
-Important qualifications:
+| `d`: lineage positions | Combined window target (positions) | Fraction of `d` |
+|---:|---:|---:|
+| 100,000 | 100,000 | 100% |
+| 250,000 | 250,000 | 100% |
+| 1,000,000 | 474,968 | 47.50% |
+| 10,000,000 | 1,788,253 | 17.88% |
+| 100,000,000 | 7,654,481 | 7.65% |
+| 1,000,000,000 | 33,857,958 | 3.39% |
 
-- `D` counts historical eligible generated/imported positions, including validation,
-  not optimizer exposures or game counts. Repeated epochs do not increase it.
-  Generated data can increase it even if not selected for training; inaccessible
-  history still contributes to the target but cannot be selected. Unknown legacy
-  position totals are rejected in growing mode rather than replaced by game counts.
-  An explicit initial `--data-positions 900000` can supply the agreed cg10 estimate
-  when training its fresh checkpoint; the loop then adds new generation normally.
-- All local rounds through the current round and explicitly supplied bootstrap
-  games are candidates. Selection is newest-round-first within each size,
-  weighted round-robin across sizes, with canonical duplicates removed.
-- Splits are pinned **before** growing-window selection, including identities not
-  selected this round. A held-out identity never becomes training data after a
-  window/seed change or fork. The chosen corpus and budgets are frozen per round.
-- Both splits must be nonempty; a minimum target of one does not invent missing
-  games. `window_games` and `window_iterations` do **not** cap growing windows.
+`d` includes all generated lineage positions, including validation and truncated
+games; repeated training exposures do not increase it. Up to 250,000 positions,
+keep all available eligible positions.
+
+Select whole games toward the **combined** target first, independent of split
+labels, then assign train/validation within that window (`validation_fraction=0.02`).
+Selection is newest-round-first within board size, weighted round-robin across
+sizes, with canonical duplicates removed. All local rounds and explicit bootstrap
+games are candidates; there are no additional game-count or iteration-count caps.
+The final game may overshoot; unavailable or ineligible positions cannot be filled.
+Permanent holdout pins survive window changes and forks. Only selected unseen
+identities get new pins. Do not pull separate validation games from outside the
+window or reassign held-out games to make a split nonempty; fail if either split
+has no usable game. Selection, budgets and assignments are frozen per round.
 
 ### Assigning permanent holdouts
 
@@ -178,14 +175,6 @@ new_validation = max(0, min(unseen_games, H - already_held_out))
 Game-ID-sorted buckets are shuffled with `Random(seed)`; unseen identities fill
 only the missing holdouts. Existing assignments are never undone, so the final
 fraction need not equal `v` exactly (or have precisely `H` holdouts).
-
-### Legacy fixed windows
-
-With `training_window_fraction=0`, `window_iterations=4` admits the current and
-previous three generated rounds, plus explicit bootstrap games. `window_games=256`
-limits the **combined** selected corpus before its permanent split is applied.
-The combined limit must be at least 2. This is a different policy, not an additional
-cap on the one-half formula.
 
 ## 3. Position sampling and optimization
 
