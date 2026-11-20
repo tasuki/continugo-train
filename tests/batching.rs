@@ -6,6 +6,80 @@ use continugo_train::inference::{
 };
 use std::{path::PathBuf, sync::Barrier, time::Duration};
 
+#[test]
+#[ignore = "requires CONTINUGO_TEST_MODEL and ORT_DYLIB_PATH; run by Python inference tests"]
+fn arena_shares_models_and_drains_both_pipelines() {
+    use continugo_train::selfplay::{
+        Engine, SelfplayConfig, arena::generate_arena, parallel::ParallelConfig,
+    };
+    let model = PathBuf::from(std::env::var_os("CONTINUGO_TEST_MODEL").unwrap());
+    let device = if std::env::var("CONTINUGO_TEST_DEVICE").as_deref() == Ok("cuda") {
+        InferenceDevice::Cuda
+    } else {
+        InferenceDevice::Cpu
+    };
+    let load = || {
+        let mut evaluator = OnnxEvaluator::load(&model, None, 1, device).unwrap();
+        evaluator.configure_features(2, 64).unwrap();
+        evaluator
+    };
+    let mut config = SelfplayConfig {
+        engine: Engine::Neural,
+        max_moves: 2,
+        komi: 7.0,
+        komi_stddev: 0.0,
+        search: Default::default(),
+        policy_search: None,
+    };
+    config.search.simulations = 2;
+    let options = ParallelConfig {
+        games: 4,
+        seed: 7,
+        concurrent_games: 4,
+        batching: BatchingConfig {
+            max_batch: 4,
+            max_wait: Duration::from_millis(2),
+        },
+    };
+    // Both neural-vs-reference and two-network matches must shut down even
+    // when one model's final partial batch has fewer requests than its cap.
+    for neural_opponent in [false, true] {
+        let mut ordinals = Vec::new();
+        let stats = generate_arena(
+            &[Board::new(9).unwrap()],
+            &config,
+            Some(load()),
+            neural_opponent.then(load),
+            1,
+            options,
+            |ordinal, record, _| {
+                assert!(record.sgf.contains("neural-"));
+                ordinals.push(ordinal);
+                Ok(())
+            },
+        )
+        .unwrap();
+        ordinals.sort_unstable();
+        assert_eq!(ordinals, vec![1, 2, 3, 4]);
+        assert_eq!(stats.len(), if neural_opponent { 2 } else { 1 });
+        for stats in stats {
+            assert!(stats.encoder_positions > 0);
+            assert!(stats.encoder_max_batch <= 2);
+        }
+    }
+    let error = generate_arena(
+        &[Board::new(9).unwrap()],
+        &config,
+        Some(load()),
+        Some(load()),
+        0,
+        options,
+        |_, _, _| Err("output failed".into()),
+    )
+    .unwrap_err();
+    assert_eq!(error, "output failed");
+}
+
 fn close(a: f64, b: f64) {
     assert!((a - b).abs() <= 1e-5 * (1.0 + a.abs()), "{a} != {b}");
 }

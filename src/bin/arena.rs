@@ -5,13 +5,12 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use clap::Parser;
 use continugo_rules::{Board, Color, territory};
 use continugo_train::{
-    inference::{Evaluator, InferenceDevice, OnnxEvaluator},
+    inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
     nn_html::NnHtmlArgs,
     sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
     search::{SearchConfig, rollout::RolloutArgs},
     selfplay::{
-        Engine, REFERENCE_ID, SelfplayConfig, generate_match, generate_reference_match,
-        generate_unguided_reference_match,
+        Engine, REFERENCE_ID, SelfplayConfig, arena::generate_arena, parallel::ParallelConfig,
     },
 };
 use sha2::{Digest, Sha256};
@@ -19,7 +18,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[derive(Parser)]
@@ -81,6 +80,15 @@ struct Args {
     device: InferenceDevice,
     #[arg(long, default_value_t = 1)]
     inference_threads: usize,
+    /// Independent games sharing one inference pipeline per model (1..=64).
+    #[arg(long, default_value_t = 32)]
+    concurrent_games: usize,
+    /// Maximum inference batch per model (1..=32), bucketed by resolution.
+    #[arg(long, default_value_t = 32)]
+    inference_batch_size: usize,
+    /// Maximum collection delay; partial batches always run (0..=1000 ms).
+    #[arg(long, default_value_t = 2)]
+    inference_batch_wait_ms: u64,
     #[arg(long, default_value_t = 6)]
     feature_threads: usize,
     #[arg(long, default_value_t = 64)]
@@ -95,6 +103,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.nn_view.nn_html && args.unguided {
         return Err("--nn-html requires a neural candidate".into());
     }
+    let parallel = ParallelConfig {
+        games: args.games,
+        seed: args.seed,
+        concurrent_games: args.concurrent_games,
+        batching: BatchingConfig {
+            max_batch: args.inference_batch_size,
+            max_wait: Duration::from_millis(args.inference_batch_wait_ms),
+        },
+    };
+    parallel.validate()?;
     let binary_id = format!("{:x}", Sha256::digest(fs::read(std::env::current_exe()?)?));
     let schedule = weighted_sizes(&args.sizes, &args.size_weights)?;
     let end = args
@@ -160,80 +178,104 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     fs::create_dir_all(&args.output)?;
     let (mut wins, mut losses, mut draws, mut truncated) = (0, 0, 0, 0);
-    for ordinal in args.game_offset..end {
-        let size = schedule[(ordinal / 2) % schedule.len()];
-        let seed = args.seed + (ordinal / 2) as u64;
-        let candidate_black = ordinal % 2 == 0;
-        let color = if candidate_black { "black" } else { "white" };
-        let board = Board::new(size)?;
-        let started = Instant::now();
-        let mut record = if let Some(candidate) = &mut candidate {
-            if let Some(incumbent) = &mut incumbent {
-                if candidate_black {
-                    generate_match(board, &config, seed, candidate, incumbent)?
-                } else {
-                    generate_match(board, &config, seed, incumbent, candidate)?
-                }
-            } else {
-                generate_reference_match(board, &config, seed, candidate, candidate_black)?
-            }
-        } else {
-            generate_unguided_reference_match(board, &config, seed, candidate_black)?
-        };
-        record.annotate_evaluation(&binary_id)?;
-        if config.search.rollout.is_some() {
-            eprintln!(
-                "rollouts game {}: {:?}",
-                ordinal + 1,
-                record.metadata.rollout_stats
-            );
-        }
-        let path = args.output.join(format!(
-            "game-{:06}-size{size}-seed{seed}-candidate-{color}.sgf",
-            ordinal + 1
-        ));
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?
-            .write_all(record.sgf.as_bytes())?;
-        args.nn_view.render(&path, candidate_black)?;
-        eprintln!(
-            "arena game {}/{end}: size={size} seed={seed} candidate={color} moves={} completed={} elapsed={:.3}s",
-            ordinal + 1,
-            record.metadata.policies.len(),
-            record.metadata.result.is_some(),
-            started.elapsed().as_secs_f64()
-        );
-        match record.metadata.result {
-            Some(territory::Outcome::Draw) => {
-                draws += 1;
+    let candidate_id = candidate
+        .as_ref()
+        .map_or("unguided-mcts", |e| e.model_id())
+        .to_owned();
+    let incumbent_id = incumbent
+        .as_ref()
+        .map_or(REFERENCE_ID, |e| e.model_id())
+        .to_owned();
+    let boards = schedule
+        .iter()
+        .map(|&size| Board::new(size))
+        .collect::<Result<Vec<_>, _>>()?;
+    let started = Instant::now();
+    let stats = generate_arena(
+        &boards,
+        &config,
+        candidate,
+        incumbent,
+        args.game_offset,
+        parallel,
+        |ordinal, mut record, seconds| {
+            let size = schedule[(ordinal / 2) % schedule.len()];
+            let seed = args.seed + (ordinal / 2) as u64;
+            let candidate_black = ordinal % 2 == 0;
+            let color = if candidate_black { "black" } else { "white" };
+            record.annotate_evaluation(&binary_id)?;
+            if config.search.rollout.is_some() {
                 eprintln!(
-                    "WARNING DRAW: arena game={} size={size} seed={seed}",
-                    ordinal + 1
-                );
-            }
-            Some(territory::Outcome::Win(winner, _)) => {
-                if (winner == Color::Black) == candidate_black {
-                    wins += 1;
-                } else {
-                    losses += 1;
-                }
-            }
-            None => {
-                truncated += 1;
-                eprintln!(
-                    "WARNING TRUNCATED: arena game={} size={size} seed={seed} cap={}",
+                    "rollouts game {}: {:?}",
                     ordinal + 1,
-                    args.max_moves
+                    record.metadata.rollout_stats
                 );
             }
-        }
+            let path = args.output.join(format!(
+                "game-{:06}-size{size}-seed{seed}-candidate-{color}.sgf",
+                ordinal + 1
+            ));
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|e| e.to_string())?
+                .write_all(record.sgf.as_bytes())
+                .map_err(|e| e.to_string())?;
+            args.nn_view.render(&path, candidate_black)?;
+            eprintln!(
+                "arena game {}/{end}: size={size} seed={seed} candidate={color} moves={} completed={} elapsed={:.3}s",
+                ordinal + 1,
+                record.metadata.policies.len(),
+                record.metadata.result.is_some(),
+                seconds
+            );
+            match record.metadata.result {
+                Some(territory::Outcome::Draw) => {
+                    draws += 1;
+                    eprintln!(
+                        "WARNING DRAW: arena game={} size={size} seed={seed}",
+                        ordinal + 1
+                    );
+                }
+                Some(territory::Outcome::Win(winner, _)) => {
+                    if (winner == Color::Black) == candidate_black {
+                        wins += 1;
+                    } else {
+                        losses += 1;
+                    }
+                }
+                None => {
+                    truncated += 1;
+                    eprintln!(
+                        "WARNING TRUNCATED: arena game={} size={size} seed={seed} cap={}",
+                        ordinal + 1,
+                        args.max_moves
+                    );
+                }
+            }
+            Ok(())
+        },
+    )?;
+    for (model, stats) in [candidate_id.as_str(), incumbent_id.as_str()]
+        .into_iter()
+        .zip(stats)
+    {
+        eprintln!(
+            "arena inference {model}: encoder_positions={} encoder_batches={} encoder_max_batch={} scorer_max_batch={}",
+            stats.encoder_positions,
+            stats.encoder_batches,
+            stats.encoder_max_batch,
+            stats.scorer_max_batch
+        );
     }
+    eprintln!(
+        "arena elapsed={:.3}s concurrent_games={}",
+        started.elapsed().as_secs_f64(),
+        args.concurrent_games.min(args.games as usize)
+    );
     println!(
-        "arena: candidate={} incumbent={} wins={wins} losses={losses} draws={draws} truncated={truncated}",
-        candidate.as_ref().map_or("unguided-mcts", |e| e.model_id()),
-        incumbent.as_ref().map_or(REFERENCE_ID, |e| e.model_id())
+        "arena: candidate={candidate_id} incumbent={incumbent_id} wins={wins} losses={losses} draws={draws} truncated={truncated}"
     );
     Ok(())
 }

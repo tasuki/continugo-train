@@ -97,6 +97,14 @@ Training requires sidecars by default; explicitly build imported corpora's cache
 or use `--feature-cache auto`. See [feature caching](docs/current/feature-cache.md)
 for opt-outs and cache validation.
 
+Arena now runs up to 32 independent games concurrently, sharing one batched
+inference pipeline per model (rather than loading a model per game). Tune with
+`--concurrent-games`, `--inference-batch-size` (default 32), and
+`--inference-batch-wait-ms` (default 2); use `--concurrent-games 1` for serial play.
+Games are saved in completion order, with stable paired seeds, colors, and filenames.
+Existing running/frozen evaluators are unchanged; using the new arena in a frozen
+evaluator requires the explicit runtime-upgrade workflow.
+
 To see what the network sees, use the [neural game microscope](docs/current/nn-viewer.md):
 `mise run nn-view` for existing training/rated SGFs, or add
 `--nn-html --nn-checkpoint FILE` to neural self-play/arena. Each `.nn.html` is a

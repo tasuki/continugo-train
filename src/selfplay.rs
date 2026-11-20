@@ -4,6 +4,7 @@
 //! profiling. Truncated games have no RE. Generation/export timings finish
 //! after annotation serialization, so those remain stderr-only.
 
+pub mod arena;
 pub mod parallel;
 
 /// Bump when the direct random policy changes. Binary fingerprints additionally
