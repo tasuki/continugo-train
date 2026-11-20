@@ -1,6 +1,6 @@
-//! Version-7 inputs: schema-6 geometry with three recent-move location planes
-//! immediately after friendly/enemy stones. Exact move fields are unchanged.
-//! Schemas 4, 5 and 6 retain their separately versioned inputs for inference.
+//! Version-7 inputs: recent-stone coverage plus coarse width / 100,
+//! derived from raster shape inside the encoder as an unclipped global scalar.
+//! Schemas 4–6 retain their separately versioned inputs for inference.
 
 use continugo_rules::{
     Action, COORD_RANGE, COORDINATE_ACTIONS, Game, PreparedPosition, Spot, Stone,
@@ -101,7 +101,7 @@ impl CoarseProfile {
     }
 }
 
-// The default extraction/training schema is 7; inference uses model metadata.
+// Schema 7 remains open until the next fresh run starts.
 pub use schema7::{
     COARSE_PLANES, MOVE_FEATURES, VERSION as SCHEMA_VERSION, count_feature, scalar_feature,
 };
@@ -244,7 +244,7 @@ impl<'a> FeatureExtractor<'a> {
             schema,
             schema5::VERSION | schema6::VERSION | schema7::VERSION
         ) {
-            return Err("geometry proposals require feature schema 5, 6 or 7".into());
+            return Err("geometry proposals require feature schema 5 through 7".into());
         }
         if profile {
             Self::build::<true>(game, density, schema, true)

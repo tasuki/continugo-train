@@ -175,7 +175,8 @@ fn captured_placements_remain_in_history_and_geometry_retention_is_unchanged() {
                 .iter()
                 .all(|s| s.color == Color::White)
         );
-        let (features, _) = FeatureExtractor::with_geometry(&game, 4, 7, false).unwrap();
+        let (features, _) =
+            FeatureExtractor::with_geometry(&game, 4, SCHEMA_VERSION, false).unwrap();
         marker(&features, 0, Some(capture));
         marker(&features, 1, Some(corner));
         marker(&features, 2, None);

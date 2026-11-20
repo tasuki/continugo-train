@@ -36,7 +36,10 @@ from .features import (
 )
 from .losses import joint_loss
 from .memory import GpuMemorySampler
-from .model import POLICY_VERSION, TRUNK_VERSION, VALUE_VERSION, NetworkConfig, PolicyValueNet
+from .model import (
+    GLOBAL_FEATURES, LEGACY_TRUNK_VERSION, POLICY_VERSION, TRUNK_VERSION,
+    VALUE_VERSION, NetworkConfig, PolicyValueNet,
+)
 from .paths import new_run_directory
 from .progress import data_history, network_name
 from .progress import initialize as initialize_progress
@@ -112,7 +115,8 @@ def feature_spec(density, *, schema=SCHEMA_VERSION):
         "schema": schema,
         "policy": POLICY_VERSION,
         "value": VALUE_VERSION,
-        "trunk": TRUNK_VERSION,
+        "trunk": TRUNK_VERSION if schema == 7 else LEGACY_TRUNK_VERSION,
+        **({"globals": list(GLOBAL_FEATURES)} if schema == 7 else {}),
         "targets": TARGET_VERSION,
         "coarse": list(planes),
         "moves": list(move_features(schema)),
@@ -530,7 +534,7 @@ def train(args):
         raise ValueError(
             "resume would change the outcome objective; use --warm-start for jigo-as-loss"
         )
-    config = NetworkConfig(**saved["config"]) if saved else NetworkConfig()
+    config = NetworkConfig.from_checkpoint(saved["config"]) if saved else NetworkConfig()
     settings = asdict(config)
     for name in [
         "channels",
@@ -556,7 +560,11 @@ def train(args):
             raise ValueError("resume restores --value-activation; use --warm-start to change it")
         settings["value_activation"] = args.value_activation
     config = NetworkConfig(**settings)
-    if config.input_planes != len(COARSE_PLANES) or config.move_features != len(MOVE_FEATURES):
+    if (
+        config.input_planes != len(COARSE_PLANES)
+        or config.move_features != len(MOVE_FEATURES)
+        or config.global_inputs != len(GLOBAL_FEATURES)
+    ):
         raise ValueError("checkpoint feature widths do not match the real extractor")
     spec = feature_spec(options.samples_per_diameter)
     if saved and saved["feature_spec"] != spec:
@@ -633,7 +641,7 @@ def train(args):
                 "to": "jigo-loss-v1",
                 "architecture_unchanged": True,
             }
-        previous_activation = NetworkConfig(**saved["config"]).value_activation
+        previous_activation = NetworkConfig.from_checkpoint(saved["config"]).value_activation
         if previous_activation != config.value_activation:
             initialization["value_activation_change"] = {
                 "from": previous_activation,

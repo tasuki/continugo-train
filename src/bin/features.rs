@@ -29,7 +29,8 @@ struct Args {
     ply: usize,
     #[arg(long, default_value_t = 4)]
     samples_per_diameter: usize,
-    /// 7 = three recent moves; 6 = group liberty area; 5 = spatial liberties;
+    /// 7 = recent moves and shape-derived global width; 6 = group liberty area;
+    /// 5 = spatial liberties;
     /// 4 = original scalar/flag planes.
     #[arg(long, default_value_t = SCHEMA_VERSION)]
     feature_schema: u32,

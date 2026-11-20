@@ -389,7 +389,7 @@ class NativeInferenceTests(unittest.TestCase):
     def test_legacy_exports_keep_original_twelve_plane_inputs(self):
         source = self.root / "legacy-schema.sgf"
         source.write_text(SGF)
-        model = PolicyValueNet(replace(self.model.config, input_planes=12, move_features=10)).eval()
+        model = PolicyValueNet(replace(self.model.config, input_planes=12, move_features=10, global_inputs=0)).eval()
         for schema in (4,):
             checkpoint = self.root / f"schema{schema}.pt"
             torch.save(

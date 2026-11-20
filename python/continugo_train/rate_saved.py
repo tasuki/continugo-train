@@ -370,9 +370,11 @@ def validate_evaluation_model(saved, reference_spec):
     """Each model owns its schema; only match policy/targets/density must agree."""
     spec = saved["feature_spec"]
     expected = feature_spec(spec["samples_per_diameter"], schema=spec["schema"])
-    config = NetworkConfig(**saved["config"])
+    config = NetworkConfig.from_checkpoint(saved["config"])
     if spec != expected or (
-        config.input_planes != len(spec["coarse"]) or config.move_features != len(spec["moves"])
+        config.input_planes != len(spec["coarse"])
+        or config.move_features != len(spec["moves"])
+        or config.global_inputs != len(spec.get("globals", []))
     ):
         raise ValueError("incompatible feature semantics/architecture")
     if any(

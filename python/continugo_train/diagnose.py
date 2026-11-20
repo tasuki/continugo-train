@@ -76,7 +76,7 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
         raise ValueError(
             "no ancestral held-out games found; training games are not diagnostic holdouts"
         )
-    model = PolicyValueNet(NetworkConfig(**saved["config"])).to(device).eval()
+    model = PolicyValueNet(NetworkConfig.from_checkpoint(saved["config"])).to(device).eval()
     model.load_state_dict(saved["model"])
     rows = []
     with FeatureClient(binary) as client, torch.inference_mode():

@@ -336,11 +336,13 @@ def load_training(path):
     checkpoint_progress(saved)
     options = Options(**saved["options"])
     options.validate()
-    config = NetworkConfig(**saved["config"])
+    config = NetworkConfig.from_checkpoint(saved["config"])
     if saved["feature_spec"] != feature_spec(options.samples_per_diameter):
         raise ValueError("checkpoint feature semantics are incompatible")
-    if config.input_planes != len(saved["feature_spec"]["coarse"]) or config.move_features != len(
-        saved["feature_spec"]["moves"]
+    if (
+        config.input_planes != len(saved["feature_spec"]["coarse"])
+        or config.move_features != len(saved["feature_spec"]["moves"])
+        or config.global_inputs != len(saved["feature_spec"].get("globals", []))
     ):
         raise ValueError("checkpoint feature widths are incompatible")
     if saved["epoch"] <= 0 or saved["global_step"] < 0:
@@ -377,7 +379,7 @@ def verify_export(directory, checkpoint, saved):
         metadata = {item.key: item.value for item in graph.metadata_props}
         if json.loads(metadata.get(METADATA_KEY, "null")) != expected:
             raise ValueError(f"export does not match its training checkpoint: {directory}")
-    model = PolicyValueNet(NetworkConfig(**saved["config"])).eval()
+    model = PolicyValueNet(NetworkConfig.from_checkpoint(saved["config"])).eval()
     model.load_state_dict(saved["model"])
     verify(model, directory)
 
@@ -896,7 +898,7 @@ class LoopRunner:
                 or saved["epoch"] != number
                 or number > self.config.train_epochs
                 or saved["options"] != asdict(options)
-                or NetworkConfig(**saved["config"]) != NetworkConfig(**parent["config"])
+                or NetworkConfig.from_checkpoint(saved["config"]) != NetworkConfig.from_checkpoint(parent["config"])
                 or saved["feature_spec"] != parent["feature_spec"]
                 or saved["corpus_fingerprint"] != iteration["corpus_fingerprint"]
                 or saved.get("initialization", {}).get("source", {}).get("sha256")

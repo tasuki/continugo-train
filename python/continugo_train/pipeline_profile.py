@@ -383,7 +383,7 @@ def main(argv=None):
     for detailed in (False, True):
         print(f"training {'synchronized stages' if detailed else 'baseline'}", flush=True)
         torch.manual_seed(args.seed)
-        model = PolicyValueNet(NetworkConfig(**checkpoint["config"])).to(device)
+        model = PolicyValueNet(NetworkConfig.from_checkpoint(checkpoint["config"])).to(device)
         model.load_state_dict(checkpoint["model"])
         optimizer = torch.optim.SGD(
             model.parameters(),

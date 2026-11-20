@@ -110,6 +110,8 @@ class NnViewerTests(unittest.TestCase):
         self.assertIn("document.execCommand('copy')", text)
         self.assertIn('id="sgfcopy"', text)
         self.assertEqual(data["frames"][1]["view"]["stones"], [[200, 200, 0]])
+        self.assertEqual(data["frames"][1]["globals"], [{"name": "coarse_width_div100", "value": float(torch.tensor(0.54))}])
+        self.assertIn("Global scalar inputs", text)
         self.assertEqual(data["frames"][0]["view"]["action"], 200200)
         self.assertEqual(data["frames"][1]["coarse"][8]["high"], 1)
         self.assertEqual(data["frames"][1]["coarse"][8]["name"], "enemy_group_liberty_area")
@@ -282,7 +284,7 @@ class NnViewerTests(unittest.TestCase):
 
     def test_legacy_viewers_keep_all_original_inputs(self):
         old_model = PolicyValueNet(
-            replace(self.model.config, input_planes=12, move_features=10)
+            replace(self.model.config, input_planes=12, move_features=10, global_inputs=0)
         ).eval()
         for schema in (4,):
             saved = {

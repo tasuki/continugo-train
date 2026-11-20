@@ -24,7 +24,7 @@ class GlobalPoolingTests(unittest.TestCase):
             [i + 1 for i, block in enumerate(blocks) if isinstance(block, GlobalPoolingBlock)],
             [3, 6],
         )
-        self.assertEqual(feature_spec(4)["trunk"], "global-pooling-v1")
+        self.assertEqual(feature_spec(4)["trunk"], "global-pooling-scalars-v1")
         disabled = PolicyValueNet(replace(model.config, gpool_every=0))
         self.assertFalse(any(isinstance(block, GlobalPoolingBlock) for block in disabled.modules()))
         args = parse_args(["--data", "unused", "--gpool-every", "2", "--gpool-channels", "8"])

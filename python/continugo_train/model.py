@@ -14,13 +14,16 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from .feature_schemas import SCHEMA7_GLOBAL_FEATURES
 from .features import COARSE_PLANES, MOVE_FEATURES
 
 COORD_RANGE = 1000
 COORDINATE_ACTIONS = COORD_RANGE**2
 POLICY_VERSION = "cells-v1"
 VALUE_VERSION = "shared-gaussian-v1"
-TRUNK_VERSION = "global-pooling-v1"
+TRUNK_VERSION = "global-pooling-scalars-v1"
+LEGACY_TRUNK_VERSION = "global-pooling-v1"
+GLOBAL_FEATURES = SCHEMA7_GLOBAL_FEATURES
 SCORE_STDEV_FLOOR = 0.001
 
 
@@ -63,6 +66,7 @@ def local_log_probs(scores: Tensor, actions: Tensor, legal: Tensor, resolution: 
 class NetworkConfig:
     input_planes: int = len(COARSE_PLANES)
     move_features: int = len(MOVE_FEATURES)
+    global_inputs: int = len(GLOBAL_FEATURES)
     channels: int = 64
     blocks: int = 8
     gpool_every: int = 3
@@ -84,10 +88,26 @@ class NetworkConfig:
         for name, value in vars(self).items():
             if name == "value_activation":
                 continue
-            minimum = 0 if name == "gpool_every" else 1
+            minimum = 0 if name in ("gpool_every", "global_inputs") else 1
             if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
                 requirement = "nonnegative" if minimum == 0 else "positive"
                 raise ValueError(f"{name} must be a {requirement} integer")
+        if self.global_inputs not in (0, len(GLOBAL_FEATURES)):
+            raise ValueError("unsupported global input count")
+
+    @classmethod
+    def from_checkpoint(cls, settings):
+        # Older checkpoints have no scalar projection or corresponding weights.
+        return cls(**{"global_inputs": 0, **settings})
+
+
+def validate_feature_config(config, spec):
+    if (
+        config.input_planes != len(spec["coarse"])
+        or config.move_features != len(spec["moves"])
+        or config.global_inputs != len(spec.get("globals", []))
+    ):
+        raise ValueError("architecture does not match feature widths/global inputs")
 
 
 def resolution_for_diameter(diameter: int, samples_per_diameter: int = 4) -> int:
@@ -147,6 +167,10 @@ class PolicyValueNet(nn.Module):
                 for i in range(config.blocks)
             ),
         )
+        self.global_projection = (
+            nn.Linear(config.global_inputs, config.channels, bias=False)
+            if config.global_inputs else None
+        )
         self.policy_spatial = nn.Conv2d(config.channels, config.policy_hidden, 1)
         self.policy_global = nn.Linear(config.channels, config.policy_hidden, bias=False)
         self.cell_head = nn.Conv2d(config.policy_hidden, 1, 1)
@@ -168,8 +192,21 @@ class PolicyValueNet(nn.Module):
         self.score_uncertainty = nn.Linear(config.value_hidden, 1)
         self.ownership_head = nn.Sequential(nn.Conv2d(config.value_channels, 1, 1), nn.Tanh())
 
+    def global_features(self, coarse: Tensor) -> Tensor:
+        """Named global vector; dynamic shape arithmetic also exports to ONNX.
+
+        Width means samples/cells per side, not area, stone diameter or nominal
+        board size. Do not clamp: larger rasters legitimately exceed 1.
+        """
+        return coarse.new_ones((coarse.shape[0], 1)) * (coarse.shape[-1] / 100.0)
+
     def _encode(self, coarse: Tensor):
         trunk = self.trunk(coarse)
+        if self.global_projection is not None:
+            context = self.global_projection(self.global_features(coarse))
+            # No BatchNorm follows this conditioning. ReLU lets a global scalar
+            # change local preferences, not merely add one uniform logit offset.
+            trunk = F.relu(trunk + context[:, :, None, None])
         pooled = trunk.mean(dim=(-2, -1))
         spatial = self.policy_spatial(trunk) + self.policy_global(pooled)[:, :, None, None]
         value_spatial = self.value_spatial(trunk)

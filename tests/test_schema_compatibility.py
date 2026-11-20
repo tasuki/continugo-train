@@ -69,6 +69,7 @@ class SchemaCompatibilityTests(unittest.TestCase):
                     NetworkConfig(
                         input_planes=len(spec["coarse"]),
                         move_features=len(spec["moves"]),
+                        global_inputs=len(spec.get("globals", [])),
                     )
                 ),
             }
@@ -108,6 +109,7 @@ class SchemaCompatibilityTests(unittest.TestCase):
                     NetworkConfig(
                         input_planes=len(spec["coarse"]),
                         move_features=len(spec["moves"]),
+                        global_inputs=len(spec.get("globals", [])),
                         channels=4,
                         blocks=1,
                         policy_hidden=4,
@@ -165,7 +167,7 @@ class SchemaCompatibilityTests(unittest.TestCase):
         spec["moves"][6] = "local_liberty_footprint"
         saved = {
             "feature_spec": spec,
-            "config": asdict(NetworkConfig(input_planes=12, move_features=11)),
+            "config": asdict(NetworkConfig(input_planes=12, move_features=11, global_inputs=0)),
         }
         with self.assertRaisesRegex(ValueError, "semantics"):
             validate_evaluation_model(saved, feature_spec(4))

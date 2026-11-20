@@ -6,10 +6,9 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 
 ## Feature planes — next fresh run
 
-Keep existing inputs; use a new schema for fresh training.
+**Keep schema 7 open: do not increment its number until the next fresh run starts.**
+Fold all pre-run input changes into schema 7.
 
-- [ ] Add **actual stone diameter / board width** as an input; ensure scalar
-  inputs survive normalization.
 - [ ] Add **komi** as an input, with consistent scoring and SGF support.
 - [ ] Trial friendly/enemy **Benson pass-alive planes**; measure integrated cost
   and benefit before including them.

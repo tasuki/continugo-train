@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .model import NetworkConfig, PolicyValueNet
+from .model import NetworkConfig, PolicyValueNet, validate_feature_config
 from .paths import new_run_directory
 from .progress import checkpoint_progress, network_name
 from .train import feature_spec
@@ -95,7 +95,7 @@ def verify(model, directory):
     rng = torch.Generator().manual_seed(0)
     maximum = 0.0
     with torch.inference_mode():
-        for batch, resolution, count in [(1, 38, 7), (1, 54, 73), (2, 78, 19)]:
+        for batch, resolution, count in [(1, 38, 7), (1, 54, 73), (2, 78, 19), (2, 128, 7)]:
             coarse = torch.rand(
                 batch, model.config.input_planes, resolution, resolution, generator=rng
             )
@@ -131,12 +131,11 @@ def export_checkpoint(checkpoint, output):
     if output.exists():
         raise ValueError("export output already exists; use a fresh model directory")
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    config = NetworkConfig(**saved["config"])
+    config = NetworkConfig.from_checkpoint(saved["config"])
     spec = saved["feature_spec"]
     if spec != feature_spec(spec["samples_per_diameter"], schema=spec["schema"]):
         raise ValueError("checkpoint has incompatible features")
-    if config.input_planes != len(spec["coarse"]) or config.move_features != len(spec["moves"]):
-        raise ValueError("checkpoint architecture has incompatible feature widths")
+    validate_feature_config(config, spec)
     model = PolicyValueNet(config).eval()
     model.load_state_dict(saved["model"])
     metadata = json.dumps(

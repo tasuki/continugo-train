@@ -29,7 +29,7 @@ from .features import (
     inspect_game,
     move_features,
 )
-from .model import NetworkConfig, PolicyValueNet, cell_ids, local_log_probs
+from .model import NetworkConfig, PolicyValueNet, cell_ids, local_log_probs, validate_feature_config
 from .train import feature_spec
 from .utility import score_utility
 
@@ -127,9 +127,8 @@ def load_checkpoint(path):
     spec = saved["feature_spec"]
     if spec != feature_spec(spec["samples_per_diameter"], schema=spec["schema"]):
         raise ValueError(f"{path}: incompatible feature schema")
-    config = NetworkConfig(**saved["config"])
-    if config.input_planes != len(spec["coarse"]) or config.move_features != len(spec["moves"]):
-        raise ValueError(f"{path}: architecture does not match feature schema")
+    config = NetworkConfig.from_checkpoint(saved["config"])
+    validate_feature_config(config, spec)
     model = PolicyValueNet(config).eval()
     model.load_state_dict(saved["model"])
     model.feature_schema = spec["schema"]
@@ -324,6 +323,14 @@ def frame(client, sgf, ply, loaded, info):
         "resolution": resolution,
         "feature_schema": schema,
         "features": move_features(schema),
+        "globals": [
+            {"name": name, "value": float(scalar)}
+            for name, scalar in zip(
+                feature_spec(density, schema=schema).get("globals", []),
+                model.global_features(coarse)[0] if model.config.global_inputs else [],
+                strict=True,
+            )
+        ],
         "view": view,
         "move": action_name(view["action"]),
         "counterfactual": counterfactual,
@@ -391,7 +398,7 @@ dialog{max-width:94vw;max-height:94vh;background:#172134;color:#fff;border:1px s
 <main><aside class="panel"><div class="board-stack"><div id="board"></div><svg id="played-overlay" viewBox="0 0 1000 1000" aria-label="Move played"><path id="played" fill="none" stroke="#ff701f" stroke-width="5"/></svg></div><h2 id="turn"></h2><div id="stats"></div><p class="muted">Pre-move position. Orange cross = move played. All network quantities are side-to-move relative, not always Black.</p><p class="muted">Diagnostic checkpoint replay, not a live tree trace. Complete top-ranked cells + recorded visit/move cells; live search also uses seeded exploration and independent proposals.</p><p class="muted">Blue = negative, orange = positive for signed maps. Other maps: dark → bright. Transparent checkerboard = not evaluated. Probability/visit pixels sum; exact features/logits average.</p><small id="provenance"></small></aside>
 <section><h2>Hierarchical policy · coarse → exact → search</h2><div id="policy-gallery" class="gallery"><div id="policy"></div><figure><div class="move-map-stack"><div id="move-board"></div><img id="move-overlay" alt="Placement probability overlay"></div><figcaption>Redistributed P(move)</figcaption><small id="move-range"></small></figure><figure><div id="visits-board"></div><figcaption>MCTS visits (recorded)</figcaption></figure></div></section>
 <section><h2>Critics & ownership · shared trunk input, separate heads</h2><div id="heads" class="gallery"></div></section>
-<div id="inputs"><section><h2 id="coarsetitle">Every coarse input plane</h2><div id="coarse" class="gallery"></div></section><section><h2>Every exact move input feature</h2><div id="exact" class="gallery"></div></section></div>
+<div id="inputs"><section id="global-section" hidden><h2>Global scalar inputs</h2><div id="global-inputs"></div></section><section><h2 id="coarsetitle">Every coarse input plane</h2><div id="coarse" class="gallery"></div></section><section><h2>Every exact move input feature</h2><div id="exact" class="gallery"></div></section></div>
 <details class="panel"><summary>All projected policy-context input channels</summary><p>These shared spatial channels feed the coarse cell head and are bilinearly sampled at each exact coordinate before adding the exact-feature projection. RMS above is only a summary; these are the individual channel values.</p><div id="context" class="gallery"></div></details>
 <details class="panel"><summary>Top diagnostic policy actions · exact feature values & methodology</summary><p>Local softmax uses all legal coordinates in each complete selected cell. Final policy redistributes placement mass over nonempty selected cells, preserving global coarse pass probability (or pass=1 if none). Input planes use fixed [0,1] scales except uncapped liberty areas; every map shows its range. Value is expected win/draw/loss outcome; “points” counts draws as half, not strict win probability. Score is signed final area / board area; stone units divide by stone-disc area. Ownership is auxiliary, not used in search. This report does not recompute ratings or change SGF training labels.</p><div style="overflow:auto"><table id="candidates"></table></div></details></main>
 <dialog id="sgfcopy"><button id="copyclose" type="button">Close</button><h2>Copy the complete annotated SGF</h2><p>Automatic clipboard access was blocked. Press Ctrl+C or ⌘C to copy the selected text.</p><textarea id="sgftext" readonly aria-label="Complete original SGF" style="width:75vw;height:45vh;box-sizing:border-box"></textarea></dialog>
@@ -449,7 +456,7 @@ const row=document.createElement('div'),left=document.createElement('span'),righ
 row.className='stat-row';right.className='stat-number';left.textContent=label;right.textContent=value;row.append(left,right);$('stats').append(row);
 }
 for(const text of [`${f.board_size}x${f.board_size} · ${f.resolution}² coarse · input v${f.feature_schema||4}`,`${f.cells} cells`,`${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
-$('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,name==='policy'?f[name].filter(image=>image.name!=='Redistributed P(move)'):f[name]);
+$('global-section').hidden=!(f.globals||[]).length;$('global-inputs').textContent=(f.globals||[]).map(g=>`${g.name}: ${fmt(g.value,4)}`).join(' · ');$('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,name==='policy'?f[name].filter(image=>image.name!=='Redistributed P(move)'):f[name]);
 const features=f.features||data.features,table=$('candidates');table.replaceChildren();let tr=document.createElement('tr');for(const name of ['Action','P(move)','Raw logit','P(move|cell)',...features]){const th=document.createElement('th');th.textContent=name;tr.append(th)}table.append(tr);for(const row of f.candidates){tr=document.createElement('tr');for(const value of [row.action,fmt(row.p,6),fmt(row.logit),fmt(row.local,6),...(row.features||features.map(()=>null)).map(v=>fmt(v))]){const td=document.createElement('td');td.textContent=value;tr.append(td)}table.append(tr)}}
 const skipped=data.skipped||[];if(skipped.length){$('skipped').hidden=false;$('skippedtitle').textContent=`${skipped.length} moves skipped (random or unsupported network)`;for(const s of skipped){const li=document.createElement('li');li.textContent=`Move ${s.ply+1} · ${s.player?'White':'Black'}: ${s.reason}`;$('skiplist').append(li)}}
 if(!frames.length){document.querySelector('main').hidden=true;$('notice').hidden=false;$('notice').textContent='No moves can be visualized with the available supported checkpoints. See the skipped-move reasons below; the original annotated game is available through Copy SGF.';$('position').textContent=`0 visualizable / ${data.moves||0} moves`;for(const id of ['slider','prev','next'])$(id).disabled=true}

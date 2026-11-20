@@ -154,10 +154,14 @@ struct FeatureSpec {
     targets: String,
     coarse: Vec<String>,
     moves: Vec<String>,
+    #[serde(default)]
+    globals: Vec<String>,
     samples_per_diameter: usize,
 }
 #[derive(Deserialize)]
 struct Config {
+    #[serde(default)]
+    global_inputs: usize,
     chunk_size: usize,
     policy_hidden: usize,
     top_cells: usize,
@@ -289,7 +293,7 @@ impl OnnxEvaluator {
             return Err("geometry budget must be in 1..=128".into());
         }
         if budget.is_some() && !matches!(self.feature_schema(), 5..=7) {
-            return Err("geometry proposals require feature schema 5, 6 or 7".into());
+            return Err("geometry proposals require feature schema 5 through 7".into());
         }
         if self.geometry_budget != budget {
             self.cache.lock().unwrap().clear();
@@ -406,7 +410,14 @@ impl OnnxEvaluator {
         })?;
         let spec = &metadata.feature_spec;
         let planes = coarse_planes(spec.schema)?;
-        if spec.trunk != "global-pooling-v1"
+        let (trunk, globals): (&str, &[&str]) = if spec.schema == 7 {
+            ("global-pooling-scalars-v1", &["coarse_width_div100"])
+        } else {
+            ("global-pooling-v1", &[])
+        };
+        if spec.trunk != trunk
+            || spec.globals != globals
+            || metadata.config.global_inputs != globals.len()
             || spec.value != "shared-gaussian-v1"
             || spec.policy != "cells-v1"
             || spec.coarse != planes
@@ -425,7 +436,7 @@ impl OnnxEvaluator {
         {
             return Err("incompatible feature/architecture metadata".into());
         }
-        // Schema 4 uses complete cells; schemas 5/6/7 use geometry proposals.
+        // Schema 4 uses complete cells; schemas 5–7 use geometry proposals.
         let geometry_budget =
             matches!(spec.schema, 5..=7).then_some(crate::geometry_proposals::DEFAULT_BUDGET);
         Ok(Self {
