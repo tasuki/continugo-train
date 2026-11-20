@@ -132,5 +132,6 @@ class MilestoneTests(helpers.LoopHarness):
         entry = rate_saved.load_champions(store)
         self.assertEqual(entry["champion"], "random")
         candidate = "test1-r0002"
-        self.assertIn(candidate, entry["skipped"])
+        self.assertNotIn("skipped", entry)
+        self.assertNotIn(candidate, entry["evaluated"])
         self.assertFalse((store / "LATEST-ACCEPTED").exists())

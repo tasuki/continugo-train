@@ -63,6 +63,7 @@ def load_champions(store):
         value = json.loads(path.read_text())
         if value.get("policy") != POLICY or "champion" not in value:
             raise ValueError("incompatible champion policy")
+        compact_champions(value)
         return value
     return {
         "policy": dict(POLICY),
@@ -74,7 +75,23 @@ def load_champions(store):
     }
 
 
+def compact_champions(registry):
+    """Keep recovery/evidence metadata, not derived skips or duplicated audit payloads."""
+    skipped = {
+        name: receipt
+        for name, receipt in registry.get("skipped", {}).items()
+        if receipt.get("reason") != "off-cycle"
+    }
+    if skipped:
+        registry["skipped"] = skipped
+    else:
+        registry.pop("skipped", None)
+    for field in ("policy_changes", "runtime_changes", "family_evaluation_every"):
+        registry.pop(field, None)
+
+
 def save_champions(store, registry):
+    compact_champions(registry)
     path = store / "ratings/champions.json"
     atomic_bytes(path, (json.dumps(registry, indent=2) + "\n").encode())
     with path.open("rb") as stream:
@@ -232,7 +249,7 @@ def evaluate(runner, registry):
     state = runner.state
     if registry["champion"] != "random" and registry["champion"] not in state["models"]:
         raise ValueError("current champion model unavailable")
-    skipped = registry.setdefault("skipped", {})
+    skipped = registry.get("skipped", {})
     for number, candidate in enumerate(state["candidates"], 1):
         if registry["evaluated"].get(candidate, {}).get("complete") or candidate in skipped:
             continue
@@ -244,11 +261,9 @@ def evaluate(runner, registry):
         evaluation_every = cadence or state["policy"]["evaluation_every"]
         challenge_every = cadence or state["policy"]["challenge_every"]
         if round_number % evaluation_every != 0:
-            skipped[candidate] = {"reason": "off-cycle", "recorded_at": utc_now().isoformat()}
-            registry["pending"] = None
-            state.setdefault("skipped", []).append(candidate)
-            runner.save()
-            save_champions(runner.root, registry)
+            if registry["pending"] == candidate:
+                registry["pending"] = None
+                save_champions(runner.root, registry)
             runner.log(
                 f"Skipped {candidate}: all evaluation is restricted to multiples of {evaluation_every}"
             )
@@ -421,7 +436,6 @@ def upgrade_runtime(runner, registry, directory):
     runner.state["runtime_fingerprints"] = fingerprints
     runner.state["rating_protocol"] = protocol
     runner.state.setdefault("runtime_changes", []).append(change)
-    registry.setdefault("runtime_changes", []).append(change)
     runner.config = config
     runner.save()
     save_champions(runner.root, registry)
@@ -461,7 +475,6 @@ def include_family(runner, registry, family, cadence=None):
             state["candidates"].append(source["id"])
     if cadence is not None:
         state.setdefault("family_evaluation_every", {})[family] = cadence
-        registry.setdefault("family_evaluation_every", {})[family] = cadence
         # A cadence change can make previously skipped models eligible. Never
         # discard completed evidence or alter another family's cadence.
         for source in ordered:
@@ -478,7 +491,6 @@ def include_family(runner, registry, family, cadence=None):
             "recorded_at": utc_now().isoformat(),
         }
         state.setdefault("policy_changes", []).append(change)
-        registry.setdefault("policy_changes", []).append(change)
     runner.save()
     save_champions(runner.root, registry)
 

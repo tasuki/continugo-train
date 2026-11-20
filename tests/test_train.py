@@ -47,6 +47,23 @@ class OfflineDataTests(unittest.TestCase):
         repeated = data.scan_corpus([str(self.root)], 4, 7, 0.25)
         self.assertEqual(corpus.fingerprint, repeated.fingerprint)
         self.assertTrue(all(g.plies == (0, 1) for g in corpus.train + corpus.validation))
+        # Position accounting sees no-policy and unlabeled inputs too; duplicate
+        # recovery copies still count once. Eligibility only affects training.
+        expected = {
+            info["game_id"]: info["moves"]
+            for info in (inspect_game(path) for path in self.root.glob("*.sgf"))
+        }
+        self.assertEqual(corpus.generated_positions, expected)
+        from continugo_train.progress import initialize
+
+        progress = initialize(
+            None,
+            corpus.train + corpus.validation,
+            {},
+            generated_positions=corpus.generated_positions,
+        )
+        self.assertEqual(progress["data_positions"], sum(expected.values()))
+        self.assertEqual(progress["samples_seen"], 0)
 
     def test_split_history_survives_changing_windows_seeds_and_copied_games(self):
         original = data.scan_corpus([str(p) for p in self.paths], 4, 0, 0.25)
@@ -347,7 +364,7 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(actual["global_step"], 2)
         self.assertEqual(actual["progress"], expected["progress"])
         self.assertEqual(
-            actual["progress"], {"family": "cg1", "samples_seen": 2, "data_positions": 8}
+            actual["progress"], {"family": "cg1", "samples_seen": 2, "data_positions": 12}
         )
         self.assertEqual(actual["corpus_fingerprint"], expected["corpus_fingerprint"])
         self.assertEqual(actual["optimizer"]["param_groups"], expected["optimizer"]["param_groups"])
@@ -385,7 +402,7 @@ class OfflineTrainerTests(unittest.TestCase):
         adjusted = torch.load(resumed, weights_only=True)
         self.assertEqual(adjusted["global_step"], 4)
         self.assertEqual(adjusted["progress"]["samples_seen"], 6)  # Two two-row minibatches.
-        self.assertEqual(adjusted["progress"]["data_positions"], 8)
+        self.assertEqual(adjusted["progress"]["data_positions"], 12)
         self.assertEqual(adjusted["optimizer"]["param_groups"][0]["lr"], 0.005)
         self.assertEqual(adjusted["options"]["batch_size"], 2)
         self.assertEqual(adjusted["config"]["chunk_size"], 32768)
@@ -478,7 +495,7 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(
             actual["progress"]["samples_seen"], 3
         )  # Includes the parent, despite SGD reset.
-        self.assertEqual(actual["progress"]["data_positions"], 16)
+        self.assertEqual(actual["progress"]["data_positions"], 24)
         self.assertEqual(actual["config"]["channels"], parent["config"]["channels"])
         self.assertEqual(actual["config"]["chunk_size"], 32768)
         self.assertNotEqual(actual["corpus_fingerprint"], parent["corpus_fingerprint"])
@@ -514,7 +531,7 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(resumed["global_step"], 2)
         self.assertEqual(resumed["progress"], continuous["progress"])
         self.assertEqual(resumed["progress"]["samples_seen"], 4)
-        self.assertEqual(resumed["progress"]["data_positions"], 16)
+        self.assertEqual(resumed["progress"]["data_positions"], 24)
         self.assertEqual(resumed["initialization"], origin)
         self.assertEqual(resumed["split_history"], actual["split_history"])
         for name in continuous["model"]:

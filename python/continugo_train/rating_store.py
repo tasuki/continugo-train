@@ -1,6 +1,7 @@
 """Rebuildable ratings from the date-grouped SGFs, without a second game ledger."""
 
 import argparse
+import csv
 import json
 import re
 from collections import defaultdict
@@ -38,8 +39,14 @@ def refresh(store, config, cache=None, *, visualize=True):
     settings = ratings.protocol(config)
     champion_file = store / "ratings/champions.json"
     registry = json.loads(champion_file.read_text()) if champion_file.exists() else {}
+    evaluator_path = store / "ratings/evaluator.pt"
+    evaluator = {}
+    if evaluator_path.is_file():
+        import torch
+
+        evaluator = torch.load(evaluator_path, map_location="cpu", weights_only=True)
     protocols = [settings]
-    for change in registry.get("runtime_changes", []):
+    for change in evaluator.get("runtime_changes", []):
         for key in ("previous_protocol", "protocol"):
             protocol = change[key]
             if any(
@@ -124,23 +131,44 @@ def refresh(store, config, cache=None, *, visualize=True):
         summary[public_name] = {key: state[key] for key in COLUMNS if key != "network"}
     directory = store / "ratings"
     directory.mkdir(parents=True, exist_ok=True)
-    rows = [
-        {"network": name, **value}
-        for name, value in sorted(summary.items(), key=lambda pair: (pair[0] != "random", pair[0]))
-    ]
+    # Updating old ratings must not reshuffle their rows. New networks follow
+    # first evidence order (paired seed order), not lexical family-name order.
+    order = ["random"]
+    csv_path = directory / "networks.csv"
+    if csv_path.exists():
+        with csv_path.open(newline="") as stream:
+            order.extend(row["network"] for row in csv.DictReader(stream))
+    order.extend(
+        "random" if record[color] == ratings.REFERENCE_ID else record[color]
+        for record in records
+        for color in ("black", "white")
+    )
+    rows = [{"network": name, **summary[name]} for name in dict.fromkeys(order) if name in summary]
     ratings._atomic_csv(directory / "networks.csv", COLUMNS, rows)
     from .plot_ratings import update
 
     update(store)  # Publish the chart before potentially slow neural reports.
     if visualize:
         skipped = set(registry.get("skipped", {}))
+
+        def abandoned(name):
+            if name in skipped:
+                return True
+            if name == "random" or registry.get("evaluated", {}).get(name, {}).get("complete"):
+                return False
+            family, round_text = name.rsplit("-r", 1)
+            cadence = evaluator.get("family_evaluation_every", {}).get(
+                family, registry.get("policy", {}).get("evaluation_every", 1)
+            )
+            return int(round_text) % cadence != 0
+
         for group in groups:
             for relative, _size, _mtime in group["files"]:
                 path = store / relative
                 output = path.with_suffix(".nn.html")
                 game = GAME_NAME.fullmatch(path.name)
-                if game["black"] in skipped or game["white"] in skipped:
-                    continue  # Preserve partial SGFs, but do no more work on skipped rounds.
+                if abandoned(game["black"]) or abandoned(game["white"]):
+                    continue  # Preserve partial SGFs, but do no more work on off-cycle rounds.
                 if output.is_file():
                     continue
                 info = infos.get(relative) or inspect(path)["info"]

@@ -1,8 +1,7 @@
-"""Plot global ratings against cumulative unique training games.
+"""Plot ratings against d: cumulative generated positions in each training lineage.
 
-Counts ancestral checkpoint games assigned to training, excluding validation.
-Repeated epochs/replay do not count games again. The random reference is at 0
-on the same linear training-game axis as the networks.
+Includes validation and truncated games, not repeated training exposures (s).
+Unknown legacy counters are omitted rather than replaced with game counts.
 """
 
 import argparse
@@ -19,8 +18,8 @@ import torch
 
 from . import archive
 from .plot_metrics import pyplot, save_figure
+from .progress import checkpoint_progress
 from .ratings import REFERENCE_ID, transaction
-from .train import checkpoint_splits
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @dataclass(frozen=True)
 class Point:
     network: str
-    games: int
+    positions: int
     rating: float
     deviation: float
     reference: bool
@@ -39,20 +38,20 @@ class Point:
     estimated: bool = False
 
 
-def training_games(store, network_id):
-    """Read the ancestral split ledger, not just the current replay window."""
+def data_positions(store, network_id):
+    """Read d from stored progress, never estimate positions from game counts."""
     metadata = Path(store) / "ratings/inference" / f"{network_id}.pt"
     if metadata.is_file():
         source = torch.load(metadata, map_location="cpu", weights_only=True)
         if source.get("checkpoint_sha256") != network_id:
             raise ValueError("inference source identity mismatch")
-        count = source.get("training_games")
+        count = source.get("progress", {}).get("data_positions")
         if isinstance(count, int) and count >= 0:
             return count
     for path in Path(store).glob("models/*/r*/metadata.json"):
         source = json.loads(path.read_text())
         if source.get("checkpoint_sha256") == network_id:
-            return source["progress"]["training_games"]
+            return source["progress"]["data_positions"]
     for kind in ("retained", "accepted", "training", "experimental"):
         bundle = archive.find_bundle(Path(store) / kind, kind, network_id)
         if bundle is None:
@@ -61,7 +60,7 @@ def training_games(store, network_id):
         if archive.digest(checkpoint) != network_id:
             raise ValueError(f"archived checkpoint identity mismatch: {checkpoint}")
         saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        return sum(split == "train" for split in checkpoint_splits(saved).values())
+        return checkpoint_progress(saved)["data_positions"]
     raise ValueError(f"no archived checkpoint for network {network_id} in {store}")
 
 
@@ -80,13 +79,19 @@ def collect_artifact_points(model_store):
         for row in csv.DictReader(stream):
             reference = row["network"] == "random"
             source = {} if reference else sources[row["network"]]
+            positions = 0 if reference else source["progress"]["data_positions"]
+            if positions is None:
+                print(f"WARNING: omitting {row['network']}: unknown lineage d", file=sys.stderr)
+                continue
+            if type(positions) is not int or positions < 0:
+                raise ValueError("invalid cumulative generated-position count")
             rating, deviation = float(row["rating"]), float(row["deviation"])
             if deviation < 0 or not all(math.isfinite(value) for value in [rating, deviation]):
                 raise ValueError("invalid rating summary")
             points.append(
                 Point(
                     row["network"],
-                    0 if reference else source["training_games"],
+                    positions,
                     rating,
                     deviation,
                     reference,
@@ -167,15 +172,18 @@ def collect_points(model_store):
             source = sources.get(row["network_id"], {})
             if source and source.get("checkpoint_sha256") != row["network_id"]:
                 raise ValueError("inference source identity mismatch")
-            games = 0 if reference else source.get("training_games")
-            if games is None:
-                games = training_games(model_store, row["network_id"])
-            if not isinstance(games, int) or games < 0:
-                raise ValueError("invalid cumulative training-game count")
+            positions = 0 if reference else source.get("progress", {}).get("data_positions")
+            if positions is None:
+                positions = data_positions(model_store, row["network_id"])
+            if positions is None:
+                print(f"WARNING: omitting {row['network']}: unknown lineage d", file=sys.stderr)
+                continue
+            if type(positions) is not int or positions < 0:
+                raise ValueError("invalid cumulative generated-position count")
             points.append(
                 Point(
                     row["network"] or row["network_id"][:12],
-                    games,
+                    positions,
                     rating,
                     deviation,
                     reference,
@@ -209,12 +217,12 @@ def plot(points, output, title="Network ratings", labels=False):
         campaigns[point.campaign].append(point)
     colors = plt.get_cmap("tab20")
     for index, (campaign, series) in enumerate(sorted(campaigns.items())):
-        series.sort(key=lambda p: (p.round if p.round is not None else p.games, p.games))
+        series.sort(key=lambda p: (p.round if p.round is not None else p.positions, p.positions))
         # Use the ten distinct saturated hues before their lighter variants.
         color_index = series[0].color if series[0].color is not None else index
         color_index = 2 * (color_index % 10) + (color_index // 10) % 2
         axis.errorbar(
-            [p.games for p in series],
+            [p.positions for p in series],
             [p.rating for p in series],
             fmt="-",
             alpha=0.85,
@@ -233,7 +241,7 @@ def plot(points, output, title="Network ratings", labels=False):
         ]:
             if group:
                 axis.errorbar(
-                    [p.games for p in group],
+                    [p.positions for p in group],
                     [p.rating for p in group],
                     yerr=[p.deviation for p in group],
                     fmt="none",
@@ -242,7 +250,7 @@ def plot(points, output, title="Network ratings", labels=False):
                     alpha=alpha,
                 )
                 axis.scatter(
-                    [p.games for p in group],
+                    [p.positions for p in group],
                     [p.rating for p in group],
                     marker=marker,
                     s=size,
@@ -254,7 +262,7 @@ def plot(points, output, title="Network ratings", labels=False):
         for point in networks:
             axis.annotate(
                 point.network,
-                (point.games, point.rating),
+                (point.positions, point.rating),
                 xytext=(5, 5),
                 textcoords="offset points",
                 fontsize=7,
@@ -264,17 +272,18 @@ def plot(points, output, title="Network ratings", labels=False):
         axis.scatter(0, rating, marker="*", s=150, color="black", zorder=5)
     axis.set_ylabel("Rating")
     # Leave room around zero so the random-reference star remains fully visible.
-    maximum = max(1, max((p.games for p in networks), default=1))
+    maximum = max(1, max((p.positions for p in networks), default=1))
     axis.set_xlim(-0.03 * maximum, 1.1 * maximum)
     axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
     axis.grid(True, which="major", alpha=0.25)
     figure.suptitle(title)
-    figure.supxlabel("Cumulative unique training games", y=0.10)
+    figure.supxlabel("d · Cumulative generated positions in training lineage", y=0.10)
     figure.text(
         0.5,
         0.02,
         "Error bars: ± rating deviation (not a 95% confidence interval). "
-        "Validation excluded; replay counted once. Lines connect every evaluated round; solid dots are champion lineage, translucent muted dots are non-champions.\n"
+        "Validation and truncated games included; repeated training exposures excluded.\n"
+        "Lines connect evaluated rounds; solid dots are champion lineage, muted dots are non-champions.\n"
         "Different model schemas use separate compatible evaluation runtimes; compare across protocols cautiously.",
         ha="center",
         fontsize=8,

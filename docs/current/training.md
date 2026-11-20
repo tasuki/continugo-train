@@ -129,13 +129,14 @@ reset/keep. Readable names such as `cg1-b4c32-s1248000-d550347` identify:
 - `s`: cumulative **optimized training rows**, including repeated rows across
   epochs and warm-starts. Validation rows do not increment it. This counts actual
   minibatch rows, not optimizer steps multiplied by an assumed batch size.
-- `d`: cumulative **eligible pre-move rows from completed policy-labeled self-play**,
-  before position caps or board-mixture downsampling, including held-out rows.
-  Bootstrap MCTS games count; random diagnostics and truncated games do not.
+- `d`: cumulative **generated pre-move positions in this training lineage**,
+  before position caps or board-mixture downsampling. Includes held-out positions,
+  no-policy and truncated games, and generated games never selected for training.
+  Unrelated runs, rating matches and random diagnostics outside the lineage do not count.
 
-For standalone training, `d` counts eligible imported rows from previously unseen
+For standalone training, `d` counts all imported positions from previously unseen
 canonical game IDs; copying or reintroducing ancestral games does not count again.
-The loop instead tracks each planned generation job once, including completed
+The loop instead tracks each planned generation job once, including
 repeated games and games outside the training/validation windows. It supplies frozen totals/game IDs
 in `generation-progress.pt` via `--generated-data`; this is orchestration metadata,
 not a game-record sidecar. Checkpoints retain `data_game_ids` even for generated
@@ -143,9 +144,11 @@ games never selected for training, separately from the holdout ledger, so later
 offline imports of those games do not count them again. An external orchestrator
 can also supply `--data-positions`, but must use `--generated-data` to preserve
 IDs for rows outside the corpus. Totals cannot be smaller than inherited progress
-plus newly imported eligible rows. Recovery copies do not create new generation.
-This counter is not the number of unique
-board positions, raw played moves, or all rows ever generated outside the lineage.
+plus newly imported positions. Recovery copies do not create new generation.
+One position is counted per played move (including passes), not per unique board.
+A fresh random initialization starts separate `s=0, d=0` counters; chained runs
+inherit their parent, even when the family name changes. Existing stored counters
+are retained as historical baselines, not reconstructed retroactively.
 
 Strict resume preserves the family/data total and advances `s` only for newly
 completed training epochs. Rejection, optimizer reset, and window eviction cannot

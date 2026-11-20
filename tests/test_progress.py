@@ -34,6 +34,27 @@ class ProgressTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 initialize(saved, window, history, **kwargs)
 
+    def test_all_generated_positions_follow_lineage_not_family_or_replay(self):
+        saved = {
+            "progress": {"family": "cg1", "samples_seen": 500, "data_positions": 1000},
+        }
+        # Includes validation, unselected, no-policy and truncated imported games.
+        generated = {"old": 30, "train": 20, "validation": 10, "truncated": 40}
+        continued = initialize(
+            saved,
+            [game("train", 5)],
+            {"old"},
+            family="cg2",
+            generated_positions=generated,
+        )
+        self.assertEqual(continued, {"family": "cg2", "samples_seen": 500, "data_positions": 1070})
+        fresh = initialize(None, [], {}, family="cg2")
+        self.assertEqual((fresh["samples_seen"], fresh["data_positions"]), (0, 0))
+        resumed = initialize(
+            {"progress": continued}, [], {}, resuming=True, generated_positions=generated
+        )
+        self.assertEqual(resumed, continued)
+
     def test_generated_but_untrained_data_is_not_imported_twice(self):
         trained, dropped, new = "a" * 64, "b" * 64, "c" * 64
         saved = {

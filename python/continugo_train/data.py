@@ -15,7 +15,7 @@ import threading
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import torch
@@ -48,6 +48,8 @@ class Corpus:
     fingerprint: str
     # Keep ancestral assignments even when a game leaves the current replay window.
     split_history: dict[str, str]
+    # All imported positions, independent of training eligibility and holdouts.
+    generated_positions: dict[str, int] = field(default_factory=dict)
 
     def manifest(self) -> list[dict]:
         return [
@@ -57,7 +59,7 @@ class Corpus:
         ]
 
 
-def inspect_corpus(inputs: list[str], density: int, binary=None):
+def inspect_corpus(inputs: list[str], density: int, binary=None, *, generated_positions=None):
     """Validate/deduplicate eligible games without requiring a holdout yet."""
     paths = set()
     for name in inputs:
@@ -78,6 +80,8 @@ def inspect_corpus(inputs: list[str], density: int, binary=None):
         info = inspect_game(path, density, binary)
         if not 9 <= info["board_size"] <= 19:
             raise ValueError(f"{path}: training board sizes must be in 9..19")
+        if generated_positions is not None:
+            generated_positions[info["game_id"]] = info["moves"]
         if info.get("result") == "0":
             print(f"WARNING DRAW SGF size={info['board_size']}: {path}", file=sys.stderr)
         if not info["labeled"]:
@@ -126,11 +130,14 @@ def scan_corpus(
     history = dict(split_history or {})
     if any(split not in ("train", "validation") for split in history.values()):
         raise ValueError("invalid split history")
-    eligible, skipped = inspect_corpus(inputs, density, binary)
+    generated_positions = {}
+    eligible, skipped = inspect_corpus(
+        inputs, density, binary, generated_positions=generated_positions
+    )
     pinned = merge_split_assignments(history, split_assignments or {})
     train, validation, assigned = assign_splits(eligible, seed, validation_fraction, pinned)
     # Pool assignments are not evidence of use. Only selected games join the
-    # checkpoint ledger counted by the ratings chart.
+    # checkpoint split ledger; generated-position accounting is separate.
     history.update({game.game_id: assigned[game.game_id] for game in eligible})
     if not train or not validation:
         raise ValueError(
@@ -145,7 +152,7 @@ def scan_corpus(
     fingerprint = hashlib.sha256(
         json.dumps(sorted(identity, key=lambda g: g["game_id"]), sort_keys=True).encode()
     ).hexdigest()
-    return Corpus(train, validation, skipped, fingerprint, history)
+    return Corpus(train, validation, skipped, fingerprint, history, generated_positions)
 
 
 def merge_split_assignments(history, assignments):

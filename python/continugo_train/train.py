@@ -666,10 +666,11 @@ def train(args):
             resuming=resuming,
             family=args.network_family,
             data_positions=args.data_positions,
+            generated_positions=corpus.generated_positions,
         )
         if generated is not None and progress["data_positions"] != generated["data_positions"]:
             raise ValueError("generation progress conflicts with ancestral data total")
-        all_data_ids = known_data | {g.game_id for g in corpus.train + corpus.validation}
+        all_data_ids = known_data | set(corpus.generated_positions)
         if generated is not None:
             if resuming and not known_generated.issubset(known_data):
                 raise ValueError("generation history changed since checkpoint")
@@ -683,6 +684,7 @@ def train(args):
         log(
             f"OFFLINE FP32; device={device}; torch={torch.__version__}; parameters={sum(p.numel() for p in model.parameters())}; config={asdict(config)}"
         )
+        log(f"progress s={progress['samples_seen']} d={progress['data_positions']}")
         log(f"options={asdict(options)}")
         if options.size_weights != "uniform":
             log(
@@ -726,6 +728,7 @@ def train(args):
                 log(
                     f"epoch={epoch + 1}/{epochs} {name}: loss={result['loss']:.6f} policy_ce={result['policy_ce']:.6f} value_mse={result['value_mse']:.6f} score_nll={result['score_nll']:.6f} score_mse={result['score_mse']:.6f} score_stdev_mean={result['score_stdev_mean']:.6f} score_standardized_mse={result['score_standardized_mse']:.6f} score_one_sigma_coverage={result['score_one_sigma_coverage']:.6f} ownership_mse={result['ownership_mse']:.6f} score_mae={result['score_mae']:.6f} score_bias={result['score_bias']:.6f} prediction_std={result['prediction_std']} samples={result['samples']} policy_samples={result['policy_samples']} steps={result['steps']} positions/s={result['positions_per_second']:.2f} load_wait={result['load_wait_seconds']:.3f}s compute+transfer={result['compute_seconds']:.3f}s cuda_peak_mib={result['cuda_peak_mib']} parent_peak_rss_mib={result['parent_peak_rss_mib']}"
                 )
+            log(f"progress s={progress['samples_seen']} d={progress['data_positions']}")
             improved = metrics["validation"]["loss"] < best
             best = min(best, metrics["validation"]["loss"])
             state = {

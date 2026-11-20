@@ -176,7 +176,7 @@ class ChampionTests(helpers.LoopHarness):
         )
         for index in range(1, 5):
             name = f"test1-r{index:04d}"
-            self.assertIn(name, registry["skipped"])
+            self.assertNotIn("skipped", registry)
             self.assertNotIn(name, registry["evaluated"])
         matches = list(self.saved_state()["matches"].values())
         self.assertEqual(len([job for job in matches if job["kind"] == "reference"]), 1)
@@ -213,7 +213,7 @@ class ChampionTests(helpers.LoopHarness):
         loop.atomic_checkpoint(self.store / "ratings/evaluator.pt", state)
         self.evaluate(resume=True)
         registry = rate_saved.load_champions(self.store)
-        self.assertIn("test1-r0004", registry["skipped"])
+        self.assertNotIn("skipped", registry)
         self.assertFalse(
             any(
                 job["candidate_name"] == "test1-r0004"
@@ -242,7 +242,7 @@ class ChampionTests(helpers.LoopHarness):
         self.assertEqual(before, {path: path.read_bytes() for path in paths})
         registry = rate_saved.load_champions(self.store)
         self.assertIsNone(registry["pending"])
-        self.assertEqual(set(registry["skipped"]), set(self.ids))
+        self.assertNotIn("skipped", registry)
         self.assertEqual(registry["evaluated"], {})
 
     def test_append_family_preserves_champion_and_overrides_only_its_cadence(self):
@@ -286,6 +286,51 @@ class ChampionTests(helpers.LoopHarness):
                     self.assertNotIn("decision", job[key]["report"])
         legacy = EvaluationConfig.from_config({"acceptance_rate": 0.5})
         self.assertFalse(hasattr(legacy, "acceptance_rate"))
+
+    def test_compact_registry_preserves_evidence_and_full_checkpoint_audit(self):
+        registry = rate_saved.load_champions(self.store)
+        policy_change = {"family": "test1", "added_models": self.ids, "evaluation_every": 1}
+        runtime_change = {
+            "previous_config": {"device": "cuda"},
+            "executables": {"arena": "large payload"},
+            "previous_protocol": {"arena_sha256": "old"},
+            "protocol": {"arena_sha256": "new"},
+        }
+        registry.update(
+            skipped={self.ids[0]: {"reason": "off-cycle"}},
+            policy_changes=[policy_change],
+            runtime_changes=[runtime_change],
+            family_evaluation_every={"test1": 1},
+        )
+        rate_saved.save_champions(self.store, registry)
+        loaded = rate_saved.load_champions(self.store)
+        self.assertNotIn("skipped", loaded)
+        for field in ("policy_changes", "runtime_changes", "family_evaluation_every"):
+            self.assertNotIn(field, loaded)
+        self.assertIn("added_models", policy_change)
+        self.assertIn("executables", runtime_change)
+
+    def test_csv_preserves_rows_and_appends_new_networks(self):
+        import csv
+
+        self.evaluate()
+        path = self.store / "ratings/networks.csv"
+        with path.open(newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        # An existing order is durable, even when it differs from lexical order.
+        reordered = [rows[0], rows[2], rows[1]]
+        rate_saved.ratings._atomic_csv(path, rating_store.COLUMNS, reordered)
+        config = EvaluationConfig.from_config(self.saved_state()["config"])
+        rating_store.refresh(self.store, config, visualize=False)
+        with path.open(newline="") as stream:
+            names = [row["network"] for row in csv.DictReader(stream)]
+        self.assertEqual(names, [row["network"] for row in reordered] + [self.ids[-1]])
+        path.unlink()
+        rating_store.refresh(self.store, config, visualize=False)
+        with path.open(newline="") as stream:
+            self.assertEqual(
+                [row["network"] for row in csv.DictReader(stream)], ["random", *self.ids]
+            )
 
     def test_thresholds(self):
         decide = rate_saved.challenge_decision

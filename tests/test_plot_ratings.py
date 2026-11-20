@@ -10,7 +10,7 @@ from unittest.mock import patch
 import torch
 
 from continugo_train import archive, plot_ratings
-from continugo_train.plot_ratings import collect_points, main, plot, training_games
+from continugo_train.plot_ratings import collect_points, data_positions, main, plot
 from continugo_train.ratings import REFERENCE_ID
 
 
@@ -28,6 +28,7 @@ class PlotRatingsTests(unittest.TestCase):
         torch.save(
             {
                 "split_history": history,
+                "progress": {"family": "test", "samples_seen": 999, "data_positions": 120},
                 "manifest": [
                     {"game_id": f"{i:064x}", "split": history[f"{i:064x}"]} for i in (120, 150)
                 ],
@@ -72,8 +73,31 @@ class PlotRatingsTests(unittest.TestCase):
         before = path.read_bytes()
         points = collect_points(self.root)
         self.assertEqual(len(points), 2)
-        self.assertEqual(sorted(p.games for p in points), [0, 120])
+        self.assertEqual(sorted(p.positions for p in points), [0, 120])
         self.assertEqual(before, path.read_bytes())
+
+    def test_artifact_axis_uses_d_not_games_or_samples_and_omits_unknown(self):
+        path = self.root / "ratings/networks.csv"
+        path.parent.mkdir()
+        path.write_text(
+            "network,rating,deviation,games\n"
+            "random,100,0,20\nnew-r0005,150,30,10\nlegacy-r0005,120,40,10\n"
+        )
+        sources = {
+            "a": {
+                "id": "new-r0005",
+                "family": "new",
+                "round": 5,
+                "training_games": 7,
+                "progress": {"samples_seen": 90000, "data_positions": 12345},
+            },
+            "b": {"id": "legacy-r0005", "progress": {"data_positions": None}},
+        }
+        with patch("continugo_train.saved_models.saved_sources", return_value=sources):
+            points = collect_points(self.root)
+        self.assertEqual(
+            [(p.network, p.positions) for p in points], [("random", 0), ("new-r0005", 12345)]
+        )
 
     def test_champion_lineage_and_unrated_ladder_estimates_are_preserved(self):
         self.table()
@@ -95,7 +119,8 @@ class PlotRatingsTests(unittest.TestCase):
         directory = self.root / "ratings/inference"
         directory.mkdir()
         torch.save(
-            {"checkpoint_sha256": uncertain, "training_games": 140}, directory / f"{uncertain}.pt"
+            {"checkpoint_sha256": uncertain, "progress": {"data_positions": 140}},
+            directory / f"{uncertain}.pt",
         )
 
         class Prior:
@@ -112,9 +137,9 @@ class PlotRatingsTests(unittest.TestCase):
         with patch.object(plot_ratings, "transaction", transaction):
             points = collect_points(self.root)
         champion = next(
-            point for point in points if point.network == "test-net" and point.games == 120
+            point for point in points if point.network == "test-net" and point.positions == 120
         )
-        estimate = next(point for point in points if point.games == 140)
+        estimate = next(point for point in points if point.positions == 140)
         self.assertTrue(champion.champion)
         self.assertFalse(estimate.champion)
         self.assertTrue(estimate.estimated)
@@ -182,7 +207,7 @@ class PlotRatingsTests(unittest.TestCase):
         network_id = checkpoint.parent.name
         checkpoint.write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "identity mismatch"):
-            training_games(self.root, network_id)
+            data_positions(self.root, network_id)
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
     def test_plot_and_cli(self):
@@ -196,7 +221,8 @@ class PlotRatingsTests(unittest.TestCase):
             axis = figure.axes[0]
             self.assertEqual(axis.get_xscale(), "linear")
             self.assertLess(axis.get_xlim()[0], 0)
-            self.assertGreater(axis.get_xlim()[1], max(p.games for p in points))
+            self.assertGreater(axis.get_xlim()[1], max(p.positions for p in points))
+            self.assertIn("generated positions", figure._supxlabel.get_text())
             self.assertIn(0, axis.get_xticks())
             save(plt, figure, target)
 

@@ -790,7 +790,7 @@ class LoopRunner:
         iteration["data_positions"] = (
             initial
             + sum(
-                record["eligible_positions"]
+                record["moves"]
                 for previous in self.state["iterations"][: iteration["number"]]
                 for record in previous["games"]
             )
@@ -904,11 +904,8 @@ class LoopRunner:
             "version": 1,
             "data_positions": iteration["data_positions"],
             "game_ids": sorted(
-                {
-                    record["game_id"]
-                    for record in [*self.state["bootstrap"], *iteration["games"]]
-                    if record["eligible"]
-                }
+                {record["game_id"] for record in [*self.state["bootstrap"], *iteration["games"]]}
+                | set(self.state.get("initial_data_game_ids", []))
             ),
         }
         if iteration.get("replay_splits"):
@@ -1337,11 +1334,13 @@ def run_loop(args):
                     "source": str(actor_source),
                 }
                 del content
+            bootstrap_positions = {}
             bootstrap, skipped = (
                 inspect_corpus(
                     args.bootstrap_data,
                     saved["feature_spec"]["samples_per_diameter"],
                     config.feature_binary,
+                    generated_positions=bootstrap_positions,
                 )
                 if args.bootstrap_data
                 else ([], {})
@@ -1360,8 +1359,12 @@ def run_loop(args):
                 },
                 "initial_model": None,
                 "initial_data_positions": initialize_progress(
-                    saved, bootstrap, data_history(saved, checkpoint_splits(saved))
+                    saved,
+                    bootstrap,
+                    data_history(saved, checkpoint_splits(saved)),
+                    generated_positions=bootstrap_positions,
                 )["data_positions"],
+                "initial_data_game_ids": sorted(bootstrap_positions),
                 "initial_actor_checkpoint": actor_record,
                 "storage_version": 2,
                 "training": None,

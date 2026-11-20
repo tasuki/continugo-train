@@ -1,10 +1,10 @@
 """Checkpoint-lineage counters, independent of optimizer and replay-window state.
 
 s counts optimized training rows, including repeats, but not validation rows.
-d counts eligible pre-move rows in completed policy-labeled self-play games,
-BEFORE position/board sampling, including validation. Truncated games contribute
-no eligible rows. Offline imports deduplicate ancestral game IDs; the loop can
-supply an exact generation total, including generated games evicted from replay
+d counts all generated pre-move positions, BEFORE position/board sampling,
+including validation, unlabeled and truncated games. Offline imports deduplicate
+ancestral game IDs; the loop can supply an exact generation total, including
+generated games evicted from replay
 and repeated games produced by distinct generation jobs. Recovery copies are
 not new generation. Missing legacy totals remain unknown throughout continuation.
 """
@@ -44,7 +44,16 @@ def data_history(saved, split_history):
     return set(split_history) | set(ids)
 
 
-def initialize(saved, games, history, *, resuming=False, family=None, data_positions=None):
+def initialize(
+    saved,
+    games,
+    history,
+    *,
+    resuming=False,
+    family=None,
+    data_positions=None,
+    generated_positions=None,
+):
     progress = (
         checkpoint_progress(saved)
         if saved is not None
@@ -55,7 +64,14 @@ def initialize(saved, games, history, *, resuming=False, family=None, data_posit
             raise ValueError("resume restores --network-family; conflicting override")
         progress["family"] = family
     if not resuming and progress["data_positions"] is not None:
-        progress["data_positions"] += sum(len(g.plies) for g in games if g.game_id not in history)
+        positions = (
+            generated_positions
+            if generated_positions is not None
+            else {g.game_id: len(g.plies) for g in games}
+        )
+        progress["data_positions"] += sum(
+            n for identity, n in positions.items() if identity not in history
+        )
     if data_positions is not None:
         previous = progress["data_positions"]
         if previous is None:

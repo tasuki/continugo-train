@@ -523,6 +523,22 @@ class LoopTests(LoopHarness):
         self.assertEqual(continued["progress"]["data_positions"], 20)
         self.assertEqual(continued["progress"]["samples_seen"], 3)
 
+    def test_truncated_generation_counts_positions_without_training_or_double_counting(self):
+        output = self.root / "truncated"
+        self.jobs.fault = "unlabeled"
+        with self.assertRaisesRegex(ValueError, "no completed policy-labeled games"):
+            self.run_loop(output, extra=["--max-moves", "2"])
+        state = torch.load(output / "loop.pt", weights_only=True)
+        iteration = state["iterations"][0]
+        self.assertTrue(all(not record["eligible"] for record in iteration["games"]))
+        self.assertEqual(iteration["data_positions"], state["initial_data_positions"] + 8)
+        calls = len(self.jobs.calls)
+        with self.assertRaisesRegex(ValueError, "no completed policy-labeled games"):
+            self.run_loop(output, resume=True)
+        resumed = torch.load(output / "loop.pt", weights_only=True)
+        self.assertEqual(resumed["iterations"][0]["data_positions"], iteration["data_positions"])
+        self.assertEqual(len(self.jobs.calls), calls)
+
     def test_partial_selfplay_only_regenerates_missing_or_invalid_uncommitted_games(self):
         output = self.root / "partial"
         self.jobs.fault = "partial_selfplay"
