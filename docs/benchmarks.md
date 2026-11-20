@@ -3,6 +3,9 @@
 Historical measurements, not current defaults or a roadmap. See
 [current docs](current/) for supported behavior and [todo.md](todo.md) for open work.
 
+New investigation: [exact Benson connectivity optimization](history/2026-11-20-benson-investigation.md),
+with production adoption, parity checks, and provisional timing under load.
+
 Latest: [32 versus 128 search simulations](history/2026-11-05-search-budget.md),
 a short fixed-checkpoint eye-filling/pass diagnostic.
 Also recent: [Benson versus cached eye analysis](history/2026-11-05-benson-benchmark.md),
