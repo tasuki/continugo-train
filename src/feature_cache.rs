@@ -46,10 +46,6 @@ impl FeatureCacheArgs {
         if self.no_feature_cache {
             return Ok(());
         }
-        eprintln!(
-            "Building training-feature sidecars in {}",
-            directory.display()
-        );
         // On Unix replace the completed generator: its PID/process group and
         // campaign lock remain owned by the cache job. An interrupted supervisor
         // must not mistake an exited generator for a finished cache subprocess.

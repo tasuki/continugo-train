@@ -387,13 +387,22 @@ def main(argv=None):
             skip_ineligible=args.skip_ineligible,
         )
 
+    started = time.perf_counter()
+    counts = {"built": 0, "verified-existing": 0, "skipped-ineligible": 0}
     pool = ThreadPoolExecutor(max_workers=args.workers)
     try:
         for result in pool.map(build, sorted(paths)):
-            print(json.dumps(result, sort_keys=True), flush=True)
+            counts[result["status"]] += 1
     finally:
         # Do not keep starting queued games after interruption or a failed build.
         pool.shutdown(wait=True, cancel_futures=True)
+    elapsed = time.perf_counter() - started
+    print(
+        f"Training-feature sidecars: {counts['built']} built, "
+        f"{counts['verified-existing']} existing verified, "
+        f"{counts['skipped-ineligible']} skipped in {elapsed:.1f}s.",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

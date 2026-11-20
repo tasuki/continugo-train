@@ -1,4 +1,5 @@
 import copy
+import io
 import random
 import tempfile
 import unittest
@@ -189,6 +190,29 @@ class FeatureCacheTests(unittest.TestCase):
         result = cache.build_cache(self.sgf, skip_ineligible=True)
         self.assertEqual(result["status"], "skipped-ineligible")
         self.assertFalse(cache.sidecar_path(self.sgf).exists())
+
+    def test_cli_prints_only_one_summary(self):
+        for index in range(2):
+            (self.root / f"other-{index}.sgf").write_text(SGF)
+        with (
+            patch.object(
+                cache,
+                "build_cache",
+                side_effect=[
+                    {"status": "built"},
+                    {"status": "verified-existing"},
+                    {"status": "skipped-ineligible"},
+                ],
+            ) as build,
+            patch.object(cache.time, "perf_counter", side_effect=[10.0, 12.5]),
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
+            cache.main(["--data", str(self.root), "--workers", "1", "--skip-ineligible"])
+        self.assertEqual(build.call_count, 3)
+        self.assertEqual(
+            output.getvalue(),
+            "Training-feature sidecars: 1 built, 1 existing verified, 1 skipped in 2.5s.\n",
+        )
 
     def test_cache_mode_validation(self):
         with self.assertRaises(ValueError):
