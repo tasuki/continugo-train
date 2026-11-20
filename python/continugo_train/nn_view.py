@@ -91,6 +91,21 @@ def heatmap(name, values, *, signed=False, limits=None, log=False, note=""):
     }
 
 
+def placement_map(actions, probabilities):
+    values = raster(actions, probabilities, mode="sum")
+    image = heatmap("Redistributed P(move)", values, log=True)
+    high = max(image["high"], 1e-12)
+    intensity = np.log1p(np.nan_to_num(values, nan=0) / high * 1000) / math.log(1001)
+    rgba = np.zeros((*values.shape, 4), dtype=np.uint8)
+    intensity = np.clip(intensity, 0, 1)
+    rgba[..., :3] = np.stack(
+        (30 + 220 * intensity, 25 + 180 * intensity, 55 + 40 * intensity), axis=-1
+    ).astype(np.uint8)
+    rgba[..., 3] = (intensity * 255).astype(np.uint8)
+    image["src"] = png_uri(rgba)
+    return image
+
+
 def raster(actions, values, *, mode="mean", width=256):
     """Display-only binning: probability/visits sum; input features/logits average."""
     actions = np.asarray(actions)
@@ -239,25 +254,8 @@ def frame(client, sgf, ply, loaded, info):
             "Coarse P(cell)", coarse_probs[:-1].reshape(resolution, resolution).numpy(), log=True
         ),
         heatmap("Diagnostic selected cells", mask.reshape(resolution, resolution), limits=(0, 1)),
-        heatmap(
-            "Exact raw logits (legal)",
-            raster(actions, raw.masked_fill(~legal, torch.nan)),
-            signed=True,
-        ),
-        heatmap("P(move | cell)", raster(actions[legal], local[legal], mode="sum"), log=True),
-        heatmap(
-            "Redistributed P(move)", raster(actions[legal], policy[legal], mode="sum"), log=True
-        ),
+        placement_map(actions[legal], policy[legal]),
     ]
-    if len(sample.visits):
-        keep = sample.target_actions != PASS
-        policy_maps.append(
-            heatmap(
-                "MCTS visits (recorded)",
-                raster(sample.target_actions[keep], sample.visits[keep], mode="sum"),
-                log=True,
-            )
-        )
     output_maps = [heatmap("Ownership prediction (STM)", ownership, signed=True, limits=(-1, 1))]
     if sample.ownership is not None:
         output_maps.extend(
@@ -372,25 +370,25 @@ PAGE = r"""<!doctype html>
 body{margin:0}header{position:sticky;top:0;z-index:2;background:#172134;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 button,a,select{color:#edf4ff;background:#293950;border:1px solid #58718d;padding:5px 10px;border-radius:5px}input{flex:1;min-width:100px}button:disabled{opacity:.4}
 main{padding:12px;display:grid;grid-template-columns:290px 1fr;gap:12px}.panel,section{background:#141f30;border:1px solid #2e4056;border-radius:8px;padding:10px;min-width:0}
-aside{grid-row:span 3}.board-stack{position:relative;aspect-ratio:1}#played-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}h2{font-size:15px;margin:0 0 8px}p{line-height:1.4}.muted,small{color:#9fadc2}#board{width:100%;background:#b99563;border-radius:6px}
+aside{grid-row:span 3}#turn,#stats{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.board-stack{position:relative;aspect-ratio:1}#played-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}h2{font-size:15px;margin:0 0 8px}p{line-height:1.4}.muted,small{color:#9fadc2}#board{width:100%;background:#b99563;border-radius:6px}
 .gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:6px}figure{margin:0;min-width:0;background:#101826;border-radius:4px;padding:5px}
-figure img{width:100%;max-height:155px;object-fit:contain;image-rendering:pixelated;background:repeating-conic-gradient(#243044 0% 25%,#172134 0% 50%) 50%/8px 8px;cursor:zoom-in}
-aside small{overflow-wrap:anywhere}figcaption{font-size:11px;overflow-wrap:anywhere}figure small{font-size:10px}#stats{font-variant-numeric:tabular-nums;line-height:1.7}
+figure img{width:100%;max-height:155px;object-fit:contain;image-rendering:pixelated;background:repeating-conic-gradient(#243044 0% 25%,#172134 0% 50%) 50%/8px 8px}
+#policy{display:contents}#visits-board,#move-board{width:100%;aspect-ratio:1}.move-map-stack{position:relative;aspect-ratio:1}#policy-gallery #move-overlay{position:absolute;inset:0;width:100%;height:100%;max-height:none;background:none;pointer-events:none}#policy-gallery{grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr))}#policy img{max-height:none;aspect-ratio:1}
+#turn{margin-top:12px}aside small{overflow-wrap:anywhere}figcaption{font-size:11px;overflow-wrap:anywhere}figure small{font-size:10px}#stats{font-variant-numeric:tabular-nums;line-height:1.7}.stat-row{display:flex;justify-content:space-between;gap:1ch}.stat-number{white-space:nowrap;text-align:right}
 #inputs{grid-column:2;display:grid;grid-template-columns:1fr 1fr;gap:12px}#inputs .gallery{grid-template-columns:repeat(6,minmax(0,1fr))}
 #inputs img{max-height:125px}details{grid-column:1/-1}table{border-collapse:collapse;width:100%;font-size:12px}th,td{text-align:right;padding:5px;border-bottom:1px solid #304159}th:first-child,td:first-child{text-align:left}
-dialog{max-width:94vw;max-height:94vh;background:#172134;color:#fff;border:1px solid #62758d}dialog img{max-width:85vw;max-height:78vh;image-rendering:pixelated}dialog::backdrop{background:#000b}
+dialog{max-width:94vw;max-height:94vh;background:#172134;color:#fff;border:1px solid #62758d}dialog::backdrop{background:#000b}
 @media(min-width:2100px){figure img{max-height:195px}#inputs img{max-height:160px}}@media(max-width:1200px){main{grid-template-columns:240px 1fr}#inputs{grid-template-columns:1fr}#inputs .gallery{grid-template-columns:repeat(6,1fr)}}@media(max-width:750px){main{display:block}aside,section,#inputs{margin-bottom:12px}#inputs{display:block}#inputs .gallery{grid-template-columns:repeat(3,1fr)}}
 </style>
 <header><strong>ContinuGo · NN microscope</strong><button id="prev">←</button><span id="position"></span><button id="next">→</button><input id="slider" type="range" min="0" value="0"><button id="sgf" type="button" aria-live="polite" title="Copy the complete original SGF, including all annotations">Copy SGF</button></header>
 <p id="notice" class="panel" style="margin:12px" role="status" hidden></p>
 <details id="skipped" class="panel" style="margin:12px" hidden><summary id="skippedtitle"></summary><ul id="skiplist"></ul></details>
-<main><aside class="panel"><div class="board-stack"><div id="board"></div><svg id="played-overlay" viewBox="0 0 1000 1000" aria-label="Move played"><path id="played" fill="none" stroke="#ff701f" stroke-width="5"/></svg></div><p class="muted">Shared ContinuGo viewer · hover for groups, liberties and capture previews.</p><h2 id="turn"></h2><div id="stats"></div><p class="muted">Pre-move position. Orange cross = move played. All network quantities are side-to-move relative, not always Black.</p><p class="muted">Diagnostic checkpoint replay, not a live tree trace. Complete top-ranked cells + recorded visit/move cells; live search also uses seeded exploration and independent proposals.</p><p class="muted">Blue = negative, orange = positive for signed maps. Other maps: dark → bright. Transparent checkerboard = not evaluated. Probability/visit pixels sum; exact features/logits average. Click an image to enlarge.</p><small id="provenance"></small></aside>
-<section><h2>Hierarchical policy · coarse → exact → search</h2><div id="policy" class="gallery"></div></section>
+<main><aside class="panel"><div class="board-stack"><div id="board"></div><svg id="played-overlay" viewBox="0 0 1000 1000" aria-label="Move played"><path id="played" fill="none" stroke="#ff701f" stroke-width="5"/></svg></div><h2 id="turn"></h2><div id="stats"></div><p class="muted">Pre-move position. Orange cross = move played. All network quantities are side-to-move relative, not always Black.</p><p class="muted">Diagnostic checkpoint replay, not a live tree trace. Complete top-ranked cells + recorded visit/move cells; live search also uses seeded exploration and independent proposals.</p><p class="muted">Blue = negative, orange = positive for signed maps. Other maps: dark → bright. Transparent checkerboard = not evaluated. Probability/visit pixels sum; exact features/logits average.</p><small id="provenance"></small></aside>
+<section><h2>Hierarchical policy · coarse → exact → search</h2><div id="policy-gallery" class="gallery"><div id="policy"></div><figure><div class="move-map-stack"><div id="move-board"></div><img id="move-overlay" alt="Placement probability overlay"></div><figcaption>Redistributed P(move)</figcaption><small id="move-range"></small></figure><figure><div id="visits-board"></div><figcaption>MCTS visits (recorded)</figcaption></figure></div></section>
 <section><h2>Critics & ownership · shared trunk input, separate heads</h2><div id="heads" class="gallery"></div></section>
 <div id="inputs"><section><h2 id="coarsetitle">Every coarse input plane</h2><div id="coarse" class="gallery"></div></section><section><h2>Every exact move input feature</h2><div id="exact" class="gallery"></div></section></div>
 <details class="panel"><summary>All projected policy-context input channels</summary><p>These shared spatial channels feed the coarse cell head and are bilinearly sampled at each exact coordinate before adding the exact-feature projection. RMS above is only a summary; these are the individual channel values.</p><div id="context" class="gallery"></div></details>
 <details class="panel"><summary>Top diagnostic policy actions · exact feature values & methodology</summary><p>Local softmax uses all legal coordinates in each complete selected cell. Final policy redistributes placement mass over nonempty selected cells, preserving global coarse pass probability (or pass=1 if none). Input planes use fixed [0,1] scales except uncapped liberty areas; every map shows its range. Value is expected win/draw/loss outcome; “points” counts draws as half, not strict win probability. Score is signed final area / board area; stone units divide by stone-disc area. Ownership is auxiliary, not used in search. This report does not recompute ratings or change SGF training labels.</p><div style="overflow:auto"><table id="candidates"></table></div></details></main>
-<dialog id="zoom"><button id="close">Close (Esc)</button><h2 id="zoomtitle"></h2><img id="zoomimage" alt="Enlarged heatmap"></dialog>
 <dialog id="sgfcopy"><button id="copyclose" type="button">Close</button><h2>Copy the complete annotated SGF</h2><p>Automatic clipboard access was blocked. Press Ctrl+C or ⌘C to copy the selected text.</p><textarea id="sgftext" readonly aria-label="Complete original SGF" style="width:75vw;height:45vh;box-sizing:border-box"></textarea></dialog>
 """
 
@@ -398,8 +396,9 @@ SCRIPT = r"""
 <script>
 'use strict';
 const data=JSON.parse(document.getElementById('data').textContent), frames=data.frames;
-const $=id=>document.getElementById(id), fmt=(v,n=3)=>v==null?'unknown':Number(v).toFixed(n);
-let index=0, viewer=null, copyFeedbackTimer=null;
+const $=id=>document.getElementById(id), fmt=(v,n=3)=>v==null?'unk':Number(v).toFixed(n);
+const signed=(v,n=2)=>v==null?'unk':(Number(v)<0?'-':'+')+Math.abs(Number(v)).toFixed(n);
+let index=0, viewer=null, visitsViewer=null, moveViewer=null, copyFeedbackTimer=null;
 const sgfText=new TextDecoder().decode(Uint8Array.from(atob(data.sgf.split(',')[1]),c=>c.charCodeAt(0)));
 function legacyCopySGF(){
 const previous=document.activeElement,field=document.createElement('textarea');
@@ -419,21 +418,38 @@ if(copied){button.textContent='Copied ✓';copyFeedbackTimer=setTimeout(()=>{but
 else{$('sgftext').value=sgfText;$('sgfcopy').showModal();$('sgftext').focus();$('sgftext').select();$('sgftext').setSelectionRange(0,sgfText.length)}
 }finally{button.disabled=false}
 }
-function gallery(id,images){$(id).replaceChildren(...images.map(image=>{const f=document.createElement('figure'),img=document.createElement('img'),c=document.createElement('figcaption'),s=document.createElement('small');img.src=image.src;img.alt=image.name;c.textContent=image.name;s.textContent=`${fmt(image.low)} … ${fmt(image.high)} ${image.note}`;img.title=s.textContent;img.onclick=()=>{$('zoomtitle').textContent=image.name+' · '+s.textContent;$('zoomimage').src=image.src;$('zoom').showModal()};f.append(img,c,s);return f}))}
+function gallery(id,images){$(id).replaceChildren(...images.map(image=>{const f=document.createElement('figure'),img=document.createElement('img'),c=document.createElement('figcaption'),s=document.createElement('small');img.src=image.src;img.alt=image.name;c.textContent=image.name;s.textContent=`${fmt(image.low)} … ${fmt(image.high)} ${image.note}`;img.title=s.textContent;f.append(img,c,s);return f}))}
 function board(f){
+if(moveViewer)moveViewer.update({move:f.ply});
+else moveViewer=ContinugoViewer.mount($('move-board'),{sgf:sgfText,move:f.ply,showPolicy:false,hover:true,backgroundColor:'#1e1937',blackColor:'#000'});
+const placement=f.policy.find(image=>image.name==='Redistributed P(move)');
+$('move-overlay').src=placement.src;$('move-range').textContent=`${fmt(placement.low)} … ${fmt(placement.high)} · log intensity`;
+if(visitsViewer)visitsViewer.update({move:f.ply});
+else visitsViewer=ContinugoViewer.mount($('visits-board'),{sgf:sgfText,move:f.ply,showPolicy:true,hover:true});
 if(viewer)viewer.update({move:f.ply});
 else viewer=ContinugoViewer.mount($('board'),{sgf:sgfText,move:f.ply,showPolicy:false,hover:true});
 const action=f.view.action,x=action%1000,y=Math.floor(action/1000);
 $('played').setAttribute('d',action===1000000?'':`M${x-15} ${y}h30 M${x} ${y-15}v30`);
 }
-function show(i){if(!frames.length)return;index=Math.max(0,Math.min(frames.length-1,i));const f=frames[index];$('slider').value=index;$('prev').disabled=!index;$('next').disabled=index===frames.length-1;$('position').textContent=`Move ${f.ply+1} / ${data.moves||frames.length} · view ${index+1}/${frames.length}`;$('turn').textContent=`${f.player?'White':'Black'} to play ${f.move}${f.counterfactual?' · counterfactual NN':''}`;
-$('stats').replaceChildren();for(const text of [`Value ${fmt(f.value)} · points ${fmt(f.points_pct,1)}%`,`Score ${fmt(f.score)} ± ${fmt(f.score_stdev)} (1σ) · ${fmt(f.score_stones,1)} stones`,`Head utility ${fmt(f.utility)} (score weight ${f.score_weight})`,`Policy training ${f.train_policy?'enabled':'absent/masked'}`,`Final outcome ${fmt(f.outcome,0)} · score ${fmt(f.score_target)}`,`P(pass) coarse ${fmt(f.coarse_pass,5)} / final ${fmt(f.pass,5)}`,`Search visits ${f.visits} · pass ${f.pass_visits}`,`${f.resolution}² raster · size ${f.board_size} · inputs v${f.feature_schema||4}`,`${f.cells} cells · ${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
-$('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,f[name]);
+function moveCode(action){
+if(action===1000000)return '[]';
+const alphabet='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',x=action%1000,y=Math.floor(action/1000);
+return '['+alphabet[Math.floor(x/52)]+alphabet[x%52]+alphabet[Math.floor(y/52)]+alphabet[y%52]+']';
+}
+function show(i){if(!frames.length)return;index=Math.max(0,Math.min(frames.length-1,i));const f=frames[index];$('slider').value=index;$('prev').disabled=!index;$('next').disabled=index===frames.length-1;$('position').textContent=`Move ${f.ply+1} / ${data.moves||frames.length} · view ${index+1}/${frames.length}`;$('turn').textContent=`${f.player?'White':'Black'} to play ${moveCode(f.view.action)}${f.counterfactual?' · counterfactual NN':''}`;
+$('stats').replaceChildren();
+for(const [label,value] of [[`Value ${signed(f.value)}`,`${fmt(f.points_pct,1)}%`],[`Score ${signed(f.score)}`,signed(f.score_stones)],['Head utility',signed(f.utility)],[`Final Score ${signed(f.score_target)}`,signed(f.score_target==null?null:f.score_target*1000000/(Math.PI*(f.diameter/2)**2))],[`P(pass) ${fmt(f.coarse_pass,2)} / final ${fmt(f.pass,2)}`,null],[`Playouts ${f.visits}`,`${f.pass_visits} pass`]]){
+if(value===null){const row=document.createElement('div');row.textContent=label;$('stats').append(row);continue}
+const row=document.createElement('div'),left=document.createElement('span'),right=document.createElement('span');
+row.className='stat-row';right.className='stat-number';left.textContent=label;right.textContent=value;row.append(left,right);$('stats').append(row);
+}
+for(const text of [`${f.board_size}x${f.board_size} · ${f.resolution}² coarse · input v${f.feature_schema||4}`,`${f.cells} cells`,`${f.legal} legal / ${f.coordinates} evaluated`]){const d=document.createElement('div');d.textContent=text;$('stats').append(d)}
+$('coarsetitle').textContent=`Every coarse input plane (${f.coarse.length})`;$('provenance').textContent=`Checkpoint SHA256 ${f.model} · SGF SHA256 ${data.sgf_sha256}`;board(f);for(const name of ['policy','heads','coarse','exact','context'])gallery(name,name==='policy'?f[name].filter(image=>image.name!=='Redistributed P(move)'):f[name]);
 const features=f.features||data.features,table=$('candidates');table.replaceChildren();let tr=document.createElement('tr');for(const name of ['Action','P(move)','Raw logit','P(move|cell)',...features]){const th=document.createElement('th');th.textContent=name;tr.append(th)}table.append(tr);for(const row of f.candidates){tr=document.createElement('tr');for(const value of [row.action,fmt(row.p,6),fmt(row.logit),fmt(row.local,6),...(row.features||features.map(()=>null)).map(v=>fmt(v))]){const td=document.createElement('td');td.textContent=value;tr.append(td)}table.append(tr)}}
 const skipped=data.skipped||[];if(skipped.length){$('skipped').hidden=false;$('skippedtitle').textContent=`${skipped.length} moves skipped (random or unsupported network)`;for(const s of skipped){const li=document.createElement('li');li.textContent=`Move ${s.ply+1} · ${s.player?'White':'Black'}: ${s.reason}`;$('skiplist').append(li)}}
 if(!frames.length){document.querySelector('main').hidden=true;$('notice').hidden=false;$('notice').textContent='No moves can be visualized with the available supported checkpoints. See the skipped-move reasons below; the original annotated game is available through Copy SGF.';$('position').textContent=`0 visualizable / ${data.moves||0} moves`;for(const id of ['slider','prev','next'])$(id).disabled=true}
-$('slider').max=Math.max(0,frames.length-1);$('slider').oninput=e=>show(+e.target.value);$('prev').onclick=()=>show(index-1);$('next').onclick=()=>show(index+1);$('close').onclick=()=>$('zoom').close();$('copyclose').onclick=()=>$('sgfcopy').close();$('sgf').onclick=copySGF;
-document.addEventListener('keydown',e=>{if($('zoom').open||$('sgfcopy').open||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();show(e.key==='Home'?0:e.key==='End'?frames.length-1:index+(e.key==='ArrowRight'?1:-1))}});show(0);
+$('slider').max=Math.max(0,frames.length-1);$('slider').oninput=e=>show(+e.target.value);$('prev').onclick=()=>show(index-1);$('next').onclick=()=>show(index+1);$('copyclose').onclick=()=>$('sgfcopy').close();$('sgf').onclick=copySGF;
+document.addEventListener('keydown',e=>{if($('sgfcopy').open||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();show(e.key==='Home'?0:e.key==='End'?frames.length-1:index+(e.key==='ArrowRight'?1:-1))}});show(0);
 </script></html>
 """
 
