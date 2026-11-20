@@ -4,7 +4,9 @@
 
 Fresh training/extraction uses **schema 7: 17 coarse planes and 9 exact fields**.
 It adds three recent-move location planes immediately after occupancy; all
-schema-6 geometry, scaling, exact fields, legality and labels remain unchanged.
+schema-6 geometry, scaling, exact fields and legality remain unchanged.
+Two global scalars provide raster width and side-to-move-relative **komi**;
+net score targets account for compensation. See the [komi contract](komi.md).
 
 | Channels | Contents |
 |---|---|
@@ -27,8 +29,8 @@ Captured placements retain their recorded coordinates and disc shape. There is n
 initial empty history and an opening pass both have blank history planes.
 D4 augmentation transforms the markers spatially without changing recency order.
 
-CGFEAT02 keeps its header layout, with schema 7, coarse shape `[17,H,W]` and exact
-shape `[N,9]`. Checkpoint/ONNX channel names must match. Start fresh weights and
+CGFEAT02 keeps its 68-byte header layout, followed in schema 7 by one f32 signed
+komi scalar, coarse shape `[17,H,W]` and exact shape `[N,9]`. Checkpoint/ONNX channel names must match. Start fresh weights and
 regenerate derived caches; validated source SGFs remain usable. Schemas 4/5/6
 remain supported for extraction, inference, viewing and mixed-schema evaluation
 under their original contracts, never silently reinterpreted as schema 7.
@@ -418,8 +420,9 @@ evaluation/MCTS, not a handcrafted capture-depth estimate.
 `src/replay.rs` uses the shared SGF codec, `SZ`, and authoritative move replay.
 `ply` is the number of moves already played: ply 0 means the empty pre-first-move
 position. The loader validates the *entire* game, including moves after the chosen
-position, before trusting the outcome. Unsupported setup, komi or rule overrides
-are rejected rather than silently ignored.
+position, before trusting the outcome. Root `KM` is applied consistently to scoring
+and scalar inputs; missing `KM` means legacy zero. Unsupported setup or other rule
+overrides are rejected rather than silently ignored.
 
 Generated move comments put post-move evaluation first, then the alternatives:
 

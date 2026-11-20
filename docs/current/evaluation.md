@@ -3,6 +3,11 @@
 Training saves models; the **one shared evaluator** rates them independently.
 For this campaign only **cg5 rounds 1–100** are included. cg1–4 are not imported.
 
+New arena/rated games use fixed **komi 7** for both colour-swapped games and write
+root `KM[7]`. Training variation never applies to ratings. Historical results
+remain unchanged; the frozen arena binary hash distinguishes the new scoring
+protocol. See [komi](komi.md).
+
 ## Artifact layout
 
 ```text

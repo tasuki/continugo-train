@@ -13,7 +13,7 @@ import torch
 from . import archive, gate, plot_ratings, rating_store, ratings, timing
 from .evaluation import EvaluationConfig, EvaluationRunner
 from .loop import atomic_bytes
-from .model import NetworkConfig
+from .model import NetworkConfig, validate_feature_config
 from .paths import ROOT, utc_now
 from .saved_models import saved_sources
 from .train import atomic_checkpoint, feature_spec
@@ -367,7 +367,7 @@ def evaluate(runner, registry):
 
 
 def validate_evaluation_model(saved, reference_spec):
-    """Each model owns its schema; only match policy/targets/density must agree."""
+    """Each model owns its schema and score contract; match policy/density must agree."""
     spec = saved["feature_spec"]
     expected = feature_spec(spec["samples_per_diameter"], schema=spec["schema"])
     config = NetworkConfig.from_checkpoint(saved["config"])
@@ -377,10 +377,11 @@ def validate_evaluation_model(saved, reference_spec):
         or config.global_inputs != len(spec.get("globals", []))
     ):
         raise ValueError("incompatible feature semantics/architecture")
+    validate_feature_config(config, spec)
     if any(
-        spec[key] != reference_spec[key] for key in ("policy", "targets", "samples_per_diameter")
+        spec[key] != reference_spec[key] for key in ("policy", "samples_per_diameter")
     ):
-        raise ValueError("incompatible evaluation policy/targets/density")
+        raise ValueError("incompatible evaluation policy/density")
 
 
 def upgrade_runtime(runner, registry, directory):

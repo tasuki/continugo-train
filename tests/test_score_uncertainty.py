@@ -7,7 +7,13 @@ import numpy as np
 import torch
 
 from continugo_train.losses import joint_loss
-from continugo_train.model import SCORE_STDEV_FLOOR, NetworkConfig, PolicyValueNet
+from continugo_train.model import (
+    SCORE_STDEV_FLOOR,
+    NetworkConfig,
+    PolicyValueNet,
+    validate_feature_config,
+)
+from continugo_train.train import feature_spec
 from continugo_train.utility import score_utility
 
 
@@ -31,6 +37,56 @@ class ScoreUncertaintyTests(unittest.TestCase):
     def setUp(self):
         torch.set_num_threads(1)
         torch.manual_seed(31)
+
+    def test_linear_mean_and_softplus_uncertainty_are_unbounded(self):
+        model = PolicyValueNet(NetworkConfig(channels=4, blocks=1)).eval()
+        with torch.no_grad():
+            for parameter in model.parameters():
+                parameter.zero_()
+            model.score_head[0].bias.fill_(3)
+            model.score_uncertainty.bias.fill_(2)
+        coarse = torch.zeros(2, model.config.input_planes, 6, 6)
+        _, _, values, means, ownership, stdev = model.encode_training(coarse)
+        torch.testing.assert_close(means, torch.full((2,), 3.0))
+        self.assertTrue((stdev > 2).all())
+        self.assertTrue((values.abs() <= 1).all())
+        self.assertTrue((ownership.abs() <= 1).all())
+        means.sum().backward()
+        self.assertEqual(model.score_head[0].bias.grad.item(), 2)
+        with torch.no_grad():
+            model.score_uncertainty.bias.fill_(-1000)
+        self.assertTrue((model.encode_search(coarse)[-1] >= SCORE_STDEV_FLOOR).all())
+
+    def test_unbounded_targets_and_predictions_have_finite_gaussian_loss(self):
+        mean = torch.tensor([3.0, -2.0], requires_grad=True)
+        sigma = torch.tensor([2.0, 4.0], requires_grad=True)
+        loss = score_loss(mean, sigma, torch.tensor([-3.0, 5.0]))
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(mean.grad).all())
+        self.assertTrue(torch.isfinite(sigma.grad).all())
+        for invalid in (float("nan"), float("inf")):
+            with self.assertRaisesRegex(ValueError, "finite"):
+                score_loss(mean, sigma, torch.full((2,), invalid))
+
+    def test_score_contract_rejects_bounded_heads_for_fresh_schema7(self):
+        spec = feature_spec(4)
+        self.assertEqual(spec["value"], "shared-gaussian-linear-v2")
+        self.assertEqual(spec["targets"], "final-area-komi-v2")
+        validate_feature_config(NetworkConfig(), spec)
+        with self.assertRaisesRegex(ValueError, "score distribution"):
+            validate_feature_config(NetworkConfig(score_distribution="tanh-sigmoid"), spec)
+
+    def test_legacy_config_retains_bounded_heads(self):
+        settings = {"channels": 4, "blocks": 1, "global_inputs": 0}
+        config = NetworkConfig.from_checkpoint(settings)
+        model = PolicyValueNet(config).eval()
+        with torch.no_grad():
+            model.score_head[0].bias.fill_(3)
+            model.score_uncertainty.bias.fill_(2)
+        _, _, _, mean, stdev = model.encode_search(torch.zeros(2, config.input_planes, 6, 6))
+        self.assertTrue((mean.abs() <= 1).all())
+        self.assertTrue((stdev <= 1).all())
 
     def test_gaussian_loss_has_correct_moment_optimum_and_validates_sigma(self):
         means = torch.tensor([0.2, 0.2], requires_grad=True)
@@ -79,8 +135,8 @@ class ScoreUncertaintyTests(unittest.TestCase):
         z = np.linspace(-8, 8, 32769)
         density = np.exp(-0.5 * z**2) / math.sqrt(2 * math.pi)
         for size in (9, 13, 19):
-            for mean in (-0.9, -0.1, 0, 0.025, 0.8):
-                for sigma in (0, 0.001, 0.1, 0.5, 1):
+            for mean in (-3, -0.9, -0.1, 0, 0.025, 0.8, 3):
+                for sigma in (0, 0.001, 0.1, 0.5, 1, 2, 10):
                     actual = score_utility(mean, sigma, size)
                     reference = np.trapezoid(
                         2 / math.pi * np.arctan((mean + sigma * z) / (2 / size)) * density, z

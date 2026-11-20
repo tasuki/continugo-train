@@ -10,7 +10,9 @@ provides the complete-cell reference mode.
 New training uses [seventeen coarse input planes](docs/current/features.md)
 (schema 7): antialiased stones, three recent-move location markers, connected group size, liberty centers,
 liberty footprints, per-group total liberty area and borders. Scalar counts and
-liberty areas saturate at 100. Existing schema-4/5/6 models retain their original inputs.
+liberty areas saturate at 100. Separate global inputs provide raster width and
+[komi](docs/current/komi.md): rated games use 7; self-play samples half-point values
+around 7 (σ=2, capped 0–14). Existing schema-4/5/6 models retain their original inputs.
 The nine exact move inputs omit redundant legality/resulting size and include a
 binary **friendly-region splitting** bit using actual captures. Splitting remains
 exact-only and preserves single-coordinate splits without per-candidate footprint

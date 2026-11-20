@@ -51,12 +51,12 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--threads", type=positive, default=min(6, os.cpu_count() or 1))
     parser.add_argument("--skip-training", action="store_true")
+    choices = {
+        "value_activation": ["relu", "leaky_relu"],
+        "score_distribution": ["linear-softplus", "tanh-sigmoid"],
+    }
     for name in asdict(NetworkConfig()):
-        kind = (
-            {"choices": ["relu", "leaky_relu"]}
-            if name == "value_activation"
-            else {"type": positive}
-        )
+        kind = {"choices": choices[name]} if name in choices else {"type": positive}
         parser.add_argument(
             "--" + name.replace("_", "-"), default=getattr(NetworkConfig(), name), **kind
         )

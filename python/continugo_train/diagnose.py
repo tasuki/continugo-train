@@ -11,7 +11,7 @@ import torch
 
 from .data import inspect_corpus
 from .features import FeatureClient, ownership_weights
-from .model import NetworkConfig, PolicyValueNet
+from .model import NetworkConfig, PolicyValueNet, validate_feature_config
 from .train import checkpoint_splits, feature_spec
 
 
@@ -76,7 +76,9 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
         raise ValueError(
             "no ancestral held-out games found; training games are not diagnostic holdouts"
         )
-    model = PolicyValueNet(NetworkConfig.from_checkpoint(saved["config"])).to(device).eval()
+    config = NetworkConfig.from_checkpoint(saved["config"])
+    validate_feature_config(config, saved["feature_spec"])
+    model = PolicyValueNet(config).to(device).eval()
     model.load_state_dict(saved["model"])
     rows = []
     with FeatureClient(binary) as client, torch.inference_mode():
@@ -90,7 +92,8 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
                 if sample.outcome is None or sample.score is None or sample.ownership is None:
                     raise ValueError("missing final-game targets")
                 _, _, value, score, owned, stdev = model.encode_training(
-                    sample.coarse[None].to(device)
+                    sample.coarse[None].to(device),
+                    torch.tensor([sample.komi], device=device),
                 )
                 truth = sample.ownership.to(device)
                 weights = ownership_weights(game.resolution, device=device)
@@ -121,7 +124,9 @@ def diagnose(checkpoint, data, *, device="cpu", max_games=32, binary=None):
                         "score_mse": (s - sample.score) ** 2,
                         "score_bias": s - sample.score,
                         "ownership_mse": ((owned[0] - truth).square() * weights).sum().item(),
-                        "score_ownership_gap": abs(s - (owned[0] * weights).sum().item()),
+                        "score_ownership_gap": abs(
+                            s - ((owned[0] * weights).sum().item() + sample.komi)
+                        ),
                     }
                 )
     by_group = defaultdict(list)

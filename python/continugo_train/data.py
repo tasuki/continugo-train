@@ -216,6 +216,7 @@ class TrainingSample:
     score: float
     ownership: Tensor
     policy_weight: float = 1.0
+    komi: float = 0.0
 
 
 @dataclass
@@ -231,6 +232,7 @@ class Batch:
     scores: Tensor
     ownership: Tensor
     policy_weights: Tensor
+    komi: Tensor
 
     def to(self, device) -> "Batch":
         return Batch(*(value.to(device) for value in vars(self).values()))
@@ -269,6 +271,7 @@ def collate(samples: list[TrainingSample]) -> Batch:
         torch.tensor([s.score for s in samples], dtype=torch.float32),
         torch.stack([s.ownership for s in samples]),
         torch.tensor([s.policy_weight for s in samples], dtype=torch.float32),
+        torch.tensor([s.komi for s in samples], dtype=torch.float32),
     )
 
 
@@ -373,6 +376,7 @@ def _serial_samples(plans, density, binary, feature_profile=None, feature_cache=
                         sample.score,
                         sample.ownership,
                         float(game.policy_plies is None or ply in game.policy_plies),
+                        sample.komi,
                     )
                 except Exception as error:
                     raise ValueError(f"{game.path} ply {ply}: {error}") from error

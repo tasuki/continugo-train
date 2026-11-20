@@ -213,9 +213,24 @@ impl OnnxEvaluator {
             self.stats.feature_seconds += seconds;
             let tick = Instant::now();
             let batch = indices.len();
-            let encoded = self.encoder.run(ort::inputs![
+            let inputs = ort::inputs![
                 "coarse" => Tensor::from_array(([batch, planes, size, size], coarse))?
-            ]?)?;
+            ]?;
+            let encoded = if schema == 7 {
+                let komi: Vec<f32> = indices
+                    .iter()
+                    .map(|&i| {
+                        let game = games[i];
+                        (-crate::search::color_sign(game.on_move()) * game.komi()
+                            / f64::from(game.board().size()).powi(2)) as f32
+                    })
+                    .collect();
+                let mut inputs = inputs;
+                inputs.push(("komi".into(), Tensor::from_array(([batch], komi))?.into()));
+                self.encoder.run(inputs)?
+            } else {
+                self.encoder.run(inputs)?
+            };
             let (shape, spatial) = encoded["spatial"].try_extract_raw_tensor::<f32>()?;
             let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;
             let (value_shape, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
@@ -239,25 +254,30 @@ impl OnnxEvaluator {
                 || score.len() != batch
                 || stdev_shape != [batch as i64]
                 || stdev.len() != batch
-                || stdev
-                    .iter()
-                    .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                || stdev.iter().any(|v| !v.is_finite() || *v <= 0.0)
                 || spatial.iter().chain(pass).any(|v| !v.is_finite())
                 || value
                     .iter()
-                    .chain(score)
                     .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
+                || score.iter().any(|v| !v.is_finite())
             {
                 return Err("invalid encoder outputs".into());
             }
             for (row, i) in indices.into_iter().enumerate() {
+                // Legacy score heads predict raw territory, not net compensation.
+                let k = if schema == 7 {
+                    0.0
+                } else {
+                    games[i].komi() / f64::from(games[i].board().size()).powi(2)
+                };
                 let context = Arc::new(Context {
                     resolution: size,
                     spatial: spatial[row * stride..(row + 1) * stride].to_vec(),
                     cells: cells[row * size * size..(row + 1) * size * size].to_vec(),
                     pass: pass[row],
                     value: f64::from(value[row]),
-                    score: f64::from(score[row]),
+                    score: f64::from(score[row])
+                        - crate::search::color_sign(games[i].on_move()) * k,
                     score_stdev: f64::from(stdev[row]),
                     geometry: geometries[row].take(),
                 });

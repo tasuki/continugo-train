@@ -68,12 +68,10 @@ impl LeafEstimate {
         if !board_size.is_finite() || board_size <= 0.0 {
             return Err("board size must be finite and positive".into());
         }
-        if !self.score_stdev.is_finite() || !(0.0..=1.0).contains(&self.score_stdev) {
-            return Err("score standard deviation must be finite and in [0,1]".into());
+        if !self.score_stdev.is_finite() || self.score_stdev < 0.0 {
+            return Err("score standard deviation must be finite and nonnegative".into());
         }
-        if [self.value, self.score]
-            .iter()
-            .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
+        if !self.value.is_finite() || !(-1.0..=1.0).contains(&self.value) || !self.score.is_finite()
         {
             return Err(format!(
                 "invalid neural outcome/score estimate: value={}, score={}",
@@ -106,6 +104,8 @@ mod utility_tests {
         assert_eq!(estimate.utility(0.0, 9.0).unwrap(), estimate.value);
         for invalid in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
             assert!(estimate.utility(invalid, 9.0).is_err());
+        }
+        for invalid in [-0.1, f64::NAN, f64::INFINITY] {
             assert!(
                 LeafEstimate {
                     score_stdev: invalid,
@@ -117,6 +117,22 @@ mod utility_tests {
         }
         for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(estimate.utility(0.5, invalid).is_err());
+        }
+        let unbounded = LeafEstimate {
+            score: 3.0,
+            score_stdev: 2.0,
+            ..estimate
+        };
+        assert!(unbounded.utility(0.5, 9.0).unwrap().is_finite());
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                LeafEstimate {
+                    score: invalid,
+                    ..estimate
+                }
+                .utility(0.5, 9.0)
+                .is_err()
+            );
         }
     }
 }
@@ -162,6 +178,8 @@ struct FeatureSpec {
 struct Config {
     #[serde(default)]
     global_inputs: usize,
+    #[serde(default)]
+    score_distribution: Option<String>,
     chunk_size: usize,
     policy_hidden: usize,
     top_cells: usize,
@@ -411,19 +429,42 @@ impl OnnxEvaluator {
         let spec = &metadata.feature_spec;
         let planes = coarse_planes(spec.schema)?;
         let (trunk, globals): (&str, &[&str]) = if spec.schema == 7 {
-            ("global-pooling-scalars-v1", &["coarse_width_div100"])
+            (
+                "global-pooling-scalars-v1",
+                &["coarse_width_div100", "komi_self_div_board_area"],
+            )
         } else {
             ("global-pooling-v1", &[])
         };
         if spec.trunk != trunk
             || spec.globals != globals
             || metadata.config.global_inputs != globals.len()
-            || spec.value != "shared-gaussian-v1"
+            || spec.value
+                != if spec.schema == 7 {
+                    "shared-gaussian-linear-v2"
+                } else {
+                    "shared-gaussian-v1"
+                }
+            || metadata
+                .config
+                .score_distribution
+                .as_deref()
+                .unwrap_or("tanh-sigmoid")
+                != if spec.schema == 7 {
+                    "linear-softplus"
+                } else {
+                    "tanh-sigmoid"
+                }
             || spec.policy != "cells-v1"
             || spec.coarse != planes
             || spec.moves != move_features(spec.schema)?
             || spec.samples_per_diameter == 0
-            || spec.targets != crate::targets::TARGET_VERSION
+            || spec.targets
+                != if spec.schema == 7 {
+                    crate::targets::TARGET_VERSION
+                } else {
+                    crate::targets::LEGACY_TARGET_VERSION
+                }
             || metadata.config.chunk_size == 0
             || metadata.config.policy_hidden == 0
             || metadata.config.top_cells == 0

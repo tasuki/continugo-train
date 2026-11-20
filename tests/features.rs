@@ -616,6 +616,8 @@ fn replay_loads_generated_mcts_visits_without_inventing_labels() {
         selfplay::{Engine, SelfplayConfig, generate},
     };
     let config = SelfplayConfig {
+        komi: 0.0,
+        komi_stddev: 0.0,
         engine: Engine::Mcts,
         policy_search: None,
         max_moves: 512,

@@ -1,18 +1,21 @@
 # Final score and ownership supervision
 
 The network jointly trains policy, win/loss/draw outcome, final score mean and
-uncertainty, and final ownership. The value architecture is **`shared-gaussian-v1`**;
-previous scalar-only score checkpoints/exports are incompatible. Start from scratch.
-Validated SGFs and their final-area targets/feature packets remain usable.
+uncertainty, and final ownership. Fresh schema-7 models use
+**`shared-gaussian-linear-v2`**: linear score mean and positive, unbounded
+softplus uncertainty. Bounded-score schema-7 checkpoints/exports are incompatible;
+start fresh and regenerate packets/caches. Validated SGFs remain usable;
+see [komi](komi.md).
 No checkpoint migration or historical campaign rewrite is performed; do not
 resume old loop control files with the new model/runtime.
 
 ## Score presentation compatibility
 
 SGF `RE`, move annotations and viewers now express margins in board points:
-normalized score × `SZ²`, so a whole 9×9 board is 81 points. This presentation
-change applies across feature schemas, including schema 7; normalized neural
-outputs, targets, caches and checkpoints are unchanged. Old stone-area SGF `RE`
+raw territory fraction × `SZ²`, minus White's komi. Schema-7 predicted net scores
+and uncertainty convert to board points by multiplying by `SZ²`. See
+[komi normalization and compatibility](komi.md). Legacy schemas retain their
+raw-territory heads; native inference subtracts compensation from their means. Old stone-area SGF `RE`
 values fail authoritative replay validation; regenerate or migrate those records
 before rebuilding caches. Existing historical annotations are not rewritten.
 
@@ -22,13 +25,12 @@ Only naturally completed games with `RE` verified against shared-rule scoring
 supply labels. Missing `RE` and truncated games have no outcome, score or ownership
 label. No unfinished-board territory is used as an intermediate reward.
 
-Score is `(final_black_area - final_white_area) / 1_000_000`, flipped for a
-White-to-move training position. The physical board is always a 1000-unit square;
-normalizing by `SZ²` would be incorrect. Use the unrounded authoritative area,
-not the formatted SGF margin. Authoritative score normalization clamps to the
-mathematical [-1,1] bound: floating-point Voronoi polygon accumulation can exceed
-the board area by a few ulps. Labels, terminal search utility and final move
-annotations share this normalization; neural outputs are still strictly validated.
+Schema-7 Black score is `(final_black_area - final_white_area) / 1_000_000
+- komi / SZ²`, flipped for White-to-move. The physical board is a 1000-unit square;
+komi is in board-point equivalents. Use the unrounded authoritative area, not
+the formatted SGF margin. Raw territory is bounded to [-1,1] only to correct
+floating-point polygon roundoff; **net scores and predictions are not clipped**.
+Labels, terminal search utility and move annotations share board-area units.
 Outcome retains the shared scorer's draw tolerance.
 
 Ownership is **38×38 / 54×54 / 78×78** on 9/13/19 at default feature density.
@@ -37,8 +39,8 @@ control volume about a coarse raster sample. Boundaries are midway between the
 rounded sample coordinates; outer edges are 0 and 1000. Rust clips the final
 shared-rule Voronoi polygons to these rectangles. Boundary cells can have soft
 labels in [-1,1]; an empty final board has zero ownership everywhere. The
-area-weighted ownership integral equals the normalized score within floating-point
-precision. Zero-area control volumes at unusually high densities have zero label
+area-weighted ownership integral plus signed side-to-move komi/SZ² equals the
+net score within floating-point precision. Zero-area control volumes at unusually high densities have zero label
 and zero loss weight.
 
 Final polygons are built lazily; a worker caches one final ownership raster for
@@ -48,7 +50,7 @@ records. `cells-v1` policy semantics and auxiliary labels are unchanged by the
 schema-5 input update (antialiased occupancy, connected groups, spatial liberty
 centers/footprints instead of scalar liberty area and coarse capture flags).
 Schema-4 inference and schema-5 checkpoint/ONNX feature metadata both require
-`targets: final-area-v1`.
+`targets: final-area-v1`; fresh schema 7 requires `final-area-komi-v2`.
 
 ## Heads and objective
 
@@ -57,9 +59,9 @@ Schema-4 inference and schema-5 checkpoint/ONNX feature metadata both require
   leaky-ReLU form the shared outcome/score representation. Configure these widths
   with `--value-channels` and `--value-hidden`.
 - Outcome: shared representation → scalar/tanh.
-- Score mean: shared representation → scalar/tanh, in normalized final-margin units.
-- Score standard deviation: shared representation → scalar, mapped by sigmoid to
-  **[0.001, 1]**, in the same units as the score mean. It models conditional final-score
+- Score mean: shared representation → **linear scalar**, in net board-area units.
+- Score standard deviation: shared representation → scalar → **softplus + 0.001**,
+  with no upper cap, in the same units as the mean. It models conditional final-score
   variability, not epistemic uncertainty or a full multimodal score distribution.
 - Ownership: shared spatial features → one channel/tanh. Predicts expected final
   signed ownership fractions. It is supervision only, never a legality mask,
@@ -134,7 +136,8 @@ The static curve is centered at zero, with diminishing returns for large margins
 Scale is **2 / board_size in normalized area**, equivalent to two square roots of
 board area when measuring area in `board_size²` point-equivalents; it is unrelated
 to feature-raster resolution. Numerical Gaussian integration uses paired Simpson
-quadrature on [-8,8] standard deviations, 256 intervals. Exact terminal scores
+quadrature on [-8,8] standard deviations, 256 intervals, with adaptive refinement
+for sigma > 1 to resolve sharp transitions under larger uncertainty. Exact terminal scores
 have sigma zero and use the curve directly. Raw displayed score stays the expected
 margin, not utility. A bounded score term can still trade win probability for margin.
 No dynamic centering, score-distribution head, or sign-agreement penalty is implemented.

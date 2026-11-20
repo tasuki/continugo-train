@@ -40,6 +40,7 @@ pub struct ReplayGame {
 pub struct GameInfo {
     pub game_id: String,
     pub board_size: i32,
+    pub komi: f64,
     pub diameter: i32,
     pub resolution: usize,
     pub moves: usize,
@@ -140,7 +141,7 @@ impl ReplayGame {
             .iter()
             .chain(record.move_properties.iter().flatten())
         {
-            if ["AB", "AW", "AE", "PL", "HA", "KM", "RU"].contains(&name.as_str()) {
+            if ["AB", "AW", "AE", "PL", "HA", "RU"].contains(&name.as_str()) {
                 return Err(format!("unsupported setup/rule property: {name}"));
             }
         }
@@ -148,7 +149,7 @@ impl ReplayGame {
             .ok_or("SGF is missing SZ")?
             .parse::<i32>()
             .map_err(|e| format!("invalid SZ: {e}"))?;
-        let mut game = Game::new(Board::new(size)?);
+        let mut game = Game::new(Board::new(size)?).with_komi(record.komi()?)?;
         let mut positions = Vec::with_capacity(record.plays.len() + 1);
         let mut policies = Vec::with_capacity(record.plays.len());
         let mut policy_training = Vec::with_capacity(record.plays.len());
@@ -184,7 +185,7 @@ impl ReplayGame {
                 return Err("scored RE on a game that did not finish naturally".into());
             }
             let areas = territory::areas(game.position().stones());
-            let result = territory::result(areas);
+            let result = territory::result_with_komi(game.board(), areas, game.komi());
             let expected = sgf::format_result(game.board(), result);
             if re != expected {
                 return Err(format!(
@@ -224,6 +225,7 @@ impl ReplayGame {
         Ok(GameInfo {
             game_id: self.game_id.clone(),
             board_size: game.board().size(),
+            komi: game.komi(),
             diameter: game.board().diameter(),
             resolution: crate::features::resolution(game.board().diameter(), samples_per_diameter)?,
             moves: self.policies.len(),

@@ -25,6 +25,7 @@ import torch
 from .data import batches, merge_split_assignments, scan_corpus
 from .features import (
     COARSE_PLANES,
+    LEGACY_TARGET_VERSION,
     MOVE_FEATURES,
     SCHEMA_VERSION,
     TARGET_VERSION,
@@ -37,8 +38,14 @@ from .features import (
 from .losses import joint_loss
 from .memory import GpuMemorySampler
 from .model import (
-    GLOBAL_FEATURES, LEGACY_TRUNK_VERSION, POLICY_VERSION, TRUNK_VERSION,
-    VALUE_VERSION, NetworkConfig, PolicyValueNet,
+    GLOBAL_FEATURES,
+    LEGACY_TRUNK_VERSION,
+    LEGACY_VALUE_VERSION,
+    POLICY_VERSION,
+    TRUNK_VERSION,
+    VALUE_VERSION,
+    NetworkConfig,
+    PolicyValueNet,
 )
 from .paths import new_run_directory
 from .progress import data_history, network_name
@@ -114,10 +121,10 @@ def feature_spec(density, *, schema=SCHEMA_VERSION):
     return {
         "schema": schema,
         "policy": POLICY_VERSION,
-        "value": VALUE_VERSION,
+        "value": VALUE_VERSION if schema == 7 else LEGACY_VALUE_VERSION,
         "trunk": TRUNK_VERSION if schema == 7 else LEGACY_TRUNK_VERSION,
         **({"globals": list(GLOBAL_FEATURES)} if schema == 7 else {}),
-        "targets": TARGET_VERSION,
+        "targets": TARGET_VERSION if schema == 7 else LEGACY_TARGET_VERSION,
         "coarse": list(planes),
         "moves": list(move_features(schema)),
         "samples_per_diameter": density,
@@ -272,7 +279,7 @@ def run_phase(
                 # diagnostic-only and may change overlap/throughput.
                 with stage("encoder"):
                     spatial, pass_logit, values, scores, ownership, score_stdev = (
-                        model.encode_training(batch.coarse)
+                        model.encode_training(batch.coarse, batch.komi)
                     )
                 with stage("scorer"):
                     logits = model.policy(
@@ -281,7 +288,7 @@ def run_phase(
                 del spatial, pass_logit
             else:
                 logits, values, scores, ownership, score_stdev = model.forward_all(
-                    batch.coarse, batch.exact, batch.actions, batch.legal
+                    batch.coarse, batch.exact, batch.actions, batch.legal, batch.komi
                 )
             with stage("loss_backward_optimizer"):
                 loss = joint_loss(
@@ -327,7 +334,7 @@ def run_phase(
                 standardized_squared += (error / score_stdev).square().sum().item()
                 within_one_sigma += (error.abs() <= score_stdev).sum().item()
                 weights = ownership_weights(ownership.shape[-1], device=device)
-                integrated = (ownership * weights).sum(dim=(-2, -1))
+                integrated = (ownership * weights).sum(dim=(-2, -1)) + batch.komi
                 consistency += (scores - integrated).abs().sum().item()
                 predictions = torch.stack((values, scores, integrated)).double().cpu()
                 prediction_sums += predictions.sum(dim=1)
@@ -564,8 +571,9 @@ def train(args):
         config.input_planes != len(COARSE_PLANES)
         or config.move_features != len(MOVE_FEATURES)
         or config.global_inputs != len(GLOBAL_FEATURES)
+        or config.score_distribution != "linear-softplus"
     ):
-        raise ValueError("checkpoint feature widths do not match the real extractor")
+        raise ValueError("checkpoint feature widths/score architecture do not match the real extractor")
     spec = feature_spec(options.samples_per_diameter)
     if saved and saved["feature_spec"] != spec:
         raise ValueError("checkpoint uses incompatible feature semantics")

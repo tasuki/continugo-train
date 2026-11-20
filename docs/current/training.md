@@ -2,7 +2,8 @@
 
 This is a real SGF → Rust features → PyTorch training job, without ONNX.
 It trains final score mean/uncertainty and ownership alongside policy/outcome, with
-shared value/score features (`shared-gaussian-v1`); see
+shared value/score features (`shared-gaussian-linear-v2`, linear score mean and
+softplus uncertainty); see
 [auxiliary supervision](auxiliary.md). Start **from scratch**: old policy/value-only
 checkpoints and previous independent value/score checkpoints are incompatible and
 have no migration path. It learns
@@ -17,7 +18,10 @@ New training uses **schema 7**, with seventeen coarse planes: antialiased stone
 occupancy, three recent-move location markers (enemy, friendly, enemy), connected
 group size, per-group liberty area, liberty-center/footprint unions and borders.
 Nine exact fields include binary `splits_friendly_region`; legality is a separate
-mask. Start a fresh checkpoint and regenerate derived caches. Schemas 4/5/6 keep
+mask. Two global scalars add raster width and side-to-move-relative komi.
+Self-play defaults to half-point Gaussian komi around 7 (σ=2, capped 0–14);
+`--komi-stddev 0` fixes it. Rated games use 7. See [komi](komi.md).
+Start a fresh checkpoint and regenerate derived caches. Schemas 4/5/6 keep
 their original inference/viewer contracts, not resume/warm-start compatibility.
 See the [feature contract](features.md#schema-7-contract). Training starts only
 when explicitly requested; validated source SGFs can be reused.

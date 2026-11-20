@@ -117,7 +117,7 @@ pub(super) fn evaluate(
             stats.draws += u64::from(value == 0.0);
             let mut evidence = SearchValue {
                 value: estimate
-                    .utility(score_weight, game.board().size() as f64)
+                    .utility(score_weight, f64::from(game.board().size()))
                     .expect("validated score weight"),
                 jigo_penalty: if jigo { 1.0 - score_weight } else { 0.0 },
             };
@@ -262,7 +262,7 @@ mod tests {
             .unwrap();
         let expected = -terminal_estimate(&game.pass().unwrap())
             .0
-            .utility(1.0, game.board().size() as f64)
+            .utility(1.0, f64::from(game.board().size()))
             .unwrap();
         assert!(expected > 0.0 && expected < 1.0);
         for (weight, expected) in [(1.0, expected), (0.0, 1.0)] {

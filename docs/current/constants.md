@@ -243,7 +243,7 @@ after per-game caps. `uniform` bypasses this quota reduction.
 | Ownership MSE coefficient | `ownership_loss_weight=0.5` |
 | Ownership pixel weights | Control-volume area / 1,000,000; sum to 1, not uniform pixel counts |
 | Outcome targets | Win `+1`; loss **or jigo** `-1` (`jigo-loss-v1`) |
-| Final-score target | Side-to-move `(black_area-white_area)/1,000,000`, clipped to `[-1,1]` |
+| Schema-7 final-score target | Side-to-move `(black_area-white_area)/1,000,000 - komi/SZ²`; no net-score clipping |
 | Ownership targets | Side-to-move signed area fraction per control volume, in `[-1,1]` |
 | Policy target | Actual root visits divided by their sum; cheap positions have policy weight 0 |
 
@@ -282,7 +282,11 @@ See [features](features.md), [network](network.md) and [auxiliary targets](auxil
 | Board area | `BOARD_AREA=1,000,000` coordinate-area units |
 | Current / supported legacy feature schema | `SCHEMA_VERSION=7` / schemas 4, 5, 6 (`POINT_SAMPLED_SCHEMA=4`) |
 | Coarse planes / exact columns | Schema 7: 17 / 9; schema 6: 14 / 9; schema 5: 12 / 11; schema 4: 12 / 10; names/order are part of the contract |
-| Policy / target version | `cells-v1` / `final-area-v1` |
+| Schema-7 globals | Raster width / 100; signed side-to-move komi / `SZ²` |
+| New self-play komi | Mean 7, Gaussian σ=2, half-point rounding, clipped [0,14]; `--komi-stddev 0` fixes it |
+| New arena/rated komi | Fixed 7; SGF root `KM`; missing `KM` means legacy 0 |
+| Schema-7 net score | `raw_territory_fraction - komi/SZ²`, flipped for White |
+| Policy / target version | `cells-v1` / schema 7 `final-area-komi-v2` (legacy `final-area-v1`) |
 | `samples_per_diameter` | 4 by default; positive integer |
 | Raster side length `R` | `ceil(999*density/stone_diameter)+1`; maximum 2048 |
 | Default 9/13/19 diameters and resolutions | Diameters 110/76/52 from shared rules; `R=38/54/78` |
@@ -320,8 +324,9 @@ bias before BatchNorm. Every third residual block adds a parallel 3×3 global
 branch with BatchNorm/ReLU, mean/max pooling, and a linear projection broadcast
 back into the first local convolution's normalized output. Spatial policy/ownership
 projections use 1×1 kernels.
-Shared value spatial features use leaky-ReLU slope 0.1; outcome, score mean and
-ownership end in tanh. Score standard deviation is sigmoid-mapped to [0.001,1].
+Shared value spatial features use leaky-ReLU slope 0.1; outcome and ownership
+end in tanh. Score mean is linear; standard deviation is softplus + 0.001,
+positive with no upper cap (`shared-gaussian-linear-v2`).
 Score training uses Gaussian NLL. Search curves score with `(2/pi)*atan(score/(2/SZ))`,
 integrated over Gaussian uncertainty (zero for authoritative terminal scores). Fine policy uses ReLU and bilinear sampling with
 `align_corners=True`, mapping coordinates by `2*x/999-1`. These architecture

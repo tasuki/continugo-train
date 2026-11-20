@@ -50,6 +50,8 @@ class LoopConfig:
     chosen_move_temperature: float = 0.15
     chosen_move_temperature_halflife: float = 19.0
     max_moves: int = 512
+    komi: float = 7.0
+    komi_stddev: float = 2.0
     cpuct: float = 1.5
     widening: float = 2.0
     widening_exponent: float = 0.5
@@ -87,6 +89,9 @@ class LoopConfig:
 
         if self.feature_cache not in MODES:
             raise ValueError(f"feature_cache must be one of {MODES}")
+        if (not math.isfinite(self.komi)
+                or not math.isfinite(self.komi_stddev) or self.komi_stddev < 0):
+            raise ValueError("komi must be finite; stddev must be finite and nonnegative")
         weighted_sizes(self.sizes, self.size_weights)
         if not self.sizes or any(size not in range(9, 20) for size in self.sizes):
             raise ValueError("sizes must be nonempty and in 9..19")
@@ -723,6 +728,8 @@ class LoopRunner:
                 ]
             settings = {
                 **self.config.search(),
+                "komi": self.config.komi,
+                "komi_stddev": self.config.komi_stddev,
                 **(
                     {
                         "policy_simulations": self.config.policy_simulations,

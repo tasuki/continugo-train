@@ -29,8 +29,8 @@ class Encoder(nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, coarse):
-        spatial, pass_logit, value, score, stdev = self.model.encode_search(coarse)
+    def forward(self, coarse, komi=None):
+        spatial, pass_logit, value, score, stdev = self.model.encode_search(coarse, komi)
         return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1), score, stdev
 
 
@@ -102,7 +102,8 @@ def verify(model, directory):
             exact = torch.rand(batch, count, model.config.move_features, generator=rng)
             actions = torch.randint(1000000, (batch, count), generator=rng)
             actions[:, :6] = torch.tensor([0, 999, 1000, 999999, 500500, 500501])
-            spatial, pass_logit, value, score, stdev = model.encode_search(coarse)
+            komi = torch.linspace(-14 / 81, 14 / 81, batch)
+            spatial, pass_logit, value, score, stdev = model.encode_search(coarse, komi)
             expected = [
                 spatial,
                 pass_logit,
@@ -112,7 +113,10 @@ def verify(model, directory):
                 stdev,
                 model.score_chunk(spatial, exact, actions),
             ]
-            actual = encoder.run(None, {"coarse": coarse.numpy()})
+            inputs = {"coarse": coarse.numpy()}
+            if model.config.global_inputs:
+                inputs["komi"] = komi.numpy()
+            actual = encoder.run(None, inputs)
             actual += scorer.run(
                 None, {"spatial": actual[0], "exact": exact.numpy(), "actions": actions.numpy()}
             )
@@ -162,12 +166,13 @@ def export_checkpoint(checkpoint, output):
             spatial, _, _ = model.encode(coarse)
             torch.onnx.export(
                 Encoder(model).eval(),
-                (coarse,),
+                (coarse, torch.zeros(1)) if config.global_inputs else (coarse,),
                 str(directory / "encoder.onnx"),
-                input_names=["coarse"],
+                input_names=["coarse", "komi"] if config.global_inputs else ["coarse"],
                 output_names=["spatial", "pass_logit", "value", "cells", "score", "score_stdev"],
                 dynamic_axes={
                     "coarse": {0: "batch", 2: "height", 3: "width"},
+                    **({"komi": {0: "batch"}} if config.global_inputs else {}),
                     "spatial": {0: "batch", 2: "height", 3: "width"},
                     "pass_logit": {0: "batch"},
                     "value": {0: "batch"},

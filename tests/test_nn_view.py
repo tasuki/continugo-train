@@ -284,7 +284,8 @@ class NnViewerTests(unittest.TestCase):
 
     def test_legacy_viewers_keep_all_original_inputs(self):
         old_model = PolicyValueNet(
-            replace(self.model.config, input_planes=12, move_features=10, global_inputs=0)
+            replace(self.model.config, input_planes=12, move_features=10, global_inputs=0,
+                    score_distribution="tanh-sigmoid")
         ).eval()
         for schema in (4,):
             saved = {

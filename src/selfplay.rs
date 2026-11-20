@@ -15,7 +15,6 @@ use crate::{
     inference::{Evaluator, LeafEstimate},
     profile::{GameProfile, MoveProfile},
     search::{SearchConfig, Visit, color_sign, rollout::RolloutStats, search, search_neural},
-    targets::{BOARD_AREA, normalized_score},
 };
 use continugo_analysis::GeometricAvailability;
 use continugo_rules::{Board, Color, Game, Play, Stone, sgf, territory};
@@ -42,6 +41,8 @@ pub struct PolicySearchConfig {
 #[derive(Clone, Debug, Serialize)]
 pub struct SelfplayConfig {
     pub engine: Engine,
+    pub komi: f64,
+    pub komi_stddev: f64,
     pub max_moves: usize,
     pub search: SearchConfig,
     pub policy_search: Option<PolicySearchConfig>,
@@ -50,6 +51,10 @@ pub struct SelfplayConfig {
 impl SelfplayConfig {
     pub fn validate(&self) -> Result<(), String> {
         self.search.validate()?;
+        Game::default().with_komi(self.komi)?;
+        if !self.komi_stddev.is_finite() || self.komi_stddev < 0.0 {
+            return Err("komi standard deviation must be finite and nonnegative".into());
+        }
         if let Some(policy) = self.policy_search
             && (matches!(self.engine, Engine::Random)
                 || self.search.simulations < 32
@@ -170,11 +175,11 @@ impl MoveEvaluation {
             let areas = territory::areas(game.position().stones());
             let sign = color_sign(game.on_move().other());
             LeafEstimate {
-                value: match territory::result(areas) {
+                value: match territory::result_with_komi(game.board(), areas, game.komi()) {
                     territory::Outcome::Draw => 0.0,
                     territory::Outcome::Win(color, _) => sign * color_sign(color),
                 },
-                score: sign * normalized_score(areas),
+                score: sign * crate::targets::game_score(game, areas),
                 score_stdev: 0.0,
             }
         } else if let Some(evaluator) = evaluator {
@@ -403,7 +408,19 @@ fn generate_inner<const PROFILE: bool>(
     // Separate stream: cap selection is independent of search/move RNG consumption
     // and of cross-game batching. Disabled schedules consume no extra search RNG.
     let mut cap_rng = StdRng::seed_from_u64(seed ^ 0x706f_6c69_6379_6361);
-    let mut game = Game::new(board);
+    // Independent game-level stream, unaffected by move/search RNG consumption.
+    let komi = if evaluation_game || config.komi_stddev == 0.0 {
+        config.komi
+    } else {
+        let mut komi_rng = StdRng::seed_from_u64(seed ^ 0x6b6f_6d69_7361_6d70);
+        let u = 1.0 - komi_rng.random::<f64>();
+        let z = (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * komi_rng.random::<f64>()).cos();
+        ((config.komi + config.komi_stddev * z) * 2.0)
+            .round()
+            .clamp(0.0, 28.0)
+            / 2.0
+    };
+    let mut game = Game::new(board).with_komi(komi)?;
     let index_started = PROFILE.then(Instant::now);
     let mut availability = (matches!(config.engine, Engine::Random) || reference_color.is_some())
         .then(|| GeometricAvailability::new(game.position()));
@@ -529,7 +546,7 @@ fn generate_inner<const PROFILE: bool>(
     }
     let finished = game.is_finished();
     let scoring_started = PROFILE.then(Instant::now);
-    let result = finished.then(|| territory::result(territory::areas(game.position().stones())));
+    let result = finished.then(|| game.result());
     if let Some(started) = scoring_started {
         profile.scoring_seconds = started.elapsed().as_secs_f64();
     }
@@ -558,6 +575,7 @@ fn generate_inner<const PROFILE: bool>(
         .find(|(name, _)| name == "SZ")
         .expect("default SGF root includes board size")
         .1 = vec![board.size().to_string()];
+    record.set_komi(game.komi())?;
     record.root.extend([
         ("PB".into(), vec![players[0].clone()]),
         ("PW".into(), vec![players[1].clone()]),
@@ -796,7 +814,7 @@ mod tests {
             game = game.pass().unwrap();
             assert!(game.is_finished());
             let areas = territory::areas(game.position().stones());
-            overshot |= areas.black > BOARD_AREA;
+            overshot |= areas.black > crate::targets::BOARD_AREA;
             let annotation = MoveEvaluation::after_move(&game, None).unwrap();
             assert_eq!(annotation.win_pct, Some(100.0));
             let expected = f64::from(game.board().size()).powi(2);
@@ -815,9 +833,9 @@ mod tests {
             (f64::NAN, 0.0),
             (0.0, f64::INFINITY),
             (1.1, 0.0),
-            (0.0, -1.1),
+            (0.0, f64::NEG_INFINITY),
             (f64::from_bits(1.0f64.to_bits() + 1), 0.0),
-            (0.0, -f64::from_bits(1.0f64.to_bits() + 1)),
+            (0.0, f64::NAN),
         ] {
             let mut evaluator = FixedEstimate {
                 value,
@@ -826,6 +844,18 @@ mod tests {
             };
             assert!(MoveEvaluation::after_move(&game, Some(&mut evaluator)).is_err());
         }
+    }
+
+    #[test]
+    fn annotation_scores_are_unbounded_board_area_units() {
+        let game = Game::new(Board::new(9).unwrap()).pass().unwrap();
+        let mut evaluator = FixedEstimate {
+            value: 0.5,
+            score: 3.0,
+            seen: Vec::new(),
+        };
+        let annotation = MoveEvaluation::after_move(&game, Some(&mut evaluator)).unwrap();
+        assert_eq!(annotation.score, Some(-243.0));
     }
 
     #[test]
@@ -842,6 +872,8 @@ mod tests {
         };
         let config = SelfplayConfig {
             engine: Engine::Neural,
+            komi: 0.0,
+            komi_stddev: 0.0,
             policy_search: None,
             max_moves: 4,
             search: SearchConfig {
@@ -897,6 +929,8 @@ mod tests {
         };
         let config = SelfplayConfig {
             engine: Engine::Neural,
+            komi: 0.0,
+            komi_stddev: 0.0,
             policy_search: None,
             max_moves: 8,
             search: SearchConfig {
@@ -1003,6 +1037,8 @@ mod tests {
     fn guided_bootstrap_has_real_visits_natural_results_and_no_noncap_eye_targets() {
         let config = SelfplayConfig {
             engine: Engine::Mcts,
+            komi: 0.0,
+            komi_stddev: 0.0,
             policy_search: None,
             max_moves: 1024,
             search: SearchConfig {
@@ -1121,6 +1157,8 @@ mod tests {
     fn config(engine: Engine) -> SelfplayConfig {
         SelfplayConfig {
             engine,
+            komi: 0.0,
+            komi_stddev: 0.0,
             policy_search: None,
             max_moves: 8,
             search: SearchConfig {

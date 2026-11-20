@@ -253,7 +253,7 @@ impl Node {
             score: evaluation.score,
             score_stdev: evaluation.score_stdev,
         }
-        .utility(config.score_weight, self.game.board().size() as f64)?;
+        .utility(config.score_weight, f64::from(self.game.board().size()))?;
         self.neural = Some(SampledPolicy::new(evaluation, config, rng)?);
         Ok(value)
     }
@@ -285,7 +285,7 @@ impl Node {
                 Some(
                     evaluator
                         .estimate(&self.game)?
-                        .utility(config.score_weight, self.game.board().size() as f64)?
+                        .utility(config.score_weight, f64::from(self.game.board().size()))?
                         .into(),
                 )
             };
@@ -623,7 +623,7 @@ pub fn black_outcome(game: &Game) -> f64 {
         game.is_finished(),
         "authoritative outcome requires natural completion"
     );
-    match territory::result(territory::areas(game.position().stones())) {
+    match game.result() {
         territory::Outcome::Draw => 0.0,
         territory::Outcome::Win(color, _) => color_sign(color),
     }
@@ -636,7 +636,7 @@ fn terminal_estimate(game: &Game) -> (LeafEstimate, bool) {
         "terminal utility requires natural completion"
     );
     let areas = territory::areas(game.position().stones());
-    let outcome = match territory::result(areas) {
+    let outcome = match territory::result_with_komi(game.board(), areas, game.komi()) {
         territory::Outcome::Draw => 0.0,
         territory::Outcome::Win(color, _) => color_sign(color),
     };
@@ -644,7 +644,7 @@ fn terminal_estimate(game: &Game) -> (LeafEstimate, bool) {
     (
         LeafEstimate {
             value: if outcome == 0.0 { -1.0 } else { sign * outcome },
-            score: sign * crate::targets::normalized_score(areas),
+            score: sign * crate::targets::game_score(game, areas),
             score_stdev: 0.0,
         },
         outcome == 0.0,
@@ -655,7 +655,7 @@ fn terminal_search_value(game: &Game, weight: f64) -> SearchValue {
     let (estimate, jigo) = terminal_estimate(game);
     SearchValue {
         value: estimate
-            .utility(weight, game.board().size() as f64)
+            .utility(weight, f64::from(game.board().size()))
             .expect("valid score weight"),
         jigo_penalty: if jigo { 1.0 - weight } else { 0.0 },
     }
@@ -666,7 +666,7 @@ fn terminal_search_value(game: &Game, weight: f64) -> SearchValue {
 fn terminal_utility(game: &Game, weight: f64) -> f64 {
     terminal_estimate(game)
         .0
-        .utility(weight, game.board().size() as f64)
+        .utility(weight, f64::from(game.board().size()))
         .expect("valid terminal estimate and score weight")
 }
 
@@ -900,7 +900,7 @@ mod tests {
             score: 0.0,
             score_stdev: 0.0,
         }
-        .utility(config.score_weight, root.game.board().size() as f64)
+        .utility(config.score_weight, f64::from(root.game.board().size()))
         .unwrap();
         assert_eq!(root.value_sum, expected); // +root, -child, -child (side-to-move).
         assert_eq!(evaluator.calls, 3);
@@ -1204,7 +1204,7 @@ mod tests {
                         score: 1.0,
                         score_stdev: 0.0,
                     }
-                    .utility(config.score_weight, game.board().size() as f64)
+                    .utility(config.score_weight, f64::from(game.board().size()))
                     .unwrap()
                     .into(),
                 ));

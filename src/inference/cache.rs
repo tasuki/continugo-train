@@ -131,6 +131,7 @@ mod tests {
         assert!(cache.get(&b).is_none());
         assert!(cache.get(&a).is_some());
         assert!(cache.get(&c).is_some());
+        assert!(cache.get(&a.clone().with_komi(7.0).unwrap()).is_none());
         assert!(cache.get(&a.pass().unwrap()).is_none());
         assert!(cache.get(&a.pass().unwrap().pass().unwrap()).is_none());
         assert_eq!(cache.bytes, 32);

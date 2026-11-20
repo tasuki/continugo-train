@@ -39,7 +39,8 @@ MOVE_FEATURES = SCHEMA7_MOVE_FEATURES
 
 
 PASS = 1_000_000
-TARGET_VERSION = "final-area-v1"
+TARGET_VERSION = "final-area-komi-v2"
+LEGACY_TARGET_VERSION = "final-area-v1"
 HEADER = struct.Struct("<8s11If2If")
 
 
@@ -73,13 +74,15 @@ class PositionFeatures:
     score: float | None
     ownership: Tensor | None
     feature_schema: int = SCHEMA_VERSION
+    komi: float = 0.0  # Side-to-move compensation / SZ² (+komi for White, -komi for Black).
 
-    def network_inputs(self, device="cpu") -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def network_inputs(self, device="cpu") -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         return (
             self.coarse[None].to(device),
             self.exact[None].to(device),
             self.actions.to(device),
             self.legal[None].to(device),
+            torch.tensor([self.komi], device=device),
         )
 
     def policy_targets(self) -> tuple[Tensor, Tensor]:
@@ -161,7 +164,7 @@ def decode_sample(
     ):
         raise ValueError("invalid feature dimensions or flags")
     expected = (
-        HEADER.size
+        HEADER.size + (4 if version == SCHEMA7 else 0)
         + 4 * (planes + 1) * resolution**2
         + 4 * count * fields
         + 5 * count
@@ -178,6 +181,9 @@ def decode_sample(
         offset += amount * np.dtype(dtype).itemsize
         return value
 
+    komi = float(array("<f4", (1,))[0]) if version == SCHEMA7 else 0.0
+    if not math.isfinite(komi):
+        raise ValueError("invalid komi scalar")
     coarse = array("<f4", (planes, resolution, resolution)).copy()
     exact = array("<f4", (count, fields)).copy()
     raw_legal = array("u1", (count,))
@@ -187,7 +193,7 @@ def decode_sample(
     ownership = array("<f4", (resolution, resolution)).copy()
     if (
         not np.isfinite(score)
-        or abs(score) > 1
+        or (version != SCHEMA7 and abs(score) > 1)
         or not np.isfinite(ownership).all()
         or (np.abs(ownership) > 1).any()
     ):
@@ -256,6 +262,7 @@ def decode_sample(
         score if labeled else None,
         torch.from_numpy(ownership) if labeled else None,
         version,
+        komi,
     )
     if timings is not None:
         timings["decode_tensors_seconds"] = time.perf_counter() - tick

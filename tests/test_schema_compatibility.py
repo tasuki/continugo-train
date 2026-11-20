@@ -70,6 +70,7 @@ class SchemaCompatibilityTests(unittest.TestCase):
                         input_planes=len(spec["coarse"]),
                         move_features=len(spec["moves"]),
                         global_inputs=len(spec.get("globals", [])),
+                        score_distribution="linear-softplus" if schema == 7 else "tanh-sigmoid",
                     )
                 ),
             }
@@ -110,6 +111,7 @@ class SchemaCompatibilityTests(unittest.TestCase):
                         input_planes=len(spec["coarse"]),
                         move_features=len(spec["moves"]),
                         global_inputs=len(spec.get("globals", [])),
+                        score_distribution="linear-softplus" if schema == 7 else "tanh-sigmoid",
                         channels=4,
                         blocks=1,
                         policy_hidden=4,

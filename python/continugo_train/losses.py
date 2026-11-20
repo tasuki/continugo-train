@@ -128,9 +128,10 @@ def joint_loss(
         )
     ):
         raise ValueError("incompatible auxiliary target shapes")
-    for target in (score_targets, ownership_targets):
-        if not torch.isfinite(target).all() or (target.abs() > 1).any():
-            raise ValueError("auxiliary targets must be finite and in [-1,1]")
+    if not torch.isfinite(scores).all() or not torch.isfinite(score_targets).all():
+        raise ValueError("scores and score targets must be finite")
+    if not torch.isfinite(ownership_targets).all() or (ownership_targets.abs() > 1).any():
+        raise ValueError("ownership targets must be finite and in [-1,1]")
     if score_targets.shape != scores.shape:
         raise ValueError("incompatible score target shape")
     if (

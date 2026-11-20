@@ -11,6 +11,11 @@ schema-7 training starts fresh. See the [schema-7 feature contract](features.md#
 
 ## Architecture
 
+Schema 7 projects two [global scalars](komi.md#schema-7-scalar-contract), raster
+width/100 and signed komi/SZ², into trunk context after normalization and before
+ReLU. Komi is a separate ONNX encoder input, not a spatial plane. Pre-komi
+schema-7 checkpoints/exports must be discarded; start fresh.
+
 `PolicyValueNet` defaults to 64 channels and eight BatchNorm/ReLU residual blocks.
 Blocks **3 and 6** additionally use learned global pooling (`global-pooling-v1`).
 A parallel 3×3 convolution → BatchNorm → ReLU produces **16 global channels**;
@@ -31,11 +36,14 @@ features to 32 hidden units. Separate scalar outputs predict side-to-move outcom
 score mean and score standard deviation. Ownership projects the shared spatial
 features to one channel. Pass independently uses global trunk pooling.
 
-The shared dense layer uses linear → activation; outcome and score mean use
-linear → tanh. Its checkpoint setting
+The shared dense layer uses linear → activation. Outcome uses linear → tanh;
+score mean uses a **linear** output, and score uncertainty uses **softplus + 0.001**
+without an upper cap. Scores are net board-area units, with no komi-dependent
+denominator or clipping. Its checkpoint setting
 `value_activation` is `relu` or `leaky_relu` (fixed negative slope **0.1**).
-Fresh models default to `leaky_relu`. The `shared-gaussian-v1` architecture requires fresh training; earlier independent
-value/score checkpoints are not supported.
+Fresh models default to `leaky_relu`. The `shared-gaussian-linear-v2` architecture requires fresh schema-7 training;
+bounded-score schema-7 checkpoints are incompatible. Legacy schema-4/5/6 exports
+retain their original `shared-gaussian-v1` tanh/sigmoid heads.
 A parameter-free activation change is supported by an explicit training
 warm-start, preserving all weights and optionally SGD momentum; strict resume
 cannot change it. It does not change the policy head, feature schema or parameter
@@ -74,8 +82,8 @@ area integration or raster dilation. This is a learned geometric input, not an
 explicit eye reward or proof of life. Exact features are never interpolated. Pass is always
 available. Legacy schema-4 models retain ten exact features.
 
-With default widths and schema-7 inputs, the network has **629,415 trainable
-parameters**: trunk 624,384 (including 22,592 for global context); policy branches including pass 2,307; shared value
+With default widths and schema-7 inputs, the network has **629,543 trainable
+parameters**: trunk 624,384 (including 22,592 for pooled global context), plus 128 for scalar conditioning; policy branches including pass 2,307; shared value
 spatial/dense branch 2,608; outcome/score mean/score stdev outputs 33 each;
 ownership 17.
 Region indices are shared within a position; exact captured-survivor indices use
@@ -138,7 +146,9 @@ estimating their partition function. Coverage and playing strength require valid
 ## Format and benchmarks
 
 Checkpoint and ONNX metadata require policy version **`cells-v1`** and value
-version **`shared-gaussian-v1`**, plus trunk version **`global-pooling-v1`**.
+version **`shared-gaussian-linear-v2`**, plus trunk version
+**`global-pooling-scalars-v1`** for schema 7 (legacy schemas retain
+`shared-gaussian-v1` / `global-pooling-v1`).
 The trunk change requires fresh training and new exports. The old dense
 policy is not supported: start fresh training and export new graphs. Existing
 validated SGF visit/outcome records remain usable. New training uses feature
@@ -154,7 +164,7 @@ history. Earlier-schema checkpoints/tensors cannot initialize schema-7 training.
 and widths must match the selected numbered schema.
 See [features](features.md).
 The pass-preserving normalization correction changes native execution only, not
-weights, features, graph outputs, or the training objective. Current exports additionally require `targets: final-area-v1`; old policy/value-only
+weights, features, graph outputs, or the training objective. Fresh schema-7 exports additionally require `targets: final-area-komi-v2`; old policy/value-only
 checkpoints/graphs are incompatible. Changed native fingerprints require a new
 loop rather than replacing a running loop's frozen binaries. The new loop uses
 the same shared model store and global rating table.

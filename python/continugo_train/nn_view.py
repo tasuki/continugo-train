@@ -198,9 +198,13 @@ def frame(client, sgf, ply, loaded, info):
     )
     view = client.last_view
     coarse = sample.coarse[None]
-    trunk, pooled, spatial, pass_logit, value = model._encode(coarse)
+    komi = coarse.new_tensor([sample.komi])
+    trunk, pooled, spatial, pass_logit, value = model._encode(coarse, komi)
     score = model.score_head(pooled).item()
     stdev = model.score_stdev(pooled).item()
+    relative_komi = (1 if sample.player else -1) * info.get("komi", 0) / sample.board_size**2
+    if schema != 7:
+        score += relative_komi
     ownership = model.ownership_head(trunk)[0, 0].numpy()
     logits = model.coarse_logits(spatial, pass_logit)[0]
     coarse_probs = logits.softmax(0)
@@ -327,7 +331,7 @@ def frame(client, sgf, ply, loaded, info):
             {"name": name, "value": float(scalar)}
             for name, scalar in zip(
                 feature_spec(density, schema=schema).get("globals", []),
-                model.global_features(coarse)[0] if model.config.global_inputs else [],
+                model.global_features(coarse, komi)[0] if model.config.global_inputs else [],
                 strict=True,
             )
         ],
@@ -345,7 +349,8 @@ def frame(client, sgf, ply, loaded, info):
         "score_stdev": stdev,
         "score_points": score * sample.board_size**2,
         "outcome": sample.outcome,
-        "score_target": sample.score,
+        "score_target": (sample.score if schema == 7 or sample.score is None
+                         else sample.score + relative_komi),
         "coarse_pass": float(coarse_probs[-1]),
         "pass": pass_prob,
         "policy_mass": float(policy.sum()) + pass_prob,

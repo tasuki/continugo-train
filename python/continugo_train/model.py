@@ -20,7 +20,8 @@ from .features import COARSE_PLANES, MOVE_FEATURES
 COORD_RANGE = 1000
 COORDINATE_ACTIONS = COORD_RANGE**2
 POLICY_VERSION = "cells-v1"
-VALUE_VERSION = "shared-gaussian-v1"
+VALUE_VERSION = "shared-gaussian-linear-v2"
+LEGACY_VALUE_VERSION = "shared-gaussian-v1"
 TRUNK_VERSION = "global-pooling-scalars-v1"
 LEGACY_TRUNK_VERSION = "global-pooling-v1"
 GLOBAL_FEATURES = SCHEMA7_GLOBAL_FEATURES
@@ -78,6 +79,7 @@ class NetworkConfig:
     top_cells: int = 32
     exploration_cells: int = 8
     value_activation: str = "leaky_relu"
+    score_distribution: str = "linear-softplus"
 
     def __post_init__(self) -> None:
         if not isinstance(self.value_activation, str) or self.value_activation not in {
@@ -85,8 +87,10 @@ class NetworkConfig:
             "leaky_relu",
         }:
             raise ValueError("value_activation must be relu or leaky_relu (slope 0.1)")
+        if self.score_distribution not in {"linear-softplus", "tanh-sigmoid"}:
+            raise ValueError("unsupported score distribution")
         for name, value in vars(self).items():
-            if name == "value_activation":
+            if name in {"value_activation", "score_distribution"}:
                 continue
             minimum = 0 if name in ("gpool_every", "global_inputs") else 1
             if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
@@ -98,7 +102,7 @@ class NetworkConfig:
     @classmethod
     def from_checkpoint(cls, settings):
         # Older checkpoints have no scalar projection or corresponding weights.
-        return cls(**{"global_inputs": 0, **settings})
+        return cls(**{"global_inputs": 0, "score_distribution": "tanh-sigmoid", **settings})
 
 
 def validate_feature_config(config, spec):
@@ -108,6 +112,11 @@ def validate_feature_config(config, spec):
         or config.global_inputs != len(spec.get("globals", []))
     ):
         raise ValueError("architecture does not match feature widths/global inputs")
+    expected = {VALUE_VERSION: "linear-softplus", LEGACY_VALUE_VERSION: "tanh-sigmoid"}.get(
+        spec["value"]
+    )
+    if config.score_distribution != expected:
+        raise ValueError("architecture does not match score distribution")
 
 
 def resolution_for_diameter(diameter: int, samples_per_diameter: int = 4) -> int:
@@ -188,22 +197,28 @@ class PolicyValueNet(nn.Module):
             else nn.ReLU(),
         )
         self.value_head = nn.Sequential(nn.Linear(config.value_hidden, 1), nn.Tanh())
-        self.score_head = nn.Sequential(nn.Linear(config.value_hidden, 1), nn.Tanh())
+        self.score_head = nn.Sequential(
+            nn.Linear(config.value_hidden, 1),
+            nn.Tanh() if config.score_distribution == "tanh-sigmoid" else nn.Identity(),
+        )
         self.score_uncertainty = nn.Linear(config.value_hidden, 1)
         self.ownership_head = nn.Sequential(nn.Conv2d(config.value_channels, 1, 1), nn.Tanh())
 
-    def global_features(self, coarse: Tensor) -> Tensor:
+    def global_features(self, coarse: Tensor, komi: Tensor | None = None) -> Tensor:
         """Named global vector; dynamic shape arithmetic also exports to ONNX.
 
         Width means samples/cells per side, not area, stone diameter or nominal
         board size. Do not clamp: larger rasters legitimately exceed 1.
         """
-        return coarse.new_ones((coarse.shape[0], 1)) * (coarse.shape[-1] / 100.0)
+        width = coarse.new_ones((coarse.shape[0], 1)) * (coarse.shape[-1] / 100.0)
+        if komi is None:
+            komi = coarse.new_zeros(coarse.shape[0])
+        return torch.cat((width, komi[:, None]), dim=1)
 
-    def _encode(self, coarse: Tensor):
+    def _encode(self, coarse: Tensor, komi: Tensor | None = None):
         trunk = self.trunk(coarse)
         if self.global_projection is not None:
-            context = self.global_projection(self.global_features(coarse))
+            context = self.global_projection(self.global_features(coarse, komi))
             # No BatchNorm follows this conditioning. ReLU lets a global scalar
             # change local preferences, not merely add one uniform logit offset.
             trunk = F.relu(trunk + context[:, :, None, None])
@@ -229,18 +244,18 @@ class PolicyValueNet(nn.Module):
         )
 
     def score_stdev(self, shared: Tensor) -> Tensor:
-        # Margins are in [-1,1], so their standard deviation cannot exceed 1.
-        return SCORE_STDEV_FLOOR + (1 - SCORE_STDEV_FLOOR) * torch.sigmoid(
-            self.score_uncertainty(shared).squeeze(-1)
-        )
+        raw = self.score_uncertainty(shared).squeeze(-1)
+        if self.config.score_distribution == "tanh-sigmoid":
+            return SCORE_STDEV_FLOOR + (1 - SCORE_STDEV_FLOOR) * torch.sigmoid(raw)
+        return SCORE_STDEV_FLOOR + F.softplus(raw)
 
-    def encode(self, coarse: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        _, _, spatial, pass_logit, value = self._encode(coarse)
+    def encode(self, coarse: Tensor, komi: Tensor | None = None) -> tuple[Tensor, Tensor, Tensor]:
+        _, _, spatial, pass_logit, value = self._encode(coarse, komi)
         return spatial, pass_logit, value
 
-    def encode_search(self, coarse: Tensor):
+    def encode_search(self, coarse: Tensor, komi: Tensor | None = None):
         """Production inference omits the training-only ownership head."""
-        _, pooled, spatial, pass_logit, value = self._encode(coarse)
+        _, pooled, spatial, pass_logit, value = self._encode(coarse, komi)
         return (
             spatial,
             pass_logit,
@@ -249,8 +264,8 @@ class PolicyValueNet(nn.Module):
             self.score_stdev(pooled),
         )
 
-    def encode_training(self, coarse: Tensor):
-        trunk, pooled, spatial, pass_logit, value = self._encode(coarse)
+    def encode_training(self, coarse: Tensor, komi: Tensor | None = None):
+        trunk, pooled, spatial, pass_logit, value = self._encode(coarse, komi)
         return (
             spatial,
             pass_logit,
@@ -260,12 +275,18 @@ class PolicyValueNet(nn.Module):
             self.score_stdev(pooled),
         )
 
-    def forward_search(self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor):
-        spatial, pass_logit, value, score, stdev = self.encode_search(coarse)
+    def forward_search(
+        self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor,
+        komi: Tensor | None = None,
+    ):
+        spatial, pass_logit, value, score, stdev = self.encode_search(coarse, komi)
         return self.policy(spatial, pass_logit, exact, actions, legal), value, score, stdev
 
-    def forward_all(self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor):
-        spatial, pass_logit, value, score, ownership, stdev = self.encode_training(coarse)
+    def forward_all(
+        self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor,
+        komi: Tensor | None = None,
+    ):
+        spatial, pass_logit, value, score, ownership, stdev = self.encode_training(coarse, komi)
         return (
             self.policy(spatial, pass_logit, exact, actions, legal),
             value,
@@ -327,7 +348,7 @@ class PolicyValueNet(nn.Module):
         return torch.cat((local + coarse.gather(1, cells), coarse[:, -1:]), dim=1)
 
     def forward(
-        self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor
+        self, coarse: Tensor, exact: Tensor, actions: Tensor, legal: Tensor, komi: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
-        spatial, pass_logit, value = self.encode(coarse)
+        spatial, pass_logit, value = self.encode(coarse, komi)
         return self.policy(spatial, pass_logit, exact, actions, legal), value

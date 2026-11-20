@@ -6,13 +6,19 @@ use continugo_rules::{
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub const BOARD_AREA: f64 = 1_000_000.0;
-pub const TARGET_VERSION: &str = "final-area-v1";
+pub const TARGET_VERSION: &str = "final-area-komi-v2";
+pub const LEGACY_TARGET_VERSION: &str = "final-area-v1";
 
 /// Exact territory is bounded by the board, but summing clipped floating-point
 /// polygons can overshoot its area by a few ulps. Bound authoritative scores at
 /// this normalization boundary; neural output validation remains strict.
 pub fn normalized_score(areas: territory::Areas) -> f64 {
     ((areas.black - areas.white) / BOARD_AREA).clamp(-1.0, 1.0)
+}
+
+/// Net margin in board-area units; komi is in SZ² point-equivalents.
+pub fn game_score(game: &continugo_rules::Game, areas: territory::Areas) -> f64 {
+    normalized_score(areas) - game.komi() / f64::from(game.board().size()).powi(2)
 }
 
 type Raster = (usize, Arc<Vec<f32>>);

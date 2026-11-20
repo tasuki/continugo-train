@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let output = serde_json::json!({"value": estimate.value, "score": estimate.score,
             "score_stdev": estimate.score_stdev,
-            "utility": estimate.utility(config.score_weight, position.game.board().size() as f64)?, "search": config, "seed": args.seed,
+            "utility": estimate.utility(config.score_weight, f64::from(position.game.board().size()))?, "search": config, "seed": args.seed,
             "search_seconds": search_seconds, "best": best.index(), "visits": visits,
             "sgf_sha256": format!("{:x}", Sha256::digest(text.as_bytes())), "ply": args.ply,
             "pass_visit_fraction": pass_visits as f64 / simulations as f64,

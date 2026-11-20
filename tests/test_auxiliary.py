@@ -189,7 +189,7 @@ class AuxiliaryTests(unittest.TestCase):
             torch.testing.assert_close(a, b)
 
     def test_new_target_contract_and_loss_options_are_validated(self):
-        self.assertEqual(feature_spec(4)["targets"], "final-area-v1")
+        self.assertEqual(feature_spec(4)["targets"], "final-area-komi-v2")
         self.assertEqual(Options().score_loss_weight, 0.5)
         self.assertEqual(Options().ownership_loss_weight, 0.5)
         for weight in (-1, math.inf, math.nan):

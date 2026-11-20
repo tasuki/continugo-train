@@ -43,7 +43,7 @@ class GlobalInputTests(unittest.TestCase):
                 self.assertEqual(sample.feature_schema, 7)
                 self.assertEqual(sample.resolution, width)
                 global_input = model.global_features(sample.coarse[None])
-                torch.testing.assert_close(global_input, torch.tensor([[width / 100]]))
+                torch.testing.assert_close(global_input, torch.tensor([[width / 100, 0.0]]))
                 for training in (True, False):
                     model.train(training)
                     batch = sample.coarse[None].expand(2, -1, -1, -1)
@@ -55,7 +55,7 @@ class GlobalInputTests(unittest.TestCase):
         coarse = torch.zeros(2, model.config.input_planes, 38, 38)
         _, pass_logit, *_ = model.encode_training(coarse)
         pass_logit.sum().backward()
-        torch.testing.assert_close(model.global_projection.weight.grad, torch.tensor([[0.76]]))
+        torch.testing.assert_close(model.global_projection.weight.grad, torch.tensor([[0.76, 0.0]]))
 
     def test_global_conditioning_reaches_every_head_and_can_change_local_preferences(self):
         model = PolicyValueNet(NetworkConfig(channels=8, blocks=1, gpool_every=0)).eval()
@@ -80,7 +80,7 @@ class GlobalInputTests(unittest.TestCase):
         legacy = PolicyValueNet(NetworkConfig.from_checkpoint(old))
         self.assertIsNone(legacy.global_projection)
         self.assertFalse(any(k.startswith("global_projection.") for k in legacy.state_dict()))
-        self.assertEqual(feature_spec(4)["globals"], ["coarse_width_div100"])
+        self.assertEqual(feature_spec(4)["globals"], ["coarse_width_div100", "komi_self_div_board_area"])
         for schema in (4, 5, 6):
             self.assertNotIn("globals", feature_spec(4, schema=schema))
             self.assertEqual(feature_spec(4, schema=schema)["trunk"], "global-pooling-v1")
@@ -102,7 +102,7 @@ class GlobalInputTests(unittest.TestCase):
                                           providers=["CPUExecutionProvider"])
             for width in (38, 54, 78, 128):
                 coarse = np.zeros((2, model.config.input_planes, width, width), dtype=np.float32)
-                result = session.run(["pass_logit"], {"coarse": coarse})[0]
+                result = session.run(["pass_logit"], {"coarse": coarse, "komi": np.zeros(2, dtype=np.float32)})[0]
                 np.testing.assert_allclose(result, width / 100, rtol=1e-4, atol=1e-5)
             bad = copy.deepcopy(saved)
             bad["feature_spec"]["globals"] = ["coarse_width_div50"]

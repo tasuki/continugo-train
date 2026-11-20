@@ -105,6 +105,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .checked_add(((end - 1) / 2) as u64)
         .ok_or("pair seed overflow")?;
     let config = SelfplayConfig {
+        komi: 7.0,
+        komi_stddev: 0.0,
         engine: if args.unguided {
             Engine::Mcts
         } else {

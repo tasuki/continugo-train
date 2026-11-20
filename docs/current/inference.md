@@ -49,7 +49,7 @@ cargo run --locked --release -- --engine neural --device cpu --model scratch/mod
 
 Export atomically publishes two opset-17 graphs as one new directory:
 
-- `encoder.onnx`: coarse inputs → projected spatial context, cell logits, pass
+- `encoder.onnx`: coarse inputs plus schema-7 `komi: [batch]` scalar → projected spatial context, cell logits, pass
   logit, outcome value, normalized expected final score and score standard deviation
   (`score_stdev`, in normalized-area units). Ownership remains
   training-only; see [auxiliary supervision](auxiliary.md).
@@ -67,9 +67,10 @@ include binary `splits_friendly_region`; the user-authorized revision of unused
 schema 5 rejects the former footprint feature metadata. Existing schema-4 score/ownership models keep all twelve
 original point-sampled inputs, selected explicitly from this metadata.
 Re-exporting does not upgrade or truncate a model's inputs. There is no metadata sidecar. Loading rejects incompatible
-metadata or mixed graph pairs; `cells-v1`, `shared-gaussian-v1`, and
-`global-pooling-v1` are required and old bundles must
-be retrained/re-exported. Chunking avoids rerunning the encoder; default
+metadata or mixed graph pairs. Schema 7 requires `cells-v1`,
+`shared-gaussian-linear-v2`, `final-area-komi-v2`, and `global-pooling-scalars-v1`;
+legacy schemas retain their bounded `shared-gaussian-v1` heads. Old schema-7
+bundles must be retrained/re-exported. Chunking avoids rerunning the encoder; default
 chunks are 65,536 coordinates. See [features](features.md) for input semantics.
 
 Export verifies eager/ONNX parity across default resolutions, batch sizes, and

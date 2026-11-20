@@ -97,11 +97,15 @@ fn encode<const PROFILE: bool>(
     } else {
         -1.0
     };
-    let score = sample
-        .final_targets
-        .as_ref()
-        .map_or(0.0, |t| t.score * sign);
+    let score = sample.final_targets.as_ref().map_or(0.0, |t| {
+        if schema != 7 {
+            return t.score * sign;
+        }
+        let k = (sample.game.komi() / f64::from(sample.game.board().size()).powi(2)) as f32;
+        (t.score - k) * sign
+    });
     let length = 68
+        + if schema == 7 { 4 } else { 0 }
         + extractor.resolution * extractor.resolution * 4
         + extractor.coarse.len() * 4
         + moves.exact.len() * 4
@@ -128,6 +132,11 @@ fn encode<const PROFILE: bool>(
         packet.extend_from_slice(&number.to_le_bytes());
     }
     packet.extend_from_slice(&score.to_le_bytes());
+    if schema == 7 {
+        let komi =
+            -sign * (sample.game.komi() / f64::from(sample.game.board().size()).powi(2)) as f32;
+        packet.extend_from_slice(&komi.to_le_bytes());
+    }
     for &number in extractor.coarse.iter().chain(&moves.exact) {
         packet.extend_from_slice(&number.to_le_bytes());
     }

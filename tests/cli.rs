@@ -382,12 +382,15 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
     assert_eq!(&cache[..8], b"CGCACHE1");
     let text = fs::read_to_string(directory.0.join("game-000001-size19-seed1.sgf")).unwrap();
     let record = sgf::decode_record(&text).unwrap();
-    let game = Game::from_record_on(board_from_sgf(&record), &record.plays).unwrap();
+    let game = Game::from_record_on(board_from_sgf(&record), &record.plays)
+        .unwrap()
+        .with_komi(record.komi().unwrap())
+        .unwrap();
     assert!(game.is_finished());
     let metadata = comment(&record.root);
     let result = &record.root.iter().find(|(name, _)| name == "RE").unwrap().1[0];
     use continugo_rules::{Color, territory};
-    match territory::result(territory::areas(game.position().stones())) {
+    match game.result() {
         territory::Outcome::Draw => assert_eq!(result, "0"),
         territory::Outcome::Win(color, margin) => {
             let (winner, score) = result.split_once('+').unwrap();
@@ -409,7 +412,7 @@ fn saved_completed_mcts_game_has_a_scored_sgf_result() {
     assert_eq!(metadata.as_object().unwrap().len(), 2);
     let terminal = comment(record.move_properties.last().unwrap());
     let mover = game.on_move().other();
-    let (win_pct, score) = match territory::result(territory::areas(game.position().stones())) {
+    let (win_pct, score) = match game.result() {
         territory::Outcome::Draw => (50.0, 0.0),
         territory::Outcome::Win(winner, margin) => {
             let point_area = 1_000_000.0 / f64::from(board_from_sgf(&record).size()).powi(2);

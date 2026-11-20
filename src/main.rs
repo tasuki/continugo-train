@@ -43,6 +43,12 @@ struct Args {
     size_weights: String,
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// Mean komi, in White's point-equivalents.
+    #[arg(long, default_value_t = 7.0, allow_negative_numbers = true)]
+    komi: f64,
+    /// Game-level Gaussian variation, rounded to half points and capped at 0..14.
+    #[arg(long, default_value_t = 2.0)]
+    komi_stddev: f64,
     #[arg(long, default_value_t = 512)]
     max_moves: usize,
     #[arg(long, default_value_t = 32)]
@@ -166,6 +172,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let config = SelfplayConfig {
         engine: args.engine,
+        komi: args.komi,
+        komi_stddev: args.komi_stddev,
         max_moves: args.max_moves,
         policy_search: (args.policy_search_probability > 0.0).then_some(PolicySearchConfig {
             simulations: args.policy_simulations,
