@@ -46,8 +46,8 @@ read-only and reports roles, cumulative progress, metrics, phase, disk and live 
 
 Use `mise run loop -- --help` or the [constants and formulas inventory](constants.md)
 for defaults. New loops default to 32 concurrent games / batch limit 32 /
-collection wait two ms; active slots are capped by `--games-per-iteration`
-(default 100). Training batch size is 64; `--positions-per-epoch` defaults to
+collection wait two ms; active slots are capped by `--games-per-iteration`.
+Training batch size is 64; `--positions-per-epoch` defaults to
 65,536, sampled uniformly without replacement from the eligible replay window
 before feature loading, with a fresh seeded sample each iteration/epoch. Smaller
 pools are exhausted; zero disables sampling. The default is one training epoch
@@ -168,7 +168,7 @@ each generation round needs a completed policy-labeled game. Rust validates move
 policy, score and job/model identity. See [training](training.md).
 
 Default `--sizes 9,13,19 --size-weights 9:1,13:0,19:0` uses **size 9 only** for
-generation, window selection and training/validation samples: 100 games per round.
+generation, window selection and training/validation samples.
 The former 40%/40%/20% mix (`9:2,13:2,19:1`) remains an explicit option and a
 commented-out default in source. `samples_by_size` reports actual counts.
 `uniform` restores literal cycling; zero weights exclude a size. Explicitly

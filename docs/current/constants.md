@@ -46,7 +46,7 @@ Sources: [`LoopConfig`](../../python/continugo_train/loop.py),
 | Weight bounds | Integer 0–1000; zero excludes a size; unspecified sizes have weight 1 | Limit / rule |
 | Weighted cycle | Smooth weighted round-robin after GCD reduction; default `[9]`; maximum 4096 entries | Rule / limit |
 | `uniform` | Literal supplied size cycle; disables position-quota downsampling | Choice |
-| Games per loop iteration | 100; standalone self-play defaults to 1 game | Choice |
+| Games per loop iteration | 150; standalone self-play defaults to 1 game | Choice |
 | Engine | Standalone `mcts`; loop explicitly uses `neural` | Choice |
 | Game move cap | 512 plies | Choice |
 | Initial seed | 0 | Choice |

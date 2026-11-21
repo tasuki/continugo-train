@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class LoopConfig:
     sizes: tuple[int, ...] = (9, 13, 19)
     size_weights: str = DEFAULT_SIZE_WEIGHTS
-    games_per_iteration: int = 100
+    games_per_iteration: int = 150
     seed: int = 0
     simulations: int = 100
     policy_simulations: int = 500
