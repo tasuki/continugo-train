@@ -426,7 +426,13 @@ class LoopTests(LoopHarness):
 
     def test_katago_window_uses_current_d_and_freezes_combined_window(self):
         output = self.root / "katago-window"
-        state = self.run_loop(output)
+        with (
+            patch.object(loop, "inspect_corpus", wraps=loop.inspect_corpus) as inspect,
+            patch.object(loop, "scan_corpus", wraps=loop.scan_corpus) as scan,
+        ):
+            state = self.run_loop(output)
+        self.assertEqual(inspect.call_count, 1)  # Bootstrap only; no duplicate window scan.
+        self.assertEqual(scan.call_count, 1)
         first = state["iterations"][0]
         budget = first["replay_budget"]
         self.assertNotIn("training_window_fraction", state["config"])

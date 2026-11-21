@@ -8,6 +8,7 @@ speed. Selected-cell tensors are buffered in bounded memory, never cached as a c
 
 import hashlib
 import json
+import os
 import queue
 import random
 import sys
@@ -16,6 +17,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
+from itertools import repeat
 from pathlib import Path
 
 import torch
@@ -59,8 +61,14 @@ class Corpus:
         ]
 
 
-def inspect_corpus(inputs: list[str], density: int, binary=None, *, generated_positions=None):
-    """Validate/deduplicate eligible games without requiring a holdout yet."""
+def inspect_corpus(
+    inputs: list[str], density: int, binary=None, *, generated_positions=None, workers=None
+):
+    """Validate/deduplicate games with bounded, deterministically ordered Rust inspections."""
+    if workers is None:
+        workers = min(8, os.cpu_count() or 1)
+    if workers < 1:
+        raise ValueError("inspection workers must be positive")
     paths = set()
     for name in inputs:
         path = Path(name).resolve()
@@ -76,8 +84,12 @@ def inspect_corpus(inputs: list[str], density: int, binary=None, *, generated_po
         raise ValueError("no SGF files found")
     eligible = []
     skipped = {"unlabeled": 0, "no_policy": 0, "duplicate_game": 0}
-    for path in sorted(paths):
-        info = inspect_game(path, density, binary)
+    paths = sorted(paths)
+    # Rust subprocesses do the CPU work, so threads avoid both the GIL and Python
+    # process startup. Consume in path order regardless of completion order.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        metadata = list(pool.map(inspect_game, paths, repeat(density), repeat(binary)))
+    for path, info in zip(paths, metadata):
         if not 9 <= info["board_size"] <= 19:
             raise ValueError(f"{path}: training board sizes must be in 9..19")
         if generated_positions is not None:

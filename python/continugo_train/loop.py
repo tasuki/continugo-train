@@ -23,7 +23,7 @@ from pathlib import Path
 import torch
 
 from . import archive, plot_metrics, plot_timing, promote, timing
-from .data import assign_splits, inspect_corpus, merge_split_assignments, scan_corpus
+from .data import inspect_corpus, merge_split_assignments, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
 from .paths import DEFAULT_MODEL_STORE, new_run_directory
@@ -784,6 +784,7 @@ class LoopRunner:
     def replay(self, iteration, parent):
         options = self.config.training_options(parent, iteration["number"])
         history = checkpoint_splits(parent)
+        corpus = None
         if iteration["replay"] is None:
             recent = self.state["iterations"][: iteration["number"]]
             candidates = [record for previous in reversed(recent) for record in previous["games"]]
@@ -796,14 +797,18 @@ class LoopRunner:
             splits = merge_split_assignments(history, parent.get("replay_pool_splits", {}))
             splits = merge_split_assignments(splits, self.state.get("replay_pool_splits", {}))
             if selected:
-                games, _ = inspect_corpus(
+                # Inspect once: this corpus supplies both pool pins and the
+                # fingerprint/hash validation below. Resume still rescans disk.
+                corpus = scan_corpus(
                     [str(self.check(r)) for r in selected],
                     options.samples_per_diameter,
+                    options.seed,
+                    options.validation_fraction,
                     self.config.feature_binary,
+                    split_history=history,
+                    split_assignments=splits,
                 )
-                _, _, splits = assign_splits(
-                    games, options.seed, options.validation_fraction, splits
-                )
+                splits = merge_split_assignments(splits, corpus.split_history)
             self.state["replay_pool_splits"] = splits
             iteration["replay_pool_splits"] = splits
             iteration["replay_splits"] = {r["game_id"]: splits[r["game_id"]] for r in selected}
@@ -829,14 +834,15 @@ class LoopRunner:
         paths = [str(self.check(record)) for record in selected]
         if not paths:
             raise ValueError("no eligible training/validation window games")
-        corpus = scan_corpus(
-            paths,
-            options.samples_per_diameter,
-            options.seed,
-            options.validation_fraction,
-            self.config.feature_binary,
-            split_history=history,
-        )
+        if corpus is None:
+            corpus = scan_corpus(
+                paths,
+                options.samples_per_diameter,
+                options.seed,
+                options.validation_fraction,
+                self.config.feature_binary,
+                split_history=history,
+            )
         expected_hashes = {str(self.check(r)): r["sha256"] for r in selected}
         if any(expected_hashes[g.path] != g.file_sha256 for g in corpus.train + corpus.validation):
             raise ValueError("training/validation window changed during selection")
