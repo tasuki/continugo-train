@@ -19,27 +19,29 @@ from .train import atomic_checkpoint, feature_spec
 
 POLICY = {
     "evaluation_every": 5,
-    "challenge_every": 5,
+    "win_rate_required": 0.7,
     "screen_games": 10,
-    "screen_wins": 7,
     "extension_games": 30,
-    "total_wins": 28,
-    "reference_games": 10,
-    "history_opponents": 2,
-    "history_games": 10,
+    "history_opponents": 3,
+    "history_games": 50,
 }
 
 
 def challenge_decision(screen, extension=None):
-    if screen["games"] != 10:
-        raise ValueError("screen must contain ten games")
-    if screen["wins"] < 7:
+    if screen["games"] != POLICY["screen_games"]:
+        raise ValueError("screen game count disagrees with policy")
+    if screen["wins"] / screen["games"] < POLICY["win_rate_required"]:
         return "screen-failed"
     if extension is None:
         return "continue"
-    if extension["games"] != 30:
-        raise ValueError("extension must contain thirty games")
-    return "promoted" if screen["wins"] + extension["wins"] >= 28 else "challenge-failed"
+    if extension["games"] != POLICY["extension_games"]:
+        raise ValueError("extension game count disagrees with policy")
+    return (
+        "promoted"
+        if (screen["wins"] + extension["wins"]) / (screen["games"] + extension["games"])
+        >= POLICY["win_rate_required"]
+        else "challenge-failed"
+    )
 
 
 @contextmanager
@@ -60,6 +62,8 @@ def load_champions(store):
         raise ValueError("champion registry cannot be a symlink")
     if path.exists():
         value = json.loads(path.read_text())
+        for obsolete in ("challenge_every", "reference_games"):
+            value.get("policy", {}).pop(obsolete, None)
         if value.get("policy") != POLICY or "champion" not in value:
             raise ValueError("incompatible champion policy")
         compact_champions(value)
@@ -156,8 +160,8 @@ def initialize(store, args):
     config = replace(
         base,
         model_store=str(store),
-        gate_games=10,
-        reference_games=10,
+        gate_games=POLICY["screen_games"],
+        reference_games=POLICY["history_games"],
         gate_simulations=args.simulations if args.simulations is not None else 128,
         gate_max_moves=1024,
         reference_max_moves=2048,
@@ -256,7 +260,6 @@ def evaluate(runner, registry):
         round_number = int(round_text)
         cadence = state.get("family_evaluation_every", {}).get(family)
         evaluation_every = cadence or state["policy"]["evaluation_every"]
-        challenge_every = cadence or state["policy"]["challenge_every"]
         if round_number % evaluation_every != 0:
             if registry["pending"] == candidate:
                 registry["pending"] = None
@@ -278,31 +281,29 @@ def evaluate(runner, registry):
             runner.save()
         trial = state["trials"][candidate]
         opponent = trial["opponent"]
-        if "challenge_due" not in trial:
-            # Finish a previously started challenge, but never start an off-cycle one.
-            started = bool(trial.get("screen")) or any(
-                job["candidate_name"] == candidate and job["kind"].startswith("champion-")
-                for job in state["matches"].values()
-            )
-            trial["challenge_due"] = started or round_number % challenge_every == 0
-            runner.save()
         runner.log(
             f"Candidate {number}/{len(state['candidates'])}: {candidate} vs champion {opponent}"
         )
-        if trial["decision"] is None and not trial["challenge_due"]:
-            trial["decision"] = "not-challenged"
-            runner.save()
         if trial["decision"] is None:
             screen = (
-                play_match(runner, registry, candidate, "random", "reference", 10)
+                play_match(
+                    runner, registry, candidate, "random", "reference", POLICY["screen_games"]
+                )
                 if opponent == "random"
-                else play_match(runner, registry, candidate, opponent, "champion-screen", 10)
+                else play_match(
+                    runner, registry, candidate, opponent, "champion-screen", POLICY["screen_games"]
+                )
             )
             trial["screen"] = screen
             decision = challenge_decision(screen)
             if decision == "continue":
                 extension = play_match(
-                    runner, registry, candidate, opponent, "champion-extension", 30
+                    runner,
+                    registry,
+                    candidate,
+                    opponent,
+                    "champion-extension",
+                    POLICY["extension_games"],
                 )
                 trial["extension"] = extension
                 decision = challenge_decision(screen, extension)
@@ -335,29 +336,26 @@ def evaluate(runner, registry):
                 )
             save_champions(runner.root, registry)
             plot_ratings.update(runner.root)
-        # Calibration is a reward for promotion, never a prerequisite. Commit
-        # the champion first; a resumed partial reference batch cannot undo it.
-        # During initial bootstrap the random challenge already supplies these
-        # ten games, so do not schedule a duplicate reference match.
-        if trial["decision"] == "promoted" and opponent != "random":
-            play_match(runner, registry, candidate, "random", "reference", 10)
+        # Promotion is committed before the bounded historical calibration matches.
         if trial["history_opponents"] is None:
             opponents = []
             if trial["decision"] == "promoted":
                 states = state["rating_cache"]["states"]
                 target = states[candidate]["rating"]
-                opponents = sorted(
-                    [
-                        name
-                        for name in registry["evaluated"]
-                        if name in state["models"] and name not in {candidate, opponent}
-                    ],
-                    key=lambda name: (abs(states[name]["rating"] - target), name),
-                )[:2]
+                available = {name for name in registry["evaluated"] if name in state["models"]}
+                available.add("random")
+                available.difference_update({candidate, opponent})
+
+                def distance(name, states=states, target=target):
+                    key = ratings.REFERENCE_ID if name == "random" else name
+                    return abs(states[key]["rating"] - target), name
+
+                opponents = [opponent]
+                opponents.extend(sorted(available, key=distance)[: POLICY["history_opponents"] - 1])
             trial["history_opponents"] = opponents
             runner.save()
         for historical in trial["history_opponents"]:
-            play_match(runner, registry, candidate, historical, "history", 10)
+            play_match(runner, registry, candidate, historical, "history", POLICY["history_games"])
         registry["evaluated"][candidate]["complete"] = True
         registry["pending"] = None
         save_champions(runner.root, registry)
@@ -383,9 +381,7 @@ def validate_evaluation_model(saved, reference_spec):
         or config.get("global_inputs", 0) != len(spec.get("globals", []))
     ):
         raise ValueError("incompatible feature semantics/architecture")
-    if any(
-        spec[key] != reference_spec[key] for key in ("policy", "samples_per_diameter")
-    ):
+    if any(spec[key] != reference_spec[key] for key in ("policy", "samples_per_diameter")):
         raise ValueError("incompatible evaluation policy/density")
 
 
@@ -515,6 +511,8 @@ def run(args):
             ):
                 raise ValueError("resume restores frozen settings")
             state = torch.load(path, map_location="cpu", weights_only=True)
+            for obsolete in ("challenge_every", "reference_games"):
+                state.get("policy", {}).pop(obsolete, None)
             if state.get("root") != str(store) or state.get("policy") != POLICY:
                 raise ValueError("incompatible or relocated evaluator checkpoint")
         else:

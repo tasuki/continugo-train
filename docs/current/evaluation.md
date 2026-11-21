@@ -67,13 +67,18 @@ The registry retains decisions, champion history and recovery metadata.
    At least **7 wins** permit continuation.
 2. It plays **30 more games against that same frozen champion**, with fresh paired seeds.
    At least **28 wins across the full 40 automatically replace the champion**.
-3. **Only after promotion is committed**, the new champion plays **10 games against
-   random** for rating calibration. Rejected challengers do not play random.
-   Initial bootstrap against random already supplies the ten reference games;
-   these are reused, never duplicated. No later result resets the champion to random.
-4. A new champion plays **10 games each against up to two other available, previously
-   evaluated models** near its rating. The defeated champion is excluded: it already
-   supplied forty games. These extra games calibrate ratings; they do not veto promotion.
+3. **Only after promotion is committed**, the new champion plays **50 games each
+   against up to three history opponents**: the defeated champion, plus up to two
+   other available, previously evaluated opponents nearest its rating. Random is
+   eligible for these remaining slots, not a separate mandatory calibration batch.
+   The defeated champion gets a fresh history batch in addition to the challenge.
+   These extra games calibrate ratings; they do not veto promotion or reset it.
+
+`POLICY` in `rate_saved.py` is the single source of the six policy defaults.
+`win_rate_required: 0.7` applies to both the screen alone and the combined
+screen + extension: with 10 + 30 games, the thresholds are 7/10 and 28/40.
+Every evaluated round challenges the champion; there is no separate challenge cadence.
+The historical store's existing games and promotion history remain unchanged.
 
 Match reports contain counts, scores and truncation bounds, not a generic
 50% acceptance threshold or passed/failed label. Only the 7/10 and 28/40 win

@@ -401,12 +401,13 @@ user approval**, with no numerical auto-publication threshold.
 | Choice | Current value / rule |
 |---|---|
 | Loop model-saving cadence | Every round; 0 disables; independent of rating cadence |
-| Shared evaluator eligibility / challenge cadence | Round multiples of 5 / 5 |
+| Shared evaluator eligibility / challenge cadence | Every fifth round; every eligible round challenges |
 | Initial evaluation champion | Random bot, `random-no-eye-fill-v1` |
+| Required win rate | 0.7 for the screen and for the combined screen + extension |
 | Challenge screen | 10 games; at least 7 **wins** to continue |
 | Challenge extension | 30 more games; at least 28 wins across all 40 to replace champion |
-| Random calibration | 10 games after promotion only, not for rejected challengers; initial random challenge is reused, not duplicated |
-| History-opponent policy | Up to 2 previously evaluated neural models nearest in rating, excluding the candidate and challenged opponent; 10 games each, after promotion only |
+| Random calibration | No separate batch; random is eligible within the history-opponent budget |
+| History-opponent policy | Up to 3 opponents: defeated champion plus up to 2 nearest-rated available historical opponents (including random); 50 fresh games each, after promotion only |
 | Neural rating simulations | 128; standalone native arena defaults to 32 |
 | Shared evaluator neural / random move cap | 1024 / 2048 |
 | Generic `EvaluationConfig` match / random defaults | 20 / 10 games; move caps 512 / 2048 |

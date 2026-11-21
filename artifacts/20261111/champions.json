@@ -1,14 +1,11 @@
 {
   "policy": {
     "evaluation_every": 5,
-    "challenge_every": 5,
+    "win_rate_required": 0.7,
     "screen_games": 10,
-    "screen_wins": 7,
     "extension_games": 30,
-    "total_wins": 28,
-    "reference_games": 10,
-    "history_opponents": 2,
-    "history_games": 10
+    "history_opponents": 3,
+    "history_games": 50
   },
   "champion": "cg10-r0070",
   "history": [
