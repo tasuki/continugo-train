@@ -4,10 +4,7 @@ This is a living document.
 Remove tasks when implemented.
 Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 
-## Feature planes — next fresh run
-
-**Keep schema 7 open: do not increment its number until the next fresh run starts.**
-Fold all pre-run input changes into schema 7.
+## Future feature planes
 
 - [ ] Trial friendly/enemy **Benson pass-alive planes**; measure integrated cost
   and benefit before including them.

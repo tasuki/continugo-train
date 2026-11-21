@@ -2,6 +2,8 @@
 
 ## Schema 7 contract
 
+**Schema 7 is finalized.** Future input-contract changes require a new schema version.
+
 Fresh training/extraction uses **schema 7: 17 coarse planes and 9 exact fields**.
 It adds three recent-move location planes immediately after occupancy; all
 schema-6 geometry, scaling, exact fields and legality remain unchanged.
