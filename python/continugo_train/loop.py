@@ -26,7 +26,7 @@ from . import archive, plot_metrics, plot_timing, promote, timing
 from .data import assign_splits, inspect_corpus, merge_split_assignments, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
-from .paths import new_run_directory
+from .paths import DEFAULT_MODEL_STORE, new_run_directory
 from .progress import checkpoint_progress, data_history, network_name
 from .progress import initialize as initialize_progress
 from .runtime import inference_environment
@@ -82,7 +82,7 @@ class LoopConfig:
     feature_binary: str = str(ROOT / "target/release/features")
     ort_library: str | None = None
     save_model_every: int = 1
-    model_store: str = str(ROOT / "artifacts")
+    model_store: str = str(DEFAULT_MODEL_STORE)
 
     def validate(self):
         from .feature_cache import MODES
@@ -1343,10 +1343,8 @@ def run_loop(args):
         config.validate()
         store = Path(config.model_store).resolve()
         shared = (ROOT / "artifacts").resolve()
-        if store != shared and store.is_relative_to(shared):
-            raise ValueError(
-                "all campaigns share artifacts/; per-training artifact-store subdirectories are not supported"
-            )
+        if store == shared:
+            raise ValueError("select a lineage store: artifacts/<lineage>/")
         if (
             store.is_relative_to(root)
             or root.is_relative_to(store)

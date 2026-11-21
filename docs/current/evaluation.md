@@ -18,13 +18,12 @@ artifacts/
     policy.onnx
     metadata.json
   models/cg5/r0002/ ... r0100/
+  networks.csv
+  champions.json
+  ratings.png  # generated, gitignored
   ratings/
-    networks.csv
-    champions.json
     evaluator.pt
     evaluator.log
-    ratings.png
-    ratings.2026-11-10.png
   sgfs/2026-11-10/
     cg5-r0001-vs-random-seed97000000.sgf
     cg5-r0001-vs-random-seed97000000.nn.html
@@ -140,7 +139,8 @@ mise run ratings
 mise run plot-ratings
 ```
 
-`--model-store PATH` selects another artifact root; default `artifacts/`. There is
+`--model-store PATH` selects a lineage artifact root; the default is
+`artifacts/20261111/` (centralized in `paths.DEFAULT_MODEL_STORE`). There is
 no per-study `--output` directory. One inherited OS lock serializes the evaluator
 and its arena children. The queue, frozen runtime/protocol, seed reservations,
 partial-match progress and disposable rating cache live in `ratings/evaluator.pt`.

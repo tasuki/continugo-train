@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .paths import DEFAULT_MODEL_STORE
+
 BINARIES = ("continugo-train", "features", "arena", "rating")
 
 
@@ -178,7 +180,11 @@ def prepare(root, run, recipe):
     config.update(
         selfplay_binary=str(run / "bin/continugo-train"),
         feature_binary=str(run / "bin/features"),
-        model_store=str(root / "artifacts"),
+        model_store=str(
+            root / "artifacts" / recipe["lineage"]
+            if "lineage" in recipe
+            else state["config"].get("model_store", str(DEFAULT_MODEL_STORE))
+        ),
         warm_start_optimizer="keep",
     )
     config["sizes"] = tuple(config["sizes"])
@@ -238,7 +244,7 @@ def campaign_runner(run, receipt):
                 return
             name = f"{receipt['family']}-r{number:04d}"
             store = Path(self.config.model_store)
-            registry_path = store / "ratings/champions.json"
+            registry_path = store / "champions.json"
 
             def complete():
                 registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}

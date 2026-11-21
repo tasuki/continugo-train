@@ -101,7 +101,7 @@ class ChampionTests(helpers.LoopHarness):
     def test_runtime_upgrade_preserves_champion_history_and_settings(self):
         self.evaluate()
         state = self.saved_state()
-        registry_path = self.store / "ratings/champions.json"
+        registry_path = self.store / "champions.json"
         registry = json.loads(registry_path.read_text())
         before_registry = copy.deepcopy(registry)
         before_state = copy.deepcopy(state)
@@ -232,7 +232,7 @@ class ChampionTests(helpers.LoopHarness):
         calls = len(self.jobs.calls)
         rate_saved.POLICY.update(evaluation_every=5, challenge_every=5)
         state = self.saved_state()
-        registry = json.loads((self.store / "ratings/champions.json").read_text())
+        registry = json.loads((self.store / "champions.json").read_text())
         state["policy"] = dict(rate_saved.POLICY)
         registry["policy"] = dict(rate_saved.POLICY)
         loop.atomic_checkpoint(self.store / "ratings/evaluator.pt", state)
@@ -314,7 +314,7 @@ class ChampionTests(helpers.LoopHarness):
         import csv
 
         self.evaluate()
-        path = self.store / "ratings/networks.csv"
+        path = self.store / "networks.csv"
         with path.open(newline="") as stream:
             rows = list(csv.DictReader(stream))
         # An existing order is durable, even when it differs from lexical order.
@@ -368,11 +368,11 @@ class ChampionTests(helpers.LoopHarness):
         self.assertEqual(len(sgfs), 150)
         self.assertTrue(all(rating_store.GAME_NAME.fullmatch(path.name) for path in sgfs))
         self.assertEqual(len(list((self.store / "sgfs").glob("*/*.nn.html"))), 150)
-        summary = (self.store / "ratings/networks.csv").read_bytes()
+        summary = (self.store / "networks.csv").read_bytes()
         rating_store.refresh(
             self.store, EvaluationConfig.from_config(state["config"]), visualize=False
         )
-        self.assertEqual((self.store / "ratings/networks.csv").read_bytes(), summary)
+        self.assertEqual((self.store / "networks.csv").read_bytes(), summary)
         self.assertFalse((self.store / "ratings/matches.csv").exists())
         self.assertEqual((self.campaign / "loop.pt").read_bytes(), before)
         calls = len(self.jobs.calls)

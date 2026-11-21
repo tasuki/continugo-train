@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import joint_ratings, nn_view, ratings
 from .evaluation import EvaluationConfig
-from .paths import ROOT
+from .paths import DEFAULT_MODEL_STORE
 from .saved_models import saved_sources
 
 COLUMNS = ["network", "rating", "deviation", "games", "wins", "losses", "draws", "truncated"]
@@ -26,7 +26,7 @@ def refresh(store, config, cache=None, *, visualize=True):
     disposable and is not a second authoritative game ledger.
     """
     store = Path(store).resolve()
-    sources = saved_sources(store)
+    sources = saved_sources(store, include_pruned=True)
     by_name = {source["id"]: source for source in sources.values()}
     names = {
         key: {f"neural-{source['network_name']}", f"neural-{key}"}
@@ -35,9 +35,13 @@ def refresh(store, config, cache=None, *, visualize=True):
     names[ratings.REFERENCE_ID] = {ratings.REFERENCE_ID}
     identities = {key: source["id"] for key, source in sources.items()}
     identities[ratings.REFERENCE_ID] = ratings.REFERENCE_ID
-    checkpoints = {key: Path(source["checkpoint"]["path"]) for key, source in sources.items()}
+    checkpoints = {
+        key: Path(source["checkpoint"]["path"])
+        for key, source in sources.items()
+        if not source.get("pruned")
+    }
     settings = ratings.protocol(config)
-    champion_file = store / "ratings/champions.json"
+    champion_file = store / "champions.json"
     registry = json.loads(champion_file.read_text()) if champion_file.exists() else {}
     evaluator_path = store / "ratings/evaluator.pt"
     evaluator = {}
@@ -129,7 +133,7 @@ def refresh(store, config, cache=None, *, visualize=True):
     for name, state in states.items():
         public_name = "random" if name == ratings.REFERENCE_ID else name
         summary[public_name] = {key: state[key] for key in COLUMNS if key != "network"}
-    directory = store / "ratings"
+    directory = store
     directory.mkdir(parents=True, exist_ok=True)
     # Updating old ratings must not reshuffle their rows. New networks follow
     # first evidence order (paired seed order), not lexical family-name order.
@@ -169,7 +173,10 @@ def refresh(store, config, cache=None, *, visualize=True):
                 game = GAME_NAME.fullmatch(path.name)
                 if abandoned(game["black"]) or abandoned(game["white"]):
                     continue  # Preserve partial SGFs, but do no more work on off-cycle rounds.
-                if output.is_file():
+                if output.is_file() or any(
+                    name != "random" and by_name[name].get("pruned")
+                    for name in (game["black"], game["white"])
+                ):
                     continue
                 info = infos.get(relative) or inspect(path)["info"]
                 nn_view.generate_rated(
@@ -192,7 +199,7 @@ def main(argv=None):
     from .train import atomic_checkpoint
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-store", type=Path, default=ROOT / "artifacts")
+    parser.add_argument("--model-store", type=Path, default=DEFAULT_MODEL_STORE)
     args = parser.parse_args(argv)
     store = args.model_store.resolve()
     state_path = store / "ratings/evaluator.pt"

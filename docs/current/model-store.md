@@ -1,13 +1,20 @@
 # Artifact storage
 
 Training owns its checkpoints, training/validation windows and intermediate exports under `runs/`.
-The durable store is **`artifacts/`**, not the former `models/` root.
-For this evaluation, only **cg5** is included; cg1–4 remain outside the active store.
+Each lineage owns a durable store under **`artifacts/<lineage>/`**.
+The existing lineage is `20261111`; its store is the default, defined once as
+`DEFAULT_MODEL_STORE` in `python/continugo_train/paths.py`. Use `--model-store PATH`
+to select another lineage, with independent champions, ratings and SGFs.
+Campaign recipes may select a `lineage`; otherwise they inherit the parent's store.
+Training runs and their checkpoints remain untouched by artifact-store migration.
 
 ```text
-artifacts/
-  models/cg5/r0001/ ... r0100/
-  ratings/
+artifacts/20261111/
+  models/cg5/r0011/ r0080/ ...
+  champions.json
+  networks.csv
+  ratings.png  # generated, gitignored
+  ratings/    # local evaluator state and logs
   sgfs/YYYY-MM-DD/
 ```
 
@@ -57,6 +64,15 @@ mise run save-models -- --loop runs/20261108-154636-schema5-scratch/loop --every
 run games, change champion or publish a model. Minimal saved models do not copy
 training/validation window games; keep the source run for exact recovery.
 
+## Pruned models
+
+Non-champion saved model directories in the existing lineage have been deleted;
+all six historical champions remain. `ratings/pruned-models.json` preserves only
+identity/progress metadata for deleted models, so historical ratings and plots
+remain rebuildable from all SGFs. Deleted models cannot play new matches or
+regenerate neural reports; existing reports remain available. This cleanup does
+not change the normal model-saving cadence or delete training files under `runs/`.
+
 ## Ratings and SGFs
 
 The [shared evaluator](evaluation.md) uses `ratings/evaluator.pt` and retains
@@ -64,7 +80,15 @@ The [shared evaluator](evaluation.md) uses `ratings/evaluator.pt` and retains
 `champions.json` records the automatic champion lineage. SGFs are the authoritative
 game records; there is **no `matches.csv`**. Each game and its `.nn.html` report live
 once under `sgfs/YYYY-MM-DD/`, named Black-vs-White with the shared pair seed.
-Refreshing `ratings/ratings.png` never removes dated plots.
+The lineage-root `ratings.png` is generated and gitignored. Refreshing it never
+removes dated plots.
+
+`mise run plot-ratings` generates the gitignored **`artifacts/ratings.png`** overview:
+only historical champions, connected in promotion order, with one colour per
+lineage. It reads portable model metadata and rating summaries, not checkpoints
+or training runs. New, random-only lineages are omitted until their first promotion.
+Rating refreshes also update this overview. Use `--model-store PATH` to plot all
+evaluated rounds within a single store instead.
 
 ## Approval operation
 

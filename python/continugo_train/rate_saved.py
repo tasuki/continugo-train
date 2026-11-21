@@ -13,7 +13,7 @@ import torch
 from . import archive, gate, plot_ratings, rating_store, ratings, timing
 from .evaluation import EvaluationConfig, EvaluationRunner
 from .loop import atomic_bytes
-from .paths import ROOT, utc_now
+from .paths import DEFAULT_MODEL_STORE, utc_now
 from .saved_models import saved_sources
 from .train import atomic_checkpoint, feature_spec
 
@@ -55,7 +55,7 @@ def champion_lock(store):
 
 
 def load_champions(store):
-    path = store / "ratings/champions.json"
+    path = store / "champions.json"
     if path.is_symlink():
         raise ValueError("champion registry cannot be a symlink")
     if path.exists():
@@ -91,7 +91,7 @@ def compact_champions(registry):
 
 def save_champions(store, registry):
     compact_champions(registry)
-    path = store / "ratings/champions.json"
+    path = store / "champions.json"
     atomic_bytes(path, (json.dumps(registry, indent=2) + "\n").encode())
     with path.open("rb") as stream:
         os.fsync(stream.fileno())
@@ -504,7 +504,7 @@ def include_family(runner, registry, family, cadence=None):
 
 
 def run(args):
-    store = (args.model_store or ROOT / "artifacts").resolve()
+    store = (args.model_store or DEFAULT_MODEL_STORE).resolve()
     archive.initialize_store(store)
     with champion_lock(store) as lock:
         path = store / "ratings/evaluator.pt"
@@ -540,7 +540,9 @@ def run(args):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-store", type=Path, help="artifact root (default artifacts/)")
+    parser.add_argument(
+        "--model-store", type=Path, help=f"lineage artifact root (default {DEFAULT_MODEL_STORE})"
+    )
     parser.add_argument("--family", help="model family to evaluate (default cg5)")
     parser.add_argument(
         "--simulations", type=int, help="fixed simulations per neural move (default 128)"

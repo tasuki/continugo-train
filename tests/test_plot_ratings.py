@@ -77,8 +77,7 @@ class PlotRatingsTests(unittest.TestCase):
         self.assertEqual(before, path.read_bytes())
 
     def test_artifact_axis_uses_d_not_games_or_samples_and_omits_unknown(self):
-        path = self.root / "ratings/networks.csv"
-        path.parent.mkdir()
+        path = self.root / "networks.csv"
         path.write_text(
             "network,rating,deviation,games\n"
             "random,100,0,20\nnew-r0005,150,30,10\nlegacy-r0005,120,40,10\n"
@@ -103,7 +102,7 @@ class PlotRatingsTests(unittest.TestCase):
         self.table()
         checksum = next((self.root / "training").iterdir()).name
         uncertain = "c" * 64
-        (self.root / "ratings/champions.json").write_text(
+        (self.root / "champions.json").write_text(
             json.dumps(
                 {
                     "cohorts": {
@@ -232,7 +231,7 @@ class PlotRatingsTests(unittest.TestCase):
         self.assertEqual(main(["--model-store", str(self.root), "--output", str(output)]), 0)
         self.assertEqual(main(["--model-store", str(self.root / "missing")]), 1)
         plot_ratings.update(self.root)
-        self.assertTrue((self.root / "ratings/ratings.png").is_file())
+        self.assertTrue((self.root / "ratings.png").is_file())
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib not installed")
     def test_plot_accepts_networks_below_100_games(self):

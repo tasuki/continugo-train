@@ -76,7 +76,7 @@ class MilestoneTests(helpers.LoopHarness):
         state = self.run_loop(output, extra=["--iterations", "10", "--save-model-every", "1"])
         store = Path(state["config"]["model_store"])
         self.assertTrue((store / "models/test1/r0010/metadata.json").is_file())
-        self.assertFalse((store / "ratings/ratings.png").exists())
+        self.assertFalse((store / "ratings.png").exists())
         self.assertFalse(any("--candidate" in c for c in self.jobs.calls))
         for name in ["gate", "reference", "adaptive-ratings"]:
             self.assertFalse(list(output.rglob(name)))

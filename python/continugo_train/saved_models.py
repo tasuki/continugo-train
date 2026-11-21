@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 from . import archive
-from .paths import ROOT
+from .paths import DEFAULT_MODEL_STORE, ROOT
 from .progress import checkpoint_progress, network_name
 from .train import checkpoint_splits
 
@@ -141,8 +141,11 @@ def source_loop(store, run):
     return None
 
 
-def saved_sources(store):
+def saved_sources(store, *, include_pruned=False):
     result, contexts = {}, {}
+    catalog = Path(store) / "ratings/pruned-models.json"
+    if include_pruned and catalog.is_file():
+        result.update(json.loads(catalog.read_text()))
     for path in sorted(Path(store).glob("models/*/r*/metadata.json")):
         metadata = verify(path.parent)
         records = {
@@ -199,7 +202,7 @@ def main(argv=None):
     source.add_argument("--runs", type=Path)
     parser.add_argument("--every", type=int, default=1)
     parser.add_argument("--iteration", type=int)
-    parser.add_argument("--model-store", type=Path, default=ROOT / "artifacts")
+    parser.add_argument("--model-store", type=Path, default=DEFAULT_MODEL_STORE)
     args = parser.parse_args(argv)
     if args.iteration is not None and args.loop is None:
         parser.error("--iteration requires --loop")
