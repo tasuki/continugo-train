@@ -1,0 +1,14 @@
+{
+  "family": "cg5",
+  "round": 80,
+  "network_name": "cg5-b4c32-s650000-d212170",
+  "progress": {
+    "training_games": 2999,
+    "samples_seen": 650000,
+    "data_positions": 212170
+  },
+  "source": {
+    "run": "20261108-154636-schema5-scratch",
+    "iteration": 80
+  }
+}

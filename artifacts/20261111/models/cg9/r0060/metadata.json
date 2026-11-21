@@ -1,0 +1,14 @@
+{
+  "family": "cg9",
+  "round": 60,
+  "network_name": "cg9-b4c32-s10015148-d895144",
+  "progress": {
+    "training_games": 10125,
+    "samples_seen": 10015148,
+    "data_positions": 895144
+  },
+  "source": {
+    "run": "20261114-cg9-geometry",
+    "iteration": 60
+  }
+}

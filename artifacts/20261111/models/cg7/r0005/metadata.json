@@ -1,0 +1,14 @@
+{
+  "family": "cg7",
+  "round": 5,
+  "network_name": "cg7-b4c32-s1386999-d356735",
+  "progress": {
+    "training_games": 4236,
+    "samples_seen": 1386999,
+    "data_positions": 356735
+  },
+  "source": {
+    "run": "20261112-132700-cg7-d4",
+    "iteration": 5
+  }
+}

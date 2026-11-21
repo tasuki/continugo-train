@@ -1,0 +1,49 @@
+{
+  "policy": {
+    "evaluation_every": 5,
+    "challenge_every": 5,
+    "screen_games": 10,
+    "screen_wins": 7,
+    "extension_games": 30,
+    "total_wins": 28,
+    "reference_games": 10,
+    "history_opponents": 2,
+    "history_games": 10
+  },
+  "champion": "cg10-r0070",
+  "history": [
+    {
+      "model": "random"
+    },
+    {
+      "model": "cg5-r0011",
+      "opponent": "random",
+      "recorded_at": "2026-11-11T02:05:01.239465+00:00"
+    },
+    {
+      "model": "cg5-r0080",
+      "opponent": "cg5-r0011",
+      "recorded_at": "2026-11-11T11:12:16.083375+00:00"
+    },
+    {
+      "model": "cg7-r0005",
+      "opponent": "cg5-r0080",
+      "recorded_at": "2026-11-12T23:31:18.698085+00:00"
+    },
+    {
+      "model": "cg9-r0010",
+      "opponent": "cg7-r0005",
+      "recorded_at": "2026-11-14T22:59:29.718526+00:00"
+    },
+    {
+      "model": "cg9-r0060",
+      "opponent": "cg9-r0010",
+      "recorded_at": "2026-11-17T02:33:03.320570+00:00"
+    },
+    {
+      "model": "cg10-r0070",
+      "opponent": "cg9-r0060",
+      "recorded_at": "2026-11-21T01:37:00.091825+00:00"
+    }
+  ]
+}
