@@ -24,7 +24,7 @@ from continugo_train.losses import joint_loss
 from continugo_train.model import NetworkConfig, PolicyValueNet, cell_actions, cell_ids
 
 # Escaped SGF comments, native coordinates, and a checked one-stone area result.
-SGF = r"""(;FF[9071]GM[9071]SZ[13]RE[B+220.4]
+SGF = r"""(;FF[9071]GM[9071]SZ[13]RE[B+169.0]
 ;B[dSdS]C[{"policy":[["dSdS",7\],["",1\]\]}]
 ;W[]C[{"policy":[["",3\]\]}]
 ;B[]
@@ -202,9 +202,9 @@ class RealFeatureTests(unittest.TestCase):
         sample = self.load(actions=[500500])
         with self.assertRaisesRegex(ValueError, "omits positive"):
             sample.policy_targets()
-        self.sgf.write_text(SGF.replace("RE[B+220.4]", "").split(";W[]")[0] + ")")
+        self.sgf.write_text(SGF.replace("RE[B+169.0]", "").split(";W[]")[0] + ")")
         self.assertIsNone(self.load(actions=[200200]).outcome)
-        self.sgf.write_text(SGF.replace("B+220.4", "W+1.0"))
+        self.sgf.write_text(SGF.replace("B+169.0", "W+1.0"))
         with self.assertRaisesRegex(ValueError, "disagrees"):
             self.load(actions=[200200])
         self.sgf.write_text(SGF)
@@ -289,26 +289,27 @@ class RealFeatureTests(unittest.TestCase):
         packet = result.stdout
         self.assertEqual(HEADER.size, 68)
         mutations = [packet[:16], packet[:-1], packet + b"x", b"BADMAGIC" + packet[8:]]
+        feature_offset = HEADER.size + 4  # Schema 7's komi scalar precedes the planes.
         nonfinite = bytearray(packet)
-        struct.pack_into("<f", nonfinite, HEADER.size, float("nan"))
+        struct.pack_into("<f", nonfinite, feature_offset, float("nan"))
         mutations.append(bytes(nonfinite))
         invalid_flag = bytearray(packet)
         resolution = struct.unpack_from("<I", packet, 28)[0]
-        struct.pack_into("<f", invalid_flag, HEADER.size, -0.5)
+        struct.pack_into("<f", invalid_flag, feature_offset, -0.5)
         mutations.append(bytes(invalid_flag))
         for value in (-1.0, 2.0, float("nan"), float("inf")):
             flag = bytearray(packet)
-            struct.pack_into("<f", flag, HEADER.size, value)
+            struct.pack_into("<f", flag, feature_offset, value)
             mutations.append(bytes(flag))
         illegal_byte = bytearray(packet)
         struct.pack_into(
             "B",
             illegal_byte,
-            HEADER.size + len(COARSE_PLANES) * resolution**2 * 4 + len(MOVE_FEATURES) * 4,
+            feature_offset + len(COARSE_PLANES) * resolution**2 * 4 + len(MOVE_FEATURES) * 4,
             255,
         )
         mutations.append(bytes(illegal_byte))
-        splitting_offset = HEADER.size + len(COARSE_PLANES) * resolution**2 * 4 + 4 * 4
+        splitting_offset = feature_offset + len(COARSE_PLANES) * resolution**2 * 4 + 4 * 4
         for value in (-1.0, 0.5, 2.0, 3.0, float("nan"), float("inf")):
             bad_split = bytearray(packet)
             struct.pack_into("<f", bad_split, splitting_offset, value)

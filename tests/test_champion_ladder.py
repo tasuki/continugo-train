@@ -42,13 +42,13 @@ class ScriptedArena(ArenaJobs):
         finally:
             for path in output.glob("game-*.sgf"):
                 text = path.read_text()
-                if "RE[B+220.4]" not in text:
+                if "RE[B+169.0]" not in text:
                     continue
                 ordinal = int(path.name.split("-")[1]) - 1
                 candidate_black = "candidate-black" in path.name
                 black_wins = candidate_black == (ordinal < self.wins[kind])
                 header = text.split(";B[", 1)[0].replace(
-                    "RE[B+220.4]", "RE[B+220.4]" if black_wins else "RE[W+220.4]"
+                    "RE[B+169.0]", "RE[B+169.0]" if black_wins else "RE[W+169.0]"
                 )
                 moves = (
                     [("B", "dSdS"), ("W", ""), ("B", "")]

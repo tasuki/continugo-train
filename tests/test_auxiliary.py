@@ -59,7 +59,7 @@ class AuxiliaryTests(unittest.TestCase):
                 self.assertAlmostEqual(
                     (sample.ownership * ownership_weights(54)).sum().item(), sample.score
                 )
-        self.path.write_text(SGF.replace("RE[B+220.4]", ""))
+        self.path.write_text(SGF.replace("RE[B+169.0]", ""))
         with FeatureClient() as client:
             unknown = client.load(self.path, 0)
             self.assertIsNone(unknown.score)

@@ -110,7 +110,13 @@ class NnViewerTests(unittest.TestCase):
         self.assertIn("document.execCommand('copy')", text)
         self.assertIn('id="sgfcopy"', text)
         self.assertEqual(data["frames"][1]["view"]["stones"], [[200, 200, 0]])
-        self.assertEqual(data["frames"][1]["globals"], [{"name": "coarse_width_div100", "value": float(torch.tensor(0.54))}])
+        self.assertEqual(
+            data["frames"][1]["globals"],
+            [
+                {"name": "coarse_width_div100", "value": float(torch.tensor(0.54))},
+                {"name": "komi_self_div_board_area", "value": 0.0},
+            ],
+        )
         self.assertIn("Global scalar inputs", text)
         self.assertEqual(data["frames"][0]["view"]["action"], 200200)
         self.assertEqual(data["frames"][1]["coarse"][8]["high"], 1)
@@ -187,7 +193,7 @@ class NnViewerTests(unittest.TestCase):
         self.assertLessEqual(sum(row["p"] for row in f["candidates"]), 1.00001)
 
     def test_truncation_has_no_fabricated_labels_or_ownership_target(self):
-        self.sgf.write_text(SGF.replace("RE[B+220.4]", "").split(";W[]")[0] + ")")
+        self.sgf.write_text(SGF.replace("RE[B+169.0]", "").split(";W[]")[0] + ")")
         output = self.root / "truncated.html"
         generate(self.sgf, self.checkpoint, output)
         _, data = report_data(output)

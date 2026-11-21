@@ -91,12 +91,12 @@ class FakeJobs:
                         {"policy": [[coordinate, count]], "train_policy": enabled}
                     ).replace("]", "\\]")
                     nodes.append(f";{color}[{coordinate}]C[{comment}]")
-                text = "(;FF[9071]GM[9071]SZ[13]RE[B+220.4]" + "".join(nodes) + ")"
+                text = "(;FF[9071]GM[9071]SZ[13]RE[B+169.0]" + "".join(nodes) + ")"
             if self.fault == "wrong_model":
                 root["model"] = "0" * 64
             text = text.replace("SZ[13]", "SZ[13]C[" + json.dumps(root) + "]")
             if self.fault == "unlabeled":
-                text = text.replace("RE[B+220.4]", "")
+                text = text.replace("RE[B+169.0]", "")
                 text = text[: text.rindex(";B[]")] + ")"
             path = output / f"game-{index + 1:06d}-size{size}-seed{seed + index}.sgf"
             if self.fault == "partial_selfplay" and index == 1:

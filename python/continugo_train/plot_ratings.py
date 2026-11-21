@@ -173,6 +173,10 @@ def collect_points(model_store):
             if source and source.get("checkpoint_sha256") != row["network_id"]:
                 raise ValueError("inference source identity mismatch")
             positions = 0 if reference else source.get("progress", {}).get("data_positions")
+            if positions is None and row.get("data_positions", "") != "":
+                # Registration preserves lineage counters even after run-owned
+                # checkpoints disappear; plotting must not require those files.
+                positions = int(row["data_positions"])
             if positions is None:
                 positions = data_positions(model_store, row["network_id"])
             if positions is None:

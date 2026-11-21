@@ -13,7 +13,6 @@ import torch
 from . import archive, gate, plot_ratings, rating_store, ratings, timing
 from .evaluation import EvaluationConfig, EvaluationRunner
 from .loop import atomic_bytes
-from .model import NetworkConfig, validate_feature_config
 from .paths import ROOT, utc_now
 from .saved_models import saved_sources
 from .train import atomic_checkpoint, feature_spec
@@ -367,17 +366,23 @@ def evaluate(runner, registry):
 
 
 def validate_evaluation_model(saved, reference_spec):
-    """Each model owns its schema and score contract; match policy/density must agree."""
+    """Check the evaluation interface, not the model's private architecture.
+
+    Matches use exported encoder/policy graphs, not the current Python network
+    class. Older checkpoints may have different heads and config fields.
+    """
     spec = saved["feature_spec"]
     expected = feature_spec(spec["samples_per_diameter"], schema=spec["schema"])
-    config = NetworkConfig.from_checkpoint(saved["config"])
-    if spec != expected or (
-        config.input_planes != len(spec["coarse"])
-        or config.move_features != len(spec["moves"])
-        or config.global_inputs != len(spec.get("globals", []))
+    config = saved["config"]
+    # Head/trunk contracts belong to the exported model, not the match interface.
+    private = {"trunk", "value"}
+    interface = lambda value: {k: v for k, v in value.items() if k not in private}
+    if interface(spec) != interface(expected) or (
+        config["input_planes"] != len(spec["coarse"])
+        or config["move_features"] != len(spec["moves"])
+        or config.get("global_inputs", 0) != len(spec.get("globals", []))
     ):
         raise ValueError("incompatible feature semantics/architecture")
-    validate_feature_config(config, spec)
     if any(
         spec[key] != reference_spec[key] for key in ("policy", "samples_per_diameter")
     ):

@@ -38,7 +38,7 @@ class OfflineDataTests(unittest.TestCase):
 
     def test_game_holdout_deduplicates_moves_ignores_unlabeled_and_no_policy(self):
         (self.root / "copy.sgf").write_text(SGF.replace("SZ[13]", "SZ[13]PB[copy]"))
-        (self.root / "unlabeled.sgf").write_text(SGF.replace("RE[B+220.4]", ""))
+        (self.root / "unlabeled.sgf").write_text(SGF.replace("RE[B+169.0]", ""))
         (self.root / "random.sgf").write_text("(;FF[9071]GM[9071]SZ[13]RE[0];B[];W[])")
         corpus = data.scan_corpus([str(self.root)], 4, 7, 0.25)
         self.assertEqual(len(corpus.train) + len(corpus.validation), 4)

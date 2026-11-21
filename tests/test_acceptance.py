@@ -71,7 +71,7 @@ class ArenaJobs(helpers.FakeJobs):
                 comment = f'C[{{"policy":[["",{count}\\]\\]}}]'
                 text = f"(;FF[9071]GM[9071]{header}RE[0];B[]{comment};W[]{comment})"
             elif self.arena_mode == "truncate":
-                text = text.replace("RE[B+220.4]", "")
+                text = text.replace("RE[B+169.0]", "")
                 text = text[: text.index(";W[]")] + ")"
             path = Path(value("output")) / gate.filename(ordinal, size, seed, candidate_black)
             if self.arena_mode == "partial" and index == 1:
@@ -125,7 +125,7 @@ class ArenaJobs(helpers.FakeJobs):
                 text = f"(;FF[9071]GM[9071]{header}" + node("B", "dSdS") + ")"
             else:
                 text = (
-                    f"(;FF[9071]GM[9071]{header}RE[B+220.4]"
+                    f"(;FF[9071]GM[9071]{header}RE[B+169.0]"
                     + node("B", "dSdS")
                     + node("W", "")
                     + node("B", "")

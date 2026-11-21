@@ -304,7 +304,7 @@ class NativeInferenceTests(unittest.TestCase):
         self.assertLess(self.error, 1e-5)
         for size in [9, 13, 19]:
             source = self.root / f"size-{size}.sgf"
-            source.write_text(SGF.replace("SZ[13]", f"SZ[{size}]").replace("RE[B+220.4]", ""))
+            source.write_text(SGF.replace("SZ[13]", f"SZ[{size}]").replace("RE[B+169.0]", ""))
             geometry = load_position(source, 1, actions=[500500])
             preview = self.infer(source, [1000000], extra=["--complete-cells"])
             self.assertEqual(preview.returncode, 0, preview.stderr)
@@ -492,7 +492,7 @@ class NativeInferenceTests(unittest.TestCase):
 
     def test_pass_mass_does_not_depend_on_cell_budget_and_all_illegal_falls_back(self):
         source = self.root / "pass-mass.sgf"
-        source.write_text(SGF.replace("SZ[13]", "SZ[9]").replace("RE[B+220.4]", ""))
+        source.write_text(SGF.replace("SZ[13]", "SZ[9]").replace("RE[B+169.0]", ""))
         for top, exploration in [(1, 1), (32, 8)]:
             model = PolicyValueNet(
                 NetworkConfig(
@@ -583,7 +583,7 @@ class NativeInferenceTests(unittest.TestCase):
         # Add a legal next node so replay can expose the last post-move position.
         continued = self.root / f"annotation-check-{device}.sgf"
         continued.write_text(source.read_text().rstrip().removesuffix(")") + ";B[])")
-        stone_area = np.pi * (sample.diameter / 2) ** 2
+        board_points = sample.board_size ** 2
         for ply, comment in enumerate(comments, 1):
             annotation = json.loads(comment.replace("\\]", "]").replace("\\\\", "\\"))
             self.assertEqual(list(annotation)[:3], ["win_pct", "score", "policy"])
@@ -610,7 +610,7 @@ class NativeInferenceTests(unittest.TestCase):
             estimate = json.loads(estimate.stdout)
             self.assertAlmostEqual(annotation["win_pct"], 50 * (1 - estimate["value"]), delta=0.051)
             self.assertAlmostEqual(
-                annotation["score"], -estimate["score"] * 1_000_000 / stone_area, delta=0.051
+                annotation["score"], -estimate["score"] * board_points, delta=0.051
             )
         saved = torch.load(self.checkpoint, weights_only=True)
         from continugo_train.progress import network_name
@@ -760,7 +760,7 @@ class NativeInferenceTests(unittest.TestCase):
         library, environment = inference_environment("cuda", gpu_library())
         for size in [9, 13, 19]:
             source = self.root / f"cuda-{size}.sgf"
-            source.write_text(SGF.replace("SZ[13]", f"SZ[{size}]").replace("RE[B+220.4]", ""))
+            source.write_text(SGF.replace("SZ[13]", f"SZ[{size}]").replace("RE[B+169.0]", ""))
             profile = self.root / f"profile-{size}"
             profile.mkdir()
             env = dict(environment, CONTINUGO_ORT_PROFILE=str(profile))

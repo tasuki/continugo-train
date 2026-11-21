@@ -96,6 +96,36 @@ class SchemaCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "density"):
                 validate_evaluation_model(saved, feature_spec(8))
 
+    def test_legacy_score_head_config_does_not_require_current_network_class(self):
+        spec = feature_spec(4, schema=6)
+        spec.pop("trunk")
+        spec.pop("value")
+        # cg10's exported graphs own this older, separate score-head architecture.
+        saved = {
+            "feature_spec": spec,
+            "config": {
+                "input_planes": len(spec["coarse"]),
+                "move_features": len(spec["moves"]),
+                "channels": 64,
+                "blocks": 8,
+                "policy_hidden": 16,
+                "value_hidden": 32,
+                "score_hidden": 32,
+                "ownership_hidden": 16,
+                "chunk_size": 65536,
+                "top_cells": 32,
+                "exploration_cells": 8,
+                "value_activation": "leaky_relu",
+            },
+        }
+        validate_evaluation_model(saved, feature_spec(4, schema=7))
+        broken = copy.deepcopy(saved)
+        broken["config"]["input_planes"] += 1
+        with self.assertRaisesRegex(ValueError, "architecture"):
+            validate_evaluation_model(broken, spec)
+        with self.assertRaisesRegex(ValueError, "density"):
+            validate_evaluation_model(saved, feature_spec(8))
+
     @unittest.skipUnless(
         importlib.util.find_spec("onnxruntime") and importlib.util.find_spec("onnx"),
         "install inference extra",
