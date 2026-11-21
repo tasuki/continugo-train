@@ -131,11 +131,15 @@ def save_campaign(root, every=1, *, store=None, iteration=None):
 
 def source_loop(store, run):
     """Locate training provenance without putting machine-specific paths in metadata."""
-    for path in [
-        ROOT / "runs" / run / "loop",
-        Path(store).parent / run,
-        Path(store).parent / run / "loop",
-    ]:
+    store = Path(store).resolve()
+    paths = [ROOT / "runs" / run / "loop", store.parent / run, store.parent / run / "loop"]
+    # Frozen packages have a campaign-local ROOT, not the repository root.
+    # Resolve standard artifact layouts from the store before legacy fallbacks.
+    if store.parent.name == "artifacts":
+        paths.insert(0, store.parent.parent / "runs" / run / "loop")
+    elif store.name == "artifacts":
+        paths.insert(0, store.parent / "runs" / run / "loop")
+    for path in paths:
         if (path / "loop.pt").is_file():
             return path.resolve()
     return None
