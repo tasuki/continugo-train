@@ -96,6 +96,97 @@ class CampaignTests(unittest.TestCase):
                 runner.save_milestone({"number": 5})
                 execute.assert_not_called()
 
+    def test_fresh_preparation_uses_defaults_and_commits_independent_checkpoint(self):
+        from dataclasses import asdict
+
+        from continugo_train.model import NetworkConfig
+        from continugo_train.train import Options, feature_spec
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "runs/fresh"
+            run.mkdir(parents=True)
+            recipe = {"fresh": True, "family": "cg11", "lineage": "new",
+                      "bootstrap": {"games": 2, "rollouts": 1}, "rating_every": 5}
+            campaign.dump(run / "runtime.json", {"hashes": {}})
+            saved = {
+                "initialization": {"mode": "fresh"}, "progress": {"family": "cg11"},
+                "feature_spec": feature_spec(Options().samples_per_diameter),
+                "options": asdict(Options()), "config": asdict(NetworkConfig()),
+                "model": {"weight": torch.tensor([1.0])},
+                "metrics": {"train": {"loss": 1.0}, "validation": {"loss": 1.0}},
+            }
+            commands = []
+
+            def execute(command, logfile, lock_fd, environment):
+                commands.append(command)
+                self.assertEqual(lock_fd, 123)
+                if "--engine" in command:
+                    (run / "bootstrap").mkdir()
+                    campaign.dump(run / "bootstrap-stats.json", {"completed": 2})
+                else:
+                    (run / "initial-training").mkdir()
+                    (run / "initial-training/latest.pt").write_bytes(b"fresh")
+
+            with (
+                patch.object(loop, "run_process", side_effect=execute),
+                patch("continugo_train.data.inspect_corpus", return_value=(
+                    [object(), object()], {"unlabeled": 0, "no_policy": 0, "duplicate_game": 0}
+                )),
+                patch.object(torch, "load", return_value=saved),
+            ):
+                receipt = campaign.prepare(root, run, recipe, 123)
+                self.assertTrue(receipt["fresh"])
+                self.assertIsNone(receipt["source_checkpoint"])
+                self.assertEqual(receipt["inherited_corpus"], [])
+                self.assertEqual(receipt["config"]["model_store"], str(root / "artifacts/new"))
+                self.assertEqual(receipt["config"]["games_per_iteration"], loop.LoopConfig().games_per_iteration)
+                self.assertEqual(len(commands), 2)
+                for flag in ("--epochs", "--batch-size", "--channels", "--warm-start", "--resume"):
+                    self.assertNotIn(flag, commands[1])
+                # Committed preparation no longer launches generation/training, even
+                # after the loop has initialized the formerly empty lineage store.
+                (root / "artifacts/new").mkdir(parents=True)
+                self.assertEqual(campaign.prepare(root, run, recipe, 123), receipt)
+                self.assertEqual(len(commands), 2)
+
+    def test_fresh_preparation_rejects_existing_store_or_partial_bootstrap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "runs/fresh"
+            run.mkdir(parents=True)
+            store = root / "artifacts/new"
+            store.mkdir(parents=True)
+            recipe = {"fresh": True, "family": "cg11", "lineage": "new"}
+            campaign.dump(run / "runtime.json", {"hashes": {}})
+            with patch.object(loop, "run_process") as execute:
+                with self.assertRaisesRegex(ValueError, "store already exists"):
+                    campaign.prepare(root, run, recipe)
+                store.rmdir()
+                (run / "bootstrap").mkdir()
+                with self.assertRaisesRegex(ValueError, "Partial bootstrap"):
+                    campaign.prepare(root, run, recipe)
+                execute.assert_not_called()
+
+    def test_first_lineage_evaluation_initializes_then_resumes(self):
+        from continugo_train.rate_saved import parse_args
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Path(directory)
+            first = parse_args(campaign.rating_arguments(store, "cg11", 5))
+            self.assertFalse(first.resume)
+            self.assertEqual(first.family, "cg11")
+            self.assertEqual(first.include_family, "cg11")
+            self.assertEqual(first.family_evaluation_every, 5)
+            self.assertEqual(first.model_store, store)
+            (store / "ratings").mkdir()
+            (store / "ratings/evaluator.pt").touch()
+            resumed = parse_args(campaign.rating_arguments(store, "cg11", 5))
+            self.assertTrue(resumed.resume)
+            self.assertIsNone(resumed.family)
+            self.assertEqual(resumed.include_family, "cg11")
+            self.assertEqual(resumed.family_evaluation_every, 5)
+
     def test_frozen_environment_resolves_viewer_outside_campaign(self):
         root = Path("/project/continugo-train")
         run = root / "runs/test"

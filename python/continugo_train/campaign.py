@@ -101,7 +101,96 @@ def seed_cache(record, binary, density):
     return str(destination.resolve())
 
 
-def prepare(root, run, recipe):
+def prepare_fresh(root, run, recipe, hashes, lock_fd):
+    """Create a default checkpoint from newly generated MCTS games, never ancestors."""
+    import math
+    from dataclasses import asdict
+
+    import torch
+
+    from . import loop
+    from .data import inspect_corpus
+    from .model import NetworkConfig
+    from .train import Options, feature_spec
+
+    store = root / "artifacts" / recipe["lineage"]
+    if store.exists():
+        raise ValueError("Fresh lineage store already exists; inspect or discard this attempt")
+    config = loop.LoopConfig(
+        selfplay_binary=str(run / "bin/continugo-train"),
+        feature_binary=str(run / "bin/features"),
+        model_store=str(store),
+    )
+    config.validate()
+
+    def execute(command, name):
+        verify_files(run, hashes)
+        print(f"Fresh campaign {name}: {command}", flush=True)
+        loop.run_process(command, run / f"{name}.log", lock_fd, dict(os.environ))
+
+    bootstrap = run / "bootstrap"
+    bootstrap_receipt = run / "bootstrap-complete.json"
+    if not bootstrap_receipt.exists():
+        if bootstrap.exists():
+            raise ValueError("Partial bootstrap exists; inspect or discard this attempt")
+        settings = recipe["bootstrap"]
+        if settings["games"] < 2 or settings["rollouts"] < 1:
+            raise ValueError("Fresh bootstrap needs multiple games and completed-rollout evaluation")
+        execute([
+            str(run / "bin/continugo-train"), "--engine", "mcts",
+            "--games", str(settings["games"]), "--rollouts", str(settings["rollouts"]),
+            "--output", str(bootstrap), "--stats-json", str(run / "bootstrap-stats.json"),
+        ], "bootstrap")
+        stats = json.loads((run / "bootstrap-stats.json").read_text())
+        if stats["completed"] != settings["games"]:
+            raise ValueError("Bootstrap contains unfinished games")
+        records, skipped = inspect_corpus(
+            [str(bootstrap)], Options().samples_per_diameter, config.feature_binary
+        )
+        if len(records) < 2 or skipped["unlabeled"] or skipped["no_policy"]:
+            raise ValueError(f"Bootstrap lacks usable labeled games: {skipped}")
+        dump(bootstrap_receipt, {"stats": stats, "eligible_games": len(records), "skipped": skipped})
+
+    checkpoint = run / "initial-training/latest.pt"
+    training_receipt = run / "initial-training-complete.json"
+    if not training_receipt.exists():
+        if checkpoint.parent.exists():
+            raise ValueError("Uncommitted initial training exists; inspect or discard this attempt")
+        execute([
+            sys.executable, "-m", "continugo_train.train", "--data", str(bootstrap),
+            "--output", str(checkpoint.parent), "--network-family", recipe["family"],
+            "--feature-binary", config.feature_binary,
+        ], "initial-training")
+        dump(training_receipt, {"checkpoint_sha256": sha(checkpoint)})
+    if sha(checkpoint) != json.loads(training_receipt.read_text())["checkpoint_sha256"]:
+        raise ValueError("Fresh initial checkpoint changed")
+    saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    if (
+        saved["initialization"] != {"mode": "fresh"}
+        or saved["progress"]["family"] != recipe["family"]
+        or saved["feature_spec"] != feature_spec(Options().samples_per_diameter)
+        or saved["options"] != asdict(Options())
+        or saved["config"] != asdict(NetworkConfig())
+    ):
+        raise ValueError("Fresh initialization does not match current defaults")
+    if not all(torch.isfinite(tensor).all() for tensor in saved["model"].values()) or not all(
+        math.isfinite(saved["metrics"][phase]["loss"]) for phase in ("train", "validation")
+    ):
+        raise ValueError("Nonfinite initial training state")
+    receipt = {
+        "family": recipe["family"], "fresh": True,
+        "source_checkpoint": None, "inherited_corpus": [],
+        "boundary_checkpoint": str(checkpoint.relative_to(run)),
+        "boundary_checkpoint_sha256": sha(checkpoint),
+        "bootstrap_data": str(bootstrap), "config": dict(asdict(config), sizes=list(config.sizes)),
+        "runtime_hashes": hashes, "rating_every": recipe["rating_every"],
+        "automatic_publication": False,
+    }
+    dump(run / "launch.json", receipt)
+    return receipt
+
+
+def prepare(root, run, recipe, lock_fd=None):
     import torch
 
     from . import loop
@@ -113,9 +202,11 @@ def prepare(root, run, recipe):
     launch = run / "launch.json"
     if launch.exists():
         receipt = json.loads(launch.read_text())
-        if sha(run / "parent.pt") != receipt["boundary_checkpoint_sha256"]:
+        if sha(run / receipt.get("boundary_checkpoint", "parent.pt")) != receipt["boundary_checkpoint_sha256"]:
             raise ValueError("Campaign boundary checkpoint changed")
         return receipt
+    if recipe.get("fresh"):
+        return prepare_fresh(root, run, recipe, hashes, lock_fd)
     source = root / recipe["source_loop"]
     state = torch.load(source / "loop.pt", map_location="cpu", weights_only=True)
     iteration = state["iterations"][recipe["source_round"] - 1]
@@ -211,6 +302,18 @@ def prepare(root, run, recipe):
     return receipt
 
 
+def rating_arguments(store, family, every):
+    """Initialize a new lineage evaluator; resume only after its state exists."""
+    store = Path(store)
+    mode = ["--resume"] if (store / "ratings/evaluator.pt").is_file() else ["--family", family]
+    return [
+        *mode,
+        "--model-store", str(store),
+        "--include-family", family,
+        "--family-evaluation-every", str(every),
+    ]
+
+
 def campaign_runner(run, receipt):
     """Shared window ordering/cache propagation and optional boundary ratings."""
     from . import loop, plot_timing, timing
@@ -260,13 +363,7 @@ def campaign_runner(run, receipt):
                             sys.executable,
                             "-m",
                             "continugo_train.rate_saved",
-                            "--resume",
-                            "--model-store",
-                            str(store),
-                            "--include-family",
-                            receipt["family"],
-                            "--family-evaluation-every",
-                            str(every),
+                            *rating_arguments(store, receipt["family"], every),
                         ],
                         self.path(f"iteration-{number:04d}/ratings.log"),
                         dict(os.environ, **{timing.ENVIRONMENT: str(journal)}),
@@ -336,7 +433,10 @@ def main(argv=None):
                 from . import loop
 
                 status("preparing")
-                receipt = prepare(root, run, recipe)
+                if args.prepare_only and recipe.get("fresh"):
+                    status("runtime-prepared")
+                    return
+                receipt = prepare(root, run, recipe, lock.fileno())
                 if args.prepare_only:
                     status("prepared")
                     return
@@ -351,9 +451,9 @@ def main(argv=None):
                     else:
                         command += [
                             "--checkpoint",
-                            str(run / "parent.pt"),
+                            str(run / receipt.get("boundary_checkpoint", "parent.pt")),
                             "--bootstrap-data",
-                            str(run / "seed-data"),
+                            receipt.get("bootstrap_data", str(run / "seed-data")),
                         ]
                         for key, value in receipt["config"].items():
                             if value is not None:

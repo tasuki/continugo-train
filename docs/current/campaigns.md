@@ -30,7 +30,40 @@ that bundle with `mise run //frontend:build-viewer` in `../continugo`, or set
 `CONTINUGO_VIEWER_BUNDLE` to override it. This also applies when resuming older
 frozen campaigns; their runtime files do not need modification.
 
-A recipe pins a completed source round/checkpoint and gives only family, output,
+## Fresh lineages
+
+A fresh recipe uses `"fresh": true`, a new `lineage`, `family`, `output`,
+`iterations`, `rating_every`, and a `bootstrap` object with `games` and `rollouts`.
+It has no source checkpoint, source round or tuning overrides. For example:
+
+```json
+{
+  "fresh": true,
+  "family": "cg11",
+  "lineage": "20261122",
+  "output": "runs/20261121-121524-cg11",
+  "iterations": 60,
+  "rating_every": 5,
+  "bootstrap": {"games": 500, "rollouts": 1}
+}
+```
+
+Run it with the same `mise run campaign -- PATH/TO/recipe.json` command.
+Fresh preparation generates new non-neural MCTS games with completed random
+rollouts, then invokes initial training without overriding trainer defaults.
+The loop also uses its current defaults, with only executable/store paths set.
+The runtime is frozen before any work starts. `--prepare-only` freezes a fresh
+recipe's runtime **without** generating games or training.
+
+Fresh preparation refuses an existing lineage store, partial bootstrap or
+uncommitted initial training job rather than silently adopting or overwriting it.
+Inspect/discard a failed preparation before retrying. Once preparation commits,
+normal loop recovery applies. No ancestral games, optimizer, holdouts or ratings
+are imported. Rollouts are bootstrap-only; neural self-play remains unchanged.
+
+## Forks
+
+A fork recipe pins a completed source round/checkpoint and gives only family, output,
 iteration/rating cadence and loop-setting overrides. The runner inherits the
 parent's search/training configuration, model, SGD momentum, cumulative counters,
 D4 setting and ancestral split ledger. All new forks use the KataGo combined
@@ -45,8 +78,9 @@ No optimizer reset or automatic publication is performed.
 The common supervisor handles locks, signal interruption, status, window ordering,
 cache propagation, runtime verification and optional synchronous shared-champion
 challenges before the next generation. `rating_every: 0` disables those challenges;
-saving cadence is a separate loop option. Existing shared ratings retain their
-frozen evaluation protocol. Resume after termination with the same command; do not
+saving cadence is a separate loop option. The first challenge in a new lineage
+initializes its evaluator against random; later challenges resume it. Existing
+shared ratings retain their frozen evaluation protocol. Resume after termination with the same command; do not
 run an old campaign launcher concurrently. Logs/status are under the recipe's
 output directory, including `run.pid`, `status.json`, `loop/loop.log` and stage logs.
 
