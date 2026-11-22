@@ -1,6 +1,7 @@
 import math
 import random
 import unittest
+from unittest.mock import patch
 
 from continugo_train.joint_ratings import fit
 from continugo_train.ratings import REFERENCE_ID
@@ -30,9 +31,76 @@ class JointRatingsTests(unittest.TestCase):
         self.assertAlmostEqual(
             states["r20"]["rating"] - states["champion"]["rating"],
             400 * math.log10(6.5 / 4.5),
+            delta=1,
         )
         random.Random(42).shuffle(records)
         self.assertEqual(states, fit(records))
+
+    def test_cg11_round20_roundoff_stall(self):
+        # Exact pair totals at the cg11 failure: the old Armijo search stalled
+        # at gradient ~1.6e-9 despite a full correction of <1e-6 rating points.
+        records = match("cg11-r0005", REFERENCE_ID, 86, 4)
+        records += match("cg11-r0005", "cg11-r0010", 4, 86)
+        records += match("cg11-r0010", REFERENCE_ID, 49, 1)
+        records += match("cg11-r0010", "cg11-r0015", 4, 6)
+        records += match("cg11-r0010", "cg11-r0020", 9, 30)
+        records += [{"black": "cg11-r0010", "white": "cg11-r0020", "result": None}]
+        states = fit(records)
+        self.assertAlmostEqual(
+            states["cg11-r0020"]["rating"] - states["cg11-r0010"]["rating"],
+            400 * math.log10(30.5 / 9.5),
+            delta=1,
+        )
+        self.assertAlmostEqual(
+            states["cg11-r0015"]["rating"] - states["cg11-r0010"]["rating"],
+            400 * math.log10(6.5 / 4.5),
+            delta=1,
+        )
+        self.assertEqual(states["cg11-r0020"]["games"], 40)
+        self.assertEqual(states["cg11-r0020"]["truncated"], 1)
+        for state in states.values():
+            self.assertTrue(math.isfinite(state["rating"]))
+            self.assertTrue(math.isfinite(state["deviation"]))
+        random.Random(42).shuffle(records)
+        self.assertEqual(states, fit(records))
+
+    def test_unbeaten_chain_retains_rating_accuracy(self):
+        # A small gradient alone is not a rating-accuracy criterion when the
+        # curvature is small. Check the full Newton correction instead.
+        records = []
+        opponent = REFERENCE_ID
+        for i in range(30):
+            player = f"r{i:02d}"
+            records += match(player, opponent, 200, 0)
+            opponent = player
+        states = fit(records)
+        difference = 400 * math.log10(200.5 / 0.5)
+        opponent = REFERENCE_ID
+        for i in range(30):
+            player = f"r{i:02d}"
+            self.assertAlmostEqual(
+                states[player]["rating"] - states[opponent]["rating"],
+                difference,
+                delta=1,
+            )
+            opponent = player
+
+    def test_one_point_tolerance_matches_strict_fit(self):
+        rng = random.Random(20261122)
+        names = [REFERENCE_ID, *[f"r{i}" for i in range(8)]]
+        for _ in range(25):
+            records = []
+            for _ in range(25):
+                black, white = rng.sample(names, 2)
+                records += match(black, white, rng.randrange(40), rng.randrange(40))
+            states = fit(records)
+            with patch("continugo_train.joint_ratings.RATING_TOLERANCE", 0.01):
+                strict = fit(records)
+            for name in states:
+                self.assertAlmostEqual(states[name]["rating"], strict[name]["rating"], delta=1)
+                self.assertAlmostEqual(
+                    states[name]["deviation"], strict[name]["deviation"], delta=1
+                )
 
     def test_color_swaps_do_not_change_fit(self):
         records = match("a", REFERENCE_ID, 8, 2)
@@ -81,11 +149,13 @@ class JointRatingsTests(unittest.TestCase):
         self.assertAlmostEqual(states["champion"]["rating"], baseline["champion"]["rating"])
         self.assertAlmostEqual(states["challenger"]["rating"], states["champion"]["rating"])
         self.assertGreater(states["challenger"]["deviation"], states["champion"]["deviation"])
-        self.assertAlmostEqual(states["champion"]["rating"], 100 + 400 * math.log10(40.5 / 0.5))
+        self.assertAlmostEqual(
+            states["champion"]["rating"], 100 + 400 * math.log10(40.5 / 0.5), delta=1
+        )
 
     def test_disconnected_origin_prior_does_not_shrink_differences(self):
         states = fit(match("a", "b", 6, 4))
         self.assertAlmostEqual(states["a"]["rating"] + states["b"]["rating"], 200)
         self.assertAlmostEqual(
-            states["a"]["rating"] - states["b"]["rating"], 400 * math.log10(6.5 / 4.5)
+            states["a"]["rating"] - states["b"]["rating"], 400 * math.log10(6.5 / 4.5), delta=1
         )

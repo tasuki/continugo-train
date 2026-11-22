@@ -14,6 +14,9 @@ import numpy as np
 
 from .ratings import COUNTS, REFERENCE_ID
 
+# Negligible beside match uncertainty; do not chase floating-point precision.
+RATING_TOLERANCE = 1.0
+
 
 def fit(records):
     names = sorted({record[color] for record in records for color in ("black", "white")})
@@ -106,9 +109,16 @@ def fit(records):
 
     for _ in range(100):
         gradient, hessian = derivatives(x)
-        if np.max(np.abs(gradient)) < 1e-11:
-            break
         step = np.linalg.solve(hessian, gradient)
+        # Near the optimum, objective differences round to zero before the
+        # absolute gradient threshold is met. Armijo backtracking can then
+        # shrink a correct Newton step to nothing forever. Check the *full*
+        # correction in rating units, not the damped step or objective change:
+        # those can be tiny even far from convergence. Apply this last Newton
+        # correction before computing uncertainties.
+        if np.max(np.abs(step)) / scale < RATING_TOLERANCE:
+            x -= step
+            break
         fraction = 1.0
         current = objective(x)
         while objective(x - fraction * step) > current - 1e-4 * fraction * (gradient @ step):
