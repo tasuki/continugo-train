@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from . import joint_ratings, nn_view, ratings
+from . import joint_ratings, ratings, viewer_jobs
 from .evaluation import EvaluationConfig
 from .paths import DEFAULT_MODEL_STORE
 from .saved_models import saved_sources
@@ -166,6 +166,7 @@ def refresh(store, config, cache=None, *, visualize=True):
             )
             return int(round_text) % cadence != 0
 
+        jobs = []
         for group in groups:
             for relative, _size, _mtime in group["files"]:
                 path = store / relative
@@ -179,9 +180,8 @@ def refresh(store, config, cache=None, *, visualize=True):
                 ):
                     continue
                 info = infos.get(relative) or inspect(path)["info"]
-                nn_view.generate_rated(
-                    path, output, info, checkpoints, binary=config.feature_binary
-                )
+                jobs.append((path, output, info, checkpoints, config.feature_binary))
+        viewer_jobs.generate(jobs)
     return {
         "method": "joint-bt-v2",
         "protocol": settings,

@@ -84,7 +84,12 @@ class ChampionTests(helpers.LoopHarness):
         def report(_sgf, output, *_args, **_kwargs):
             Path(output).write_text("neural report")
 
-        self.stack.enter_context(patch.object(rating_store.nn_view, "generate_rated", report))
+        self.stack.enter_context(
+            patch.object(rating_store.viewer_jobs, "worker_count", return_value=1)
+        )
+        self.stack.enter_context(
+            patch.object(rating_store.viewer_jobs.nn_view, "generate_rated", report)
+        )
         self.stack.enter_context(patch.object(rate_saved.plot_ratings, "update"))
         self.stack.enter_context(redirect_stdout(io.StringIO()))
 

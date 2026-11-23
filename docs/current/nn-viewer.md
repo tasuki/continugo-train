@@ -61,6 +61,14 @@ are supported, the sidecar says so and still embeds the original SGF; it does no
 invent heads or borrow the opponent's network. Historic policy/value-only
 checkpoints remain unsupported by this viewer, not migrated into new networks.
 
+Saved-model rating refreshes generate missing reports across games in a spawned
+process pool sized to the smaller of the number of games and the CPUs available
+to the process (respecting CPU affinity). Each worker uses one PyTorch thread and
+its own feature subprocess; reports are published atomically. A single available
+CPU or game uses the serial path. Evaluation logs include the worker count and
+total report generation time. Existing frozen campaign runtimes retain their
+original behavior.
+
 Generation needs the normal Python environment and an up-to-date Rust feature
 binary: `mise run setup` / `mise run build-features`. The checkpoint is necessary
 because production ONNX exports omit ownership. Standalone native binaries find
