@@ -247,6 +247,15 @@ Both lineage-local SGFs and shared `artifacts/sgfs/` games are included.
 These are raw SGF counts, not fitted ratings or win percentages. Different komi
 or runtime settings are not separated in this table.
 
+`artifacts/champion-wins.html` is an ignored, self-contained offline view generated
+with the CSV. Open it directly in a browser: the diagonal is black, headers stay
+visible while scrolling, and hovering or keyboard-focusing a cell highlights its
+mirror and shows both champions' win counts. Cells display row wins divided by
+both champions' combined wins (decisive games only), coloured pink–neutral–green
+with 50% neutral. Draws and unfinished games are excluded; no decisive games
+means a dash, not an invented percentage. The CSV retains raw win counts.
+Refresh the browser after a ratings update to load new counts.
+
 ## Ratings, not another game ledger
 
 **SGFs are authoritative.** `networks.csv` is a derived summary:

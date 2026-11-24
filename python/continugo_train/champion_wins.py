@@ -107,4 +107,7 @@ def update(artifacts_root):
     ]
     output = root / "champion-wins.csv"
     _atomic_csv(output, columns, rows)
+    from .champion_wins_view import generate
+
+    generate(output)
     return output
