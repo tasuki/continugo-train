@@ -355,6 +355,30 @@ class ChampionTests(helpers.LoopHarness):
                 [row["network"] for row in csv.DictReader(stream)], ["random", *self.ids]
             )
 
+    def test_history_reserves_previous_two_champions_before_rating_neighbors(self):
+        names = ["old", "previous", "incumbent", "near1", "near2", "candidate"]
+        registry = {
+            "evaluated": dict.fromkeys(names),
+            "history": [{"model": name} for name in
+                        ["random", "old", "previous", "incumbent", "candidate"]],
+        }
+        states = {name: {"rating": rating} for name, rating in zip(
+            names, [100, 200, 800, 999, 998, 1000]
+        )}
+        states[rate_saved.ratings.REFERENCE_ID] = {"rating": 0}
+        self.assertEqual(
+            rate_saved.history_opponents("candidate", "incumbent", registry, names, states),
+            ["incumbent", "previous", "near1"],
+        )
+        # An unavailable former champion must not block the remaining calibration slot.
+        self.assertEqual(
+            rate_saved.history_opponents(
+                "candidate", "incumbent", registry,
+                [name for name in names if name != "previous"], states,
+            ),
+            ["incumbent", "near1", "near2"],
+        )
+
     def test_thresholds(self):
         decide = rate_saved.challenge_decision
         self.assertEqual(decide({"games": 10, "wins": 6, "draws": 4}), "screen-failed")

@@ -27,6 +27,31 @@ POLICY = {
 }
 
 
+def history_opponents(candidate, opponent, registry, models, states):
+    """Reserve links to the last two champions, then fill by rating proximity."""
+    available = {name for name in registry["evaluated"] if name in models}
+    available.add("random")
+    available.difference_update({candidate, opponent})
+    opponents = [opponent]
+    for entry in reversed(registry["history"]):
+        previous = entry["model"]
+        if previous in {candidate, opponent}:
+            continue
+        if previous in available and len(opponents) < POLICY["history_opponents"]:
+            opponents.append(previous)
+            available.remove(previous)
+        break
+
+    def distance(name):
+        key = ratings.REFERENCE_ID if name == "random" else name
+        return abs(states[key]["rating"] - states[candidate]["rating"]), name
+
+    opponents.extend(
+        sorted(available, key=distance)[: POLICY["history_opponents"] - len(opponents)]
+    )
+    return opponents
+
+
 def challenge_decision(screen, extension=None):
     if screen["games"] != POLICY["screen_games"]:
         raise ValueError("screen game count disagrees with policy")
@@ -340,18 +365,9 @@ def evaluate(runner, registry):
         if trial["history_opponents"] is None:
             opponents = []
             if trial["decision"] == "promoted":
-                states = state["rating_cache"]["states"]
-                target = states[candidate]["rating"]
-                available = {name for name in registry["evaluated"] if name in state["models"]}
-                available.add("random")
-                available.difference_update({candidate, opponent})
-
-                def distance(name, states=states, target=target):
-                    key = ratings.REFERENCE_ID if name == "random" else name
-                    return abs(states[key]["rating"] - target), name
-
-                opponents = [opponent]
-                opponents.extend(sorted(available, key=distance)[: POLICY["history_opponents"] - 1])
+                opponents = history_opponents(
+                    candidate, opponent, registry, state["models"], state["rating_cache"]["states"]
+                )
             trial["history_opponents"] = opponents
             runner.save()
         for historical in trial["history_opponents"]:
