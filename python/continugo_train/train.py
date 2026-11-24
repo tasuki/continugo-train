@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from .data import batches, merge_split_assignments, scan_corpus
+from .data import batches, merge_split_assignments, prefetch_batches, scan_corpus
 from .features import (
     COARSE_PLANES,
     LEGACY_TARGET_VERSION,
@@ -259,6 +259,7 @@ def run_phase(
         augmentation=options.augmentation,
         position_budget=options.positions_per_epoch if training else 0,
     )
+    stream = prefetch_batches(stream, limit=options.steps_per_epoch if training else 0)
     memory = GpuMemorySampler(enabled=profile_stages and device.type == "cuda")
     with memory, closing(stream), torch.set_grad_enabled(training):
         while not (training and options.steps_per_epoch and steps >= options.steps_per_epoch):
@@ -573,7 +574,9 @@ def train(args):
         or config.global_inputs != len(GLOBAL_FEATURES)
         or config.score_distribution != "linear-softplus"
     ):
-        raise ValueError("checkpoint feature widths/score architecture do not match the real extractor")
+        raise ValueError(
+            "checkpoint feature widths/score architecture do not match the real extractor"
+        )
     spec = feature_spec(options.samples_per_diameter)
     if saved and saved["feature_spec"] != spec:
         raise ValueError("checkpoint uses incompatible feature semantics")

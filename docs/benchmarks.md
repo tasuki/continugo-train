@@ -3,6 +3,9 @@
 Historical measurements, not current defaults or a roadmap. See
 [current docs](current/) for supported behavior and [todo.md](todo.md) for open work.
 
+Latest training optimization: [complete CPU-batch prefetch](history/2026-11-24-training-prefetch.md),
+with repeated matched CUDA measurements, production adoption and full-epoch validation.
+
 New investigation: [exact Benson connectivity optimization](history/2026-11-20-benson-investigation.md),
 with production adoption, parity checks, and provisional timing under load.
 

@@ -185,6 +185,12 @@ short-hash suffix; inner epoch/checkpoint filenames stay stable.
   mixture; workers are consumed in stable round-robin order. In `uniform` mode, the
   original bounded dense shuffle buffer (default 8) mixes output. Positions are
   batched by actual resolution without spatial padding.
+- A CPU producer prepares one queued **complete batch**, overlapping loading,
+  D4 augmentation and collation with the previous batch's GPU work. Training and
+  validation preserve the same sample order; SGD steps remain sequential. The
+  queue holds one batch, with at most one more being prepared or awaiting enqueue.
+  Step caps stop the producer without requesting an extra batch. Early exit and
+  producer errors close the nested loaders before the phase returns.
 - Each sample includes **all coordinates in every positive-target cell**, plus
   pass. The coarse denominator covers all cells/pass; local denominators cover
   complete legal cells. Zero-target cells require no exact work. This trains the
@@ -429,7 +435,9 @@ wait and compute subtotals need not sum to it.
 PyTorch memory excludes driver context and other native allocations; reserved
 memory is reported separately from live tensors. Parent peak RSS is the process
 lifetime high-water mark including Python threads, **not** Rust child RSS. More
-workers/buffering use more memory. Feature extraction and binary transport are
+workers/buffering use more memory, including the complete-batch prefetcher.
+Prefetching does not promise bitwise-identical CUDA updates, even with identical
+input payloads. Feature extraction and binary transport are
 included in end-to-end timings; historical measurements belong in
 [benchmarks.md](../benchmarks.md). The [pipeline profiler](profiling.md) also
 measures synchronized transfer, encoder, scorer, loss/backward/optimizer and

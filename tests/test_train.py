@@ -256,6 +256,33 @@ class OfflineDataTests(unittest.TestCase):
         ):
             list(data._parallel_samples(plans, 4, 2, None))
 
+    def test_prefetch_preserves_real_augmented_batch_payloads(self):
+        games, _ = data.inspect_corpus([str(self.paths[0])], 4)
+        for workers in (0, 2):
+
+            def source(workers=workers):
+                return data.batches(
+                    games,
+                    batch_size=1,
+                    seed=71,
+                    epoch=2,
+                    training=True,
+                    density=4,
+                    workers=workers,
+                    shuffle_buffer=2,
+                    feature_cache="off",
+                    augmentation="d4",
+                )
+
+            with closing(source()) as direct:
+                expected = list(direct)
+            with closing(data.prefetch_batches(source())) as prefetched:
+                actual = list(prefetched)
+            self.assertEqual(len(actual), len(expected))
+            for left, right in zip(expected, actual, strict=True):
+                for name, value in vars(left).items():
+                    torch.testing.assert_close(value, getattr(right, name), rtol=0, atol=0)
+
     def test_buckets_flush_leftovers_without_losing_samples(self):
         game = data.GameEntry("unused", "0" * 64, "hash", 13, 76, 4, (0, 1, 2))
 

@@ -449,6 +449,51 @@ def _parallel_samples(
             stop.set()
 
 
+def prefetch_batches(source, *, limit=0):
+    """Prepare one queued CPU batch ahead, preserving order and bounded memory.
+
+    Close this iterator on early exit. Only the producer owns/closes the source;
+    cancellation also unwinds its nested sample workers and Rust readers.
+    """
+    channel = queue.Queue(maxsize=1)
+    stop = threading.Event()
+    done = object()
+
+    def put(value):
+        while not stop.is_set():
+            try:
+                channel.put(value, timeout=0.1)
+                return
+            except queue.Full:
+                pass
+
+    def produce():
+        try:
+            with closing(source), torch.no_grad():
+                for index, batch in enumerate(source, 1):
+                    put(batch)
+                    if stop.is_set() or limit and index >= limit:
+                        break
+        except BaseException as error:  # noqa: BLE001 -- propagate all producer exits.
+            put(error)
+        finally:
+            put(done)
+
+    producer = threading.Thread(target=produce, name="training-batch-prefetch")
+    producer.start()
+    try:
+        while True:
+            value = channel.get()
+            if value is done:
+                return
+            if isinstance(value, BaseException):
+                raise value
+            yield value
+    finally:
+        stop.set()
+        producer.join()
+
+
 def batches(
     games,
     *,
