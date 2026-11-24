@@ -31,6 +31,12 @@ SGF = r"""(;FF[9071]GM[9071]SZ[13]RE[B+169.0]
 )"""
 
 
+KO_SGF = """(;FF[9071]GM[9071]SZ[13]
+;B[igjG];W[lgig];B[jGig];W[mGjG];B[jGlg];W[lglg];B[];W[jGjG];B[lgjG]
+;W[jGjG]C[{"policy":[["jGjG",7\\], ["",1\\]\\]}]
+)"""
+
+
 class RealFeatureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -40,6 +46,20 @@ class RealFeatureTests(unittest.TestCase):
         ).resolve()
         if not cls.binary.is_file():
             raise RuntimeError("run `mise run build-features` before Python integration tests")
+
+    def test_historical_ko_visits_are_preserved_but_masked_only_for_training(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ko.sgf"
+            path.write_text(KO_SGF)
+            sample = load_position(path, 9, actions=[500500], binary=self.binary)
+        self.assertEqual(sample.legal.tolist(), [False])
+        self.assertEqual(sample.visits.tolist(), [7, 1])
+        with self.assertRaisesRegex(ValueError, "illegal coordinate"):
+            sample.policy_targets()
+        indices, visits = sample.policy_targets(mask_illegal=True)
+        self.assertEqual(indices.tolist(), [0, 1])
+        self.assertEqual(visits.tolist(), [0, 1])
+        self.assertEqual(sample.visits.tolist(), [7, 1])
 
     def setUp(self):
         torch.manual_seed(0)

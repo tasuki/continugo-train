@@ -594,6 +594,11 @@ impl<'a> FeatureExtractor<'a> {
             ) else {
                 continue;
             };
+            // Only single-stone captures can violate ko. Keep the shared game
+            // validator authoritative without replaying ordinary placements twice.
+            if analysis.captured_stones == 1 && self.game.play(spot).is_err() {
+                continue;
+            }
             *legal = 1;
             if fields == MOVE_FEATURES.len() {
                 row[..4].copy_from_slice(&[

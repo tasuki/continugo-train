@@ -1,6 +1,8 @@
 //! Validated SGF replay. Targets belong to PRE-move positions. A value label
 //! requires natural completion AND RE matching authoritative scoring. ReplayGame
 //! retains immutable snapshots so offline loaders replay/score once per game.
+//! Recorded ko recaptures and their visit counts are preserved; live legality
+//! masks exclude them, and training drops only their forbidden visit mass.
 
 use crate::targets::FinalTargets;
 use continugo_rules::{Action, Board, COORD_RANGE, Color, Game, Play, sgf, territory};
@@ -114,7 +116,7 @@ fn policy(
         if targets.iter().map(|t| u64::from(t.visits)).sum::<u64>() == 0 {
             return Err("policy target has no positive visit mass".into());
         }
-        let prepared = game.prepare();
+        let prepared = game.position().prepare();
         let mut seen = HashSet::new();
         for target in targets {
             let action =
@@ -123,9 +125,15 @@ fn policy(
                 return Err("duplicate policy action".into());
             }
             if let Some(spot) = action.spot() {
-                prepared
-                    .play(spot)
-                    .map_err(|e| format!("illegal policy target: {e}"))?;
+                if prepared
+                    .play(continugo_rules::Stone {
+                        color: game.on_move(),
+                        spot,
+                    })
+                    .is_none()
+                {
+                    return Err("illegal policy target: invalid placement".into());
+                }
             }
         }
     }
@@ -173,11 +181,9 @@ impl ReplayGame {
                 Play::Pass(_) => Action::PASS.index(),
             };
             identity.update(action.to_le_bytes());
-            game = match play {
-                Play::Place(stone) => game.play(stone.spot),
-                Play::Pass(_) => game.pass(),
-            }
-            .map_err(|e| format!("move {}: {e}", index + 1))?;
+            game = game
+                .replay(play)
+                .map_err(|e| format!("move {}: {e}", index + 1))?;
         }
         let mut final_targets = None;
         let black_outcome = if let Some(re) = property(&record.root, "RE")? {

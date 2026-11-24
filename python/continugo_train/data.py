@@ -373,7 +373,10 @@ def _serial_samples(plans, density, binary, feature_profile=None, feature_cache=
                         raise ValueError(
                             "training requires labeled target-cell samples in the inspected resolution"
                         )
-                    indices, visits = sample.policy_targets()
+                    indices, visits = sample.policy_targets(mask_illegal=True)
+                    train_policy = (
+                        game.policy_plies is None or ply in game.policy_plies
+                    ) and visits.sum().item() > 0
                     yield TrainingSample(
                         sample.coarse,
                         sample.exact,
@@ -387,7 +390,7 @@ def _serial_samples(plans, density, binary, feature_profile=None, feature_cache=
                         game.board_size,
                         sample.score,
                         sample.ownership,
-                        float(game.policy_plies is None or ply in game.policy_plies),
+                        float(train_policy),
                         sample.komi,
                     )
                 except Exception as error:

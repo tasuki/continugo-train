@@ -19,7 +19,7 @@ from continugo_train.features import (
     decode_sample,
     ownership_weights,
 )
-from continugo_train.losses import joint_loss
+from continugo_train.losses import joint_loss, policy_value_loss
 from continugo_train.model import NetworkConfig, PolicyValueNet
 from continugo_train.train import Options, feature_spec
 
@@ -159,6 +159,19 @@ class AuxiliaryTests(unittest.TestCase):
         for mask in (torch.ones(3), torch.tensor([0.0, float("nan")]), torch.tensor([0.0, 0.5])):
             with self.assertRaisesRegex(ValueError, "policy weights"):
                 loss(mask)
+
+    def test_zero_visit_mass_is_allowed_only_for_disabled_policy_loss(self):
+        logits = torch.tensor([[float("-inf"), 0.0]], requires_grad=True)
+        values = torch.zeros(1, requires_grad=True)
+        args = (logits, values, torch.tensor([[0]]), torch.zeros(1, 1), torch.ones(1))
+        with self.assertRaisesRegex(ValueError, "positive visit mass"):
+            policy_value_loss(*args)
+        loss = policy_value_loss(*args, policy_weights=torch.zeros(1))
+        self.assertEqual(loss.policy.item(), 0)
+        loss.total.backward()
+        self.assertTrue(torch.isfinite(logits.grad).all())
+        self.assertEqual(logits.grad.count_nonzero(), 0)
+        self.assertGreater(values.grad.abs().sum(), 0)
 
     def test_tiny_auxiliary_problem_overfits_and_search_omits_ownership(self):
         model = self.model().eval()

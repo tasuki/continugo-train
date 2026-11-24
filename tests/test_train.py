@@ -6,11 +6,12 @@ import tempfile
 import time
 import unittest
 from contextlib import closing, redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import torch
-from test_features import SGF
+from test_features import KO_SGF, SGF
 
 from continugo_train import data
 from continugo_train import train as trainer
@@ -126,6 +127,31 @@ class OfflineDataTests(unittest.TestCase):
         self.assertEqual(client.process.poll(), 0)
         with FeatureClient() as fresh, self.assertRaisesRegex(ValueError, "changed"):
             fresh.load(path, 0, file_sha256=info["file_sha256"])
+
+    def test_historical_ko_mask_reaches_training_without_changing_stored_visits(self):
+        path = self.root / "ko.sgf"
+        path.write_text(KO_SGF)
+        with FeatureClient() as client:
+            sample = client.load(path, 9)
+        # Isolate supervision plumbing from scoring: replay/features above are real.
+        sample = replace(
+            sample,
+            outcome=1.0,
+            score=0.25,
+            ownership=torch.zeros(sample.resolution, sample.resolution),
+        )
+        games, _ = data.inspect_corpus([str(self.paths[0])], 4)
+        for counts, weight in (([7, 1], 1.0), ([7, 0], 0.0)):
+            current = replace(sample, visits=torch.tensor(counts))
+            with patch.object(data, "SampleReader") as reader:
+                reader.return_value.__enter__.return_value.load.return_value = current
+                loaded = list(data._serial_samples([(games[0], [0])], 4, None))
+            self.assertEqual(loaded[0].policy_weight, weight)
+            self.assertEqual(loaded[0].visits.tolist(), [0, counts[1]])
+            self.assertEqual(current.visits.tolist(), counts)
+            self.assertEqual(loaded[0].outcome, 1.0)
+            self.assertEqual(loaded[0].score, 0.25)
+            self.assertIsNotNone(loaded[0].ownership)
 
     def test_cheap_positions_retain_value_labels_and_policy_mask_reaches_batches(self):
         text = SGF.replace('{"policy":', '{"train_policy":false,"policy":', 1)

@@ -36,7 +36,8 @@ def policy_value_loss(
 
     Zero-count padding is allowed (with valid indices), including illegal moves;
     any positive count on a masked/illegal move is an error. Duplicate target
-    indices are equivalent to summing their counts.
+    indices are equivalent to summing their counts. Zero total mass is allowed
+    only when policy loss is disabled (e.g. a historical ko-only target).
     """
     if logits.ndim != 2:
         raise ValueError("policy logits must have shape [batch, actions]")
@@ -66,8 +67,8 @@ def policy_value_loss(
     ):
         raise ValueError("policy weights must be a binary mask of shape [batch]")
     totals = visits.sum(dim=1)
-    if not torch.isfinite(totals).all() or (totals <= 0).any():
-        raise ValueError("every policy target needs positive visit mass")
+    if not torch.isfinite(totals).all() or ((totals <= 0) & (policy_weights != 0)).any():
+        raise ValueError("every enabled policy target needs positive visit mass")
     if target_indices.numel() and (
         target_indices.min() < 0 or target_indices.max() >= logits.shape[1]
     ):
@@ -80,7 +81,9 @@ def policy_value_loss(
     if not torch.isfinite(log_normalizer).all():
         raise ValueError("policy needs a finite legal normalization")
     selected = torch.where(positive, selected, 0.0)  # Avoid 0 * -inf for padding.
-    per_position = log_normalizer - (selected * (visits / totals[:, None])).sum(dim=1)
+    per_position = log_normalizer - (
+        selected * (visits / totals.masked_fill(totals == 0, 1)[:, None])
+    ).sum(dim=1)
     # Normalize over enabled positions, not all value samples. All-cheap batches
     # retain a differentiable zero policy loss and full value/auxiliary losses.
     policy = (per_position * policy_weights).sum() / policy_weights.sum().clamp_min(1)

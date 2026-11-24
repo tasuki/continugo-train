@@ -343,9 +343,11 @@ and coverage tests have been removed; conclusions remain in the
 [old cap-three costs](../history/2026-11-08-cap3-footprint.md).
 
 For illegal moves, columns 0–6 are zero and only border geometry remains. Legality also has a separate boolean
-mask for the network. It includes suicide and captures, not just geometric
+mask for the network. It includes suicide, captures, and immediate-recapture ko,
+not just geometric
 availability. It **never applies the direct random bot's eye-avoidance filter**.
-Finished games cannot be policy inputs. The shared rules do not enforce ko.
+Finished games cannot be policy inputs. Live play always enforces ko, including
+when continuing a replay; the restriction is cleared by a pass or intervening move.
 
 ## Legacy one-move capturability (schema 4 only)
 
@@ -424,7 +426,13 @@ evaluation/MCTS, not a handcrafted capture-depth estimate.
 position. The loader validates the *entire* game, including moves after the chosen
 position, before trusting the outcome. Root `KM` is applied consistently to scoring
 and scalar inputs; missing `KM` means legacy zero. Unsupported setup or other rule
-overrides are rejected rather than silently ignored.
+overrides are rejected rather than silently ignored. Playback permits historical
+ko recaptures, without weakening turn, geometry, suicide or completion checks.
+Old SGFs and their policy visit counts are preserved unchanged. Feature masks use
+current live legality; training zeros forbidden recapture visits and normalizes
+over the remaining mass. If none remains, only policy loss is disabled; outcome,
+score and ownership supervision are retained. Rebuild derived caches with the new
+extractor (its binary hash invalidates older sidecars).
 
 Generated move comments put post-move evaluation first, then the alternatives:
 
@@ -456,8 +464,8 @@ A final prediction on a truncated game does not supply a result.
   ascending internal action ID for ties, without changing search/move selection.
   Replay accepts **only** this pair format: old numeric-action objects are rejected,
   with no migration or compatibility reader. Generate fresh training SGFs.
-  Moves must be unique and legal, with nonnegative integer counts and positive
-  total visit mass. Zero-count entries are allowed. Moves become numeric action
+  Moves must be unique and position-legal (historical ko recaptures are allowed),
+  with nonnegative integer counts and positive total visit mass. Zero-count entries are allowed. Moves become numeric action
   IDs internally; the feature transport and loss are unchanged. These are MCTS
   root visits, not raw network priors. Unannotated/random games do **not** acquire
   invented policy labels.

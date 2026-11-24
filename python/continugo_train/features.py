@@ -85,11 +85,12 @@ class PositionFeatures:
             torch.tensor([self.komi], device=device),
         )
 
-    def policy_targets(self) -> tuple[Tensor, Tensor]:
+    def policy_targets(self, *, mask_illegal=False) -> tuple[Tensor, Tensor]:
         """Map canonical SGF action IDs to output columns, with pass last.
 
         No fake policy is invented for random SGFs. Missing positive targets in
         a diagnostic subset are rejected, rather than silently renormalized.
+        Training may mask historical ko visits; stored counts remain untouched.
         """
         if self.visits.numel() == 0:
             raise ValueError("SGF position has no MCTS visit-count policy target")
@@ -111,9 +112,15 @@ class PositionFeatures:
                     found, order[locations.clamp(max=order.numel() - 1)], self.actions.numel()
                 )
         placements = (columns < self.actions.numel()) & (self.visits > 0)
-        if not self.legal[columns[placements]].all():
+        visits = self.visits.to(torch.float32)
+        if mask_illegal:
+            visits = visits.clone()
+            forbidden = torch.zeros_like(placements)
+            forbidden[placements] = ~self.legal[columns[placements]]
+            visits[forbidden] = 0
+        elif not self.legal[columns[placements]].all():
             raise ValueError("positive policy target on an illegal coordinate")
-        return columns, self.visits.to(torch.float32)
+        return columns, visits
 
 
 def decode_sample(
@@ -164,7 +171,8 @@ def decode_sample(
     ):
         raise ValueError("invalid feature dimensions or flags")
     expected = (
-        HEADER.size + (4 if version == SCHEMA7 else 0)
+        HEADER.size
+        + (4 if version == SCHEMA7 else 0)
         + 4 * (planes + 1) * resolution**2
         + 4 * count * fields
         + 5 * count

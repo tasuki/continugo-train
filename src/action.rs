@@ -221,6 +221,28 @@ mod tests {
     }
 
     #[test]
+    fn random_and_mcts_proposals_skip_ko_recaptures() {
+        let game = Game::from_record(
+            &sgf::decode("B[igjG];W[lgig];B[jGig];W[mGjG];B[jGlg];W[lglg];B[];W[jGjG];B[lgjG]")
+                .unwrap(),
+        )
+        .unwrap();
+        for index in [500_500, 501_500] {
+            assert!(try_one(&game, index).is_none());
+            let mut proposals = Proposals {
+                order: Permutation {
+                    next: index,
+                    step: 1,
+                    remaining: 1,
+                    modulus: COORDINATE_ACTIONS,
+                },
+            };
+            assert!(proposals.legal(&game.prepare(), 1).is_none());
+        }
+        assert!(try_one(&game, 200_200).is_some());
+    }
+
+    #[test]
     fn random_search_continues_past_the_old_budget() {
         let game = Game::new(Board::new(2).unwrap());
         let available = GeometricAvailability::new(game.position());
