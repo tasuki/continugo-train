@@ -717,6 +717,7 @@ def _inspect(path, settings, names, feature_binary, *, info=None):
     ]
     if (
         root.get("search") != settings["search"]
+        or ("komi" in settings and info.get("komi") != settings["komi"])
         or root.get("evaluation") != settings["arena_sha256"]
         or str(info["board_size"]) not in settings["board_mix"]
         or not 0 < info["moves"] <= cap

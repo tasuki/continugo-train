@@ -3,8 +3,9 @@
 Training saves models; the **one shared evaluator** rates them independently.
 For this campaign only **cg5 rounds 1–100** are included. cg1–4 are not imported.
 
-New arena/rated games use fixed **komi 7** for both colour-swapped games and write
-root `KM[7]`. Training variation never applies to ratings. Historical results
+Ordinary arena/rated games default to fixed **komi 7** for both colour-swapped games
+and write root `KM[7]`. Explicit cross-lineage comparisons may choose another fixed
+komi (see below). Training variation never applies to ratings. Historical results
 remain unchanged; the frozen arena binary hash distinguishes the new scoring
 protocol. See [komi](komi.md).
 
@@ -161,6 +162,79 @@ they are not rated or treated as draws. Neural reports use each mover's own mode
 random turns have no neural model. Native game/model identities remain checked by
 the engine internally; public model metadata and filenames contain no content hashes.
 
+## Reusable cross-lineage comparisons
+
+Prepare a frozen schedule without playing any games:
+
+```sh
+mise run compare-lineages -- prepare --name 20261122-vs-20261111-k0 \
+  --lineage-a 20261122 --lineage-b 20261111 --latest 3 --games 40 --komi 0
+```
+
+This selects the latest three **promoted neural champions** in each lineage,
+chronologically, and schedules the Cartesian product: nine pairings, 360 games.
+Each pairing uses 20 fresh paired seeds, alternating candidate Black/White by game
+ordinal. Board mix, search budget, device and move caps come from lineage A's
+existing evaluator. Default komi is 0; supply another fixed value explicitly.
+Current numbered-schema inference supports each model's own input schema;
+legacy score heads need no compensation adjustment at komi 0. Original
+separate-head schema-4/5/6 models are supported read-only, without re-export or
+weight migration. Their score output is a point estimate: score utility uses
+zero predictive deviation, not a fabricated learned uncertainty. The viewer
+uses their actual separate value, score and ownership heads.
+
+Preparation reserves fresh shared-root seeds, fingerprints model references,
+and copies/fingerprints a private executable runtime under
+`artifacts/ratings/comparisons/NAME-runtime/`. Models are never copied or
+re-exported. The restart checkpoint is `artifacts/ratings/comparisons/NAME.pt`.
+Preparation also loads every model with native `arena --check-models` and verifies
+that each checkpoint is supported by the HTML viewer. Load-only checks exit before
+creating output or generating games. Preparation does not alter champions, train
+anything, or start games. After approval:
+
+```sh
+mise run compare-lineages -- run --name 20261122-vs-20261111-k0
+# Repeat the exact same command to resume after interruption.
+```
+
+Run refuses changed models/runtime and concurrent evaluators for those lineages.
+Already adopted games are verified; interrupted attempts adopt completed files
+and play only missing ordinals. SGFs live **once** in
+`artifacts/sgfs/YYYY-MM-DD/Black-vs-White-seedN.sgf`, with `.nn.html` reports
+rendered from each mover's own checkpoint. Date directories are frozen per job
+when it starts. Finished games are not rescored or moved between stores.
+
+After each completed pairing, ratings are fitted **jointly** from all historical
+lineage SGFs plus all authorized shared-root SGFs. This refits both lineages,
+including old opponents—not merely the six selected participants. Shared games
+must match a frozen manifest's players, seed, search/runtime, caps and komi;
+historical games retain their recorded rules/results and are revalidated by a
+compatible **historical** inspector, also copied and fingerprinted at preparation.
+Preparation probes one archive per recorded arena runtime, trying the current
+inspector and then available source-campaign inspectors. Override discovery with
+`--historical-inspector LINEAGE=PATH` (repeatable). This matters for `20261111`:
+its older board-point units must not be rescored with the current runtime.
+Pruned historical players are identified from archived
+SGFs and the existing network registry, without resurrecting model artifacts.
+The disposable parsing cache is `artifacts/ratings/joint-cache.pt`.
+
+The joint summary is **`artifacts/networks.csv`**, with an additional `lineage`
+column. Once present, both combined and per-lineage plots prefer those joint
+ratings over the independent lineage summaries. Later ordinary rated batches
+also refresh the joint fit. Per-lineage `networks.csv` files remain independent
+baseline fits; they must not be added to the joint summary as extra evidence.
+To rebuild explicitly:
+
+```sh
+mise run ratings -- --artifacts-root artifacts
+```
+
+**Statistical limitation:** the fit pools historical komi-0/komi-7 games and new
+comparison games into one strength per model. It does not estimate separate
+komi-specific strengths or colour effects. Colour-swapped pairs balance playing
+colour; they do not eliminate possible komi-dependent model strength. No promotion
+or champion history is changed by these games or by the joint fit.
+
 ## Champion head-to-head table
 
 `artifacts/champion-wins.csv` is rebuilt alongside `ratings.png`, both after rated
@@ -169,6 +243,7 @@ neural champions ordered by lineage name and then promotion order. Labels show
 only the model name (e.g. `cg11-r0055`), without the lineage. Cell `(A, B)` counts A's recorded wins against B across both colours;
 cell `(B, A)` counts the reverse. Draws and truncations add no wins. Blank means
 no recorded pairing (or the diagonal); zero means games exist but no wins.
+Both lineage-local SGFs and shared `artifacts/sgfs/` games are included.
 These are raw SGF counts, not fitted ratings or win percentages. Different komi
 or runtime settings are not separated in this table.
 

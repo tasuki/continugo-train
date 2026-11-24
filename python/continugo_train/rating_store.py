@@ -149,8 +149,10 @@ def refresh(store, config, cache=None, *, visualize=True):
     )
     rows = [{"network": name, **summary[name]} for name in dict.fromkeys(order) if name in summary]
     ratings._atomic_csv(directory / "networks.csv", COLUMNS, rows)
+    from . import lineage_ratings
     from .plot_ratings import update
 
+    lineage_ratings.refresh(store.parent, config.feature_binary)
     update(store)  # Publish the chart before potentially slow neural reports.
     if visualize:
         skipped = set(registry.get("skipped", {}))
@@ -199,8 +201,28 @@ def main(argv=None):
     from .train import atomic_checkpoint
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-store", type=Path, default=DEFAULT_MODEL_STORE)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--model-store", type=Path, default=DEFAULT_MODEL_STORE)
+    selection.add_argument("--artifacts-root", type=Path,
+                           help="rebuild the joint cross-lineage ratings")
     args = parser.parse_args(argv)
+    if args.artifacts_root is not None:
+        from . import lineage_ratings, plot_ratings
+        from .compare_lineages import ComparisonRunner, comparison_lock
+
+        root = args.artifacts_root.resolve()
+        manifests = sorted((root / "ratings/comparisons").glob("*.pt"))
+        if not manifests:
+            parser.error("prepare a lineage comparison first")
+        state = torch.load(manifests[-1], map_location="cpu", weights_only=True)
+        with comparison_lock(root) as lock_fd:
+            runner = ComparisonRunner(root, state, lock_fd, manifests[-1])
+            runner.verify_runtime()
+            summary = lineage_ratings.refresh(root, runner.config.feature_binary)
+            if summary is not None:
+                plot_ratings.update(root / state["lineages"][0])
+        print(json.dumps(summary, indent=2))
+        return
     store = args.model_store.resolve()
     state_path = store / "ratings/evaluator.pt"
     with champion_lock(store):

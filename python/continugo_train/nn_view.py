@@ -125,11 +125,24 @@ def load_checkpoint(path):
     identity = hashlib.sha256(path.read_bytes()).hexdigest()
     saved = torch.load(path, map_location="cpu", weights_only=True)
     spec = saved["feature_spec"]
-    if spec != feature_spec(spec["samples_per_diameter"], schema=spec["schema"]):
-        raise ValueError(f"{path}: incompatible feature schema")
-    config = NetworkConfig.from_checkpoint(saved["config"])
-    validate_feature_config(config, spec)
-    model = PolicyValueNet(config).eval()
+    expected = feature_spec(spec["samples_per_diameter"], schema=spec["schema"])
+    legacy = spec["schema"] in (4, 5, 6) and "trunk" not in spec and "value" not in spec
+    if legacy:
+        from .legacy_model import LegacyConfig, LegacyPolicyValueNet
+
+        expected = {key: value for key, value in expected.items() if key not in ("trunk", "value")}
+        if spec != expected:
+            raise ValueError(f"{path}: incompatible legacy feature schema")
+        config = LegacyConfig(**saved["config"])
+        if config.input_planes != len(spec["coarse"]) or config.move_features != len(spec["moves"]):
+            raise ValueError(f"{path}: incompatible legacy feature widths")
+        model = LegacyPolicyValueNet(config).eval()
+    else:
+        if spec != expected:
+            raise ValueError(f"{path}: incompatible feature schema")
+        config = NetworkConfig.from_checkpoint(saved["config"])
+        validate_feature_config(config, spec)
+        model = PolicyValueNet(config).eval()
     model.load_state_dict(saved["model"])
     model.feature_schema = spec["schema"]
     return model, spec["samples_per_diameter"], identity
@@ -282,7 +295,13 @@ def frame(client, sgf, ply, loaded, info):
     # Actual shared spatial features and dense representation of both critics.
     output_maps.extend(
         [
-            heatmap("Value & score shared hidden", pooled.numpy(), signed=True),
+            heatmap(
+                "Trunk pooled (separate legacy critics)"
+                if getattr(model, "legacy_separate_heads", False)
+                else "Value & score shared hidden",
+                pooled.numpy(),
+                signed=True,
+            ),
             heatmap("Value & score spatial RMS", trunk.square().mean(1).sqrt()[0].numpy()),
             heatmap("Policy spatial context RMS", spatial.square().mean(1).sqrt()[0].numpy()),
         ]
@@ -349,8 +368,9 @@ def frame(client, sgf, ply, loaded, info):
         "score_stdev": stdev,
         "score_points": score * sample.board_size**2,
         "outcome": sample.outcome,
-        "score_target": (sample.score if schema == 7 or sample.score is None
-                         else sample.score + relative_komi),
+        "score_target": (
+            sample.score if schema == 7 or sample.score is None else sample.score + relative_komi
+        ),
         "coarse_pass": float(coarse_probs[-1]),
         "pass": pass_prob,
         "policy_mass": float(policy.sum()) + pass_prob,

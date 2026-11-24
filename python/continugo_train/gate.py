@@ -133,6 +133,7 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
                     )
                     or root.get("seed") != seed
                     or root.get("search") != search
+                    or ("komi" in iteration and info.get("komi") != iteration["komi"])
                     or info["board_size"] != size
                     or not 0 < info["moves"] <= max_moves
                     or info.get("policy_visit_totals")
@@ -222,6 +223,8 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
             "--ort-library",
             str(library),
         ]
+        if "komi" in iteration:
+            command += ["--komi", str(iteration["komi"])]
         command += (
             ["--reference-random"]
             if reference

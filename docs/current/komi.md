@@ -6,8 +6,10 @@ clamp to **[0,14]** (clipping, not rejection sampling). A separate seeded RNG st
 makes the sample independent of search, move selection and batching.
 
 `--komi 7 --komi-stddev 0` disables variation. The training loop exposes the same
-`komi` and `komi_stddev` configuration fields. Arena/rated games always use fixed
-**7** for both games of a colour-swapped pair; no Gaussian variation applies there.
+`komi` and `komi_stddev` configuration fields. Arena games default to fixed
+**7**, with `--komi VALUE` selecting another fixed value for both games of a
+colour-swapped pair; no Gaussian variation applies there. Champion challenges
+remain fixed at 7. Explicit cross-lineage comparisons can use 0.
 Existing rated results are not rescored.
 
 Komi awards White board points, where the whole board is `SZ²` points, not stone

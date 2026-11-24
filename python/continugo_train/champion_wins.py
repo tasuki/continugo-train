@@ -12,7 +12,7 @@ PROPERTY = re.compile(r"\s*([A-Z]+)((?:\s*\[(?:\\.|[^\]\\])*\])+)", re.DOTALL)
 VALUE = re.compile(r"\[((?:\\.|[^\]\\])*)\]", re.DOTALL)
 
 
-def root_result(path):
+def root_properties(path):
     # Neural move annotations can be megabytes; read only through the root.
     with path.open() as stream:
         text = ""
@@ -22,18 +22,25 @@ def root_result(path):
             if not text.startswith("(;"):
                 raise ValueError(f"invalid SGF root: {path}")
             position = 2
-            result = None
+            properties = {}
             while match := PROPERTY.match(text, position):
-                if match[1] == "RE":
-                    values = VALUE.findall(match[2])
-                    if result is not None or len(values) != 1:
-                        raise ValueError(f"invalid SGF result: {path}")
-                    result = values[0]
+                if match[1] in properties:
+                    raise ValueError(f"duplicate SGF root property: {path}")
+                properties[match[1]] = [re.sub(r"\\(.)", r"\1", value, flags=re.DOTALL)
+                                        for value in VALUE.findall(match[2])]
                 position = match.end()
             if text[position:].lstrip().startswith((";", ")")):
                 break
             if not chunk:
                 raise ValueError(f"invalid SGF root properties: {path}")
+    return properties
+
+
+def root_result(path):
+    values = root_properties(path).get("RE", [])
+    if len(values) > 1:
+        raise ValueError(f"invalid SGF result: {path}")
+    result = values[0] if values else None
     if result not in (None, "", "0", "Void", "?") and not re.fullmatch(
         r"[BW]\+(?:\d+(?:\.\d+)?|R|Resign|T|Time|F|Forfeit)", result
     ):
@@ -74,7 +81,7 @@ def update(artifacts_root):
             raise ValueError(f"ambiguous cross-lineage champion: {name}")
         return candidates[0] if candidates else None
 
-    for store in stores:
+    for store in [*stores, root]:
         for path in sorted((store / "sgfs").glob("*/*.sgf")):
             match = GAME_NAME.fullmatch(path.name)
             if match is None:

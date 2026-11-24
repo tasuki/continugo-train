@@ -51,9 +51,31 @@ class LineagePlotTests(unittest.TestCase):
             self.assertTrue(render.call_args.kwargs["champions_only"])
             matrix = root / "champion-wins.csv"
             self.assertTrue(matrix.is_file())
+            (root / "networks.csv").write_text(
+                "lineage,network,rating,deviation,games\nfirst,cg9-r0060,900,10,80\n"
+            )
+            joint_points = plot_ratings.collect_lineage_champions(root)
+            self.assertEqual(
+                next(
+                    p.rating
+                    for p in joint_points
+                    if p.campaign == "first" and p.network == "cg9-r0060"
+                ),
+                900,
+            )
+            self.assertEqual(
+                next(
+                    p.rating
+                    for p in joint_points
+                    if p.campaign == "second" and p.network == "cg9-r0060"
+                ),
+                200,
+            )
             matrix.unlink()
-            with patch.object(plot_ratings, "collect_points", return_value=points), \
-                    patch.object(plot_ratings, "plot"):
+            with (
+                patch.object(plot_ratings, "collect_points", return_value=points),
+                patch.object(plot_ratings, "plot"),
+            ):
                 plot_ratings.update(root / "first")
             self.assertTrue(matrix.is_file())
 

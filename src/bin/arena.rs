@@ -42,6 +42,9 @@ struct Args {
     /// Direct random-but-not-eye-filling reference; no MCTS on its turns.
     #[arg(long)]
     reference_random: bool,
+    /// Load and validate both models, then exit without creating output or games.
+    #[arg(long)]
+    check_models: bool,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
@@ -57,6 +60,9 @@ struct Args {
     size_weights: String,
     #[arg(long, default_value_t = 512)]
     max_moves: usize,
+    /// Fixed compensation awarded to White in every game of the pair.
+    #[arg(long, default_value_t = 7.0, allow_hyphen_values = true)]
+    komi: f64,
     #[arg(long, default_value_t = 32)]
     simulations: u32,
     #[arg(long, default_value_t = 1.5)]
@@ -123,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .checked_add(((end - 1) / 2) as u64)
         .ok_or("pair seed overflow")?;
     let config = SelfplayConfig {
-        komi: 7.0,
+        komi: args.komi,
         komi_stddev: 0.0,
         engine: if args.unguided {
             Engine::Mcts
@@ -175,6 +181,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(incumbent) = &mut incumbent {
         incumbent.configure_features(args.feature_threads, args.cache_positions)?;
+    }
+    if args.check_models {
+        return Ok(());
     }
     fs::create_dir_all(&args.output)?;
     let (mut wins, mut losses, mut draws, mut truncated) = (0, 0, 0, 0);
@@ -278,4 +287,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "arena: candidate={candidate_id} incumbent={incumbent_id} wins={wins} losses={losses} draws={draws} truncated={truncated}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arena_fixed_komi_defaults_to_seven_and_accepts_zero() {
+        let base = [
+            "arena",
+            "--candidate",
+            "model",
+            "--reference-random",
+            "--output",
+            "games",
+        ];
+        assert_eq!(Args::parse_from(base).komi, 7.0);
+        assert_eq!(
+            Args::parse_from(base.into_iter().chain(["--komi", "0"])).komi,
+            0.0
+        );
+        assert_eq!(
+            Args::parse_from(base.into_iter().chain(["--komi", "-2"])).komi,
+            -2.0
+        );
+    }
 }

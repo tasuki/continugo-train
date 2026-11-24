@@ -235,7 +235,17 @@ impl OnnxEvaluator {
             let (_, pass) = encoded["pass_logit"].try_extract_raw_tensor::<f32>()?;
             let (value_shape, value) = encoded["value"].try_extract_raw_tensor::<f32>()?;
             let (score_shape, score) = encoded["score"].try_extract_raw_tensor::<f32>()?;
-            let (stdev_shape, stdev) = encoded["score_stdev"].try_extract_raw_tensor::<f32>()?;
+            // Original separate-head checkpoints predict a point score, not a
+            // distribution. Zero deviation recovers deterministic score utility;
+            // never invent a learned uncertainty or migrate their weights.
+            let legacy = self.metadata.feature_spec.value.is_empty();
+            let point_stdev = vec![0.0; batch];
+            let (stdev_shape, stdev): (&[i64], &[f32]) = if legacy {
+                (&[batch as i64], &point_stdev)
+            } else {
+                let (shape, values) = encoded["score_stdev"].try_extract_raw_tensor::<f32>()?;
+                (shape, values)
+            };
             let (cell_shape, cells) = encoded["cells"].try_extract_raw_tensor::<f32>()?;
             let stride = self.metadata.config.policy_hidden * size * size;
             if shape
@@ -254,7 +264,9 @@ impl OnnxEvaluator {
                 || score.len() != batch
                 || stdev_shape != [batch as i64]
                 || stdev.len() != batch
-                || stdev.iter().any(|v| !v.is_finite() || *v <= 0.0)
+                || stdev
+                    .iter()
+                    .any(|v| !v.is_finite() || *v < 0.0 || (!legacy && *v == 0.0))
                 || spatial.iter().chain(pass).any(|v| !v.is_finite())
                 || value
                     .iter()

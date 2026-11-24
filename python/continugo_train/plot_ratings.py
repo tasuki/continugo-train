@@ -64,7 +64,10 @@ def data_positions(store, network_id):
 
 
 def collect_artifact_points(model_store):
+    from .lineage_ratings import overlay
     from .saved_models import saved_sources
+
+    joint = overlay(Path(model_store).parent)
 
     sources = {
         source["id"]: source for source in saved_sources(model_store, include_pruned=True).values()
@@ -78,6 +81,8 @@ def collect_artifact_points(model_store):
     points = []
     with (Path(model_store) / "networks.csv").open(newline="") as stream:
         for row in csv.DictReader(stream):
+            key = ("" if row["network"] == "random" else Path(model_store).name, row["network"])
+            row = joint.get(key, row)
             reference = row["network"] == "random"
             source = {} if reference else sources[row["network"]]
             positions = 0 if reference else source["progress"]["data_positions"]
@@ -208,6 +213,9 @@ def collect_points(model_store):
 
 def collect_lineage_champions(artifacts_root):
     """Read portable champion metadata only; no checkpoints or training runs."""
+    from .lineage_ratings import overlay
+
+    joint = overlay(artifacts_root)
     points = []
     for registry_path in sorted(Path(artifacts_root).glob("*/champions.json")):
         store = registry_path.parent
@@ -229,7 +237,7 @@ def collect_lineage_champions(artifacts_root):
                     ).read_text()
                 )
                 positions = metadata["progress"]["data_positions"]
-            row = ratings[name]
+            row = joint.get(("" if reference else store.name, name), ratings[name])
             rating, deviation = float(row["rating"]), float(row["deviation"])
             if (
                 type(positions) is not int

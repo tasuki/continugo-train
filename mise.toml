@@ -121,6 +121,11 @@ description = "Adaptive near-strength neural matching until uncertainty/evidence
 depends = ["build-ratings"]
 run = ".venv/bin/python -m continugo_train.adaptive_ratings"
 
+[tasks.compare-lineages]
+description = "Prepare (no games) or run/resume a frozen rated cross-lineage champion comparison"
+depends = ["build-ratings", "build-loop"]
+run = ".venv/bin/python -m continugo_train.compare_lineages"
+
 [tasks.round-robin]
 description = "Restartable rated head-to-head tournament using frozen standalone evaluation settings"
 depends = ["build-ratings"]

@@ -165,7 +165,9 @@ pub trait Evaluator {
 struct FeatureSpec {
     schema: u32,
     policy: String,
+    #[serde(default)]
     value: String,
+    #[serde(default)]
     trunk: String,
     targets: String,
     coarse: Vec<String>,
@@ -436,15 +438,17 @@ impl OnnxEvaluator {
         } else {
             ("global-pooling-v1", &[])
         };
-        if spec.trunk != trunk
+        let legacy = spec.schema < 7 && spec.trunk.is_empty() && spec.value.is_empty();
+        if (!legacy && spec.trunk != trunk)
             || spec.globals != globals
             || metadata.config.global_inputs != globals.len()
-            || spec.value
-                != if spec.schema == 7 {
-                    "shared-gaussian-linear-v2"
-                } else {
-                    "shared-gaussian-v1"
-                }
+            || (!legacy
+                && spec.value
+                    != if spec.schema == 7 {
+                        "shared-gaussian-linear-v2"
+                    } else {
+                        "shared-gaussian-v1"
+                    })
             || metadata
                 .config
                 .score_distribution
