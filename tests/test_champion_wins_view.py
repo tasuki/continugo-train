@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from continugo_train.champion_wins_view import generate, percentage_style
+from continugo_train.champion_wins_view import game_index, generate, percentage_style
 
 
 class ChampionWinsViewTests(unittest.TestCase):
@@ -78,6 +78,44 @@ class ChampionWinsViewTests(unittest.TestCase):
             self.assertIn("tbody tr:nth-child(4) > *{border-top:3px", page)
             self.assertNotIn("tr > :nth-child(4){border-left:3px", page)
             self.assertNotIn("tbody tr:nth-child(3) > *{border-top:3px", page)
+
+    def test_game_links_cover_both_storage_layouts_and_colours(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "artifacts"
+            shared = root / "sgfs/day with spaces"
+            legacy = root / "11/sgfs/day"
+            shared.mkdir(parents=True)
+            legacy.mkdir(parents=True)
+            a = legacy / "a-vs-b-seed1.sgf"
+            b = shared / "b-vs-a-seed2.sgf"
+            for path in [a, b, shared / "a-vs-other-seed3.sgf", shared / "game-partial.sgf"]:
+                path.write_text("game")
+            a.with_suffix(".nn.html").write_text("report")
+            data = game_index(root, ["random", "a", "b"])
+            self.assertEqual(set(data["games"]), {"1:2"})
+            games = data["games"]["1:2"]
+            self.assertEqual([g["name"] for g in games], [a.name, b.name])
+            self.assertEqual(games[0]["path"], "artifacts/11/sgfs/day/a-vs-b-seed1.sgf")
+            self.assertEqual(games[0]["sgf"], "11/sgfs/day/a-vs-b-seed1.sgf")
+            self.assertEqual(games[0]["nn"], "11/sgfs/day/a-vs-b-seed1.nn.html")
+            self.assertEqual(games[1]["sgf"], "sgfs/day%20with%20spaces/b-vs-a-seed2.sgf")
+            self.assertIsNone(games[1]["nn"])
+            csv_path = root / "champion-wins.csv"
+            with csv_path.open("w", newline="") as stream:
+                csv.writer(stream).writerows(
+                    [
+                        ["champion", "random", "a", "b"],
+                        ["random", "", "", ""],
+                        ["a", "", "", "1"],
+                        ["b", "", "1", ""],
+                    ]
+                )
+            page = generate(csv_path).read_text()
+            self.assertIn('id="game-data" type="application/json"', page)
+            self.assertIn('id="game-list"', page)
+            self.assertIn("artifacts/11/sgfs/day/a-vs-b-seed1.sgf", page)
+            self.assertIn("table.addEventListener('click'", page)
+            self.assertIn("table.addEventListener('keydown'", page)
 
     def test_invalid_matrix_does_not_replace_report(self):
         with tempfile.TemporaryDirectory() as temporary:

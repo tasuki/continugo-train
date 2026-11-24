@@ -5,8 +5,10 @@ import html
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from .loop import atomic_bytes
+from .rating_store import GAME_NAME
 
 STYLE = """
 :root{color-scheme:dark;font:14px system-ui,sans-serif;background:#14171d;color:#eee}
@@ -18,7 +20,11 @@ th,td{padding:12px;text-align:center;white-space:nowrap;border-right:1px solid #
 border-bottom:1px solid #414855;min-width:64px}
 th{background:#252b35}thead th{position:sticky;top:0;z-index:2}
 tbody th{position:sticky;left:0;text-align:left;z-index:1}thead th:first-child{left:0;z-index:3}
-td{background:#1e242d;cursor:default}td.empty{color:#7c8797}
+td{background:#1e242d;cursor:pointer}td.empty{color:#7c8797}
+td.chosen{box-shadow:inset 0 0 0 2px #fff}td.diagonal{cursor:default}
+#games{margin-top:24px}#games li{margin:10px 0}a{color:#80c7ff}
+.path{display:block;color:#929eaf;font-size:12px;overflow-wrap:anywhere}
+.pending{color:#929eaf}#games ol{padding-left:24px}
 td.diagonal{background:#000;color:#000}td.selected{outline:3px solid #80c7ff;outline-offset:-4px}
 td.mirror{outline:3px solid #ffd080;outline-offset:-4px}
 .legend{display:flex;align-items:center;gap:10px;margin:16px 0;color:#b9c1ce}
@@ -43,6 +49,34 @@ table.addEventListener('pointerover',e=>show(e.target.closest('td')));
 table.addEventListener('pointerleave',()=>show(document.activeElement.closest('td')));
 table.addEventListener('focusin',e=>show(e.target.closest('td')));
 table.addEventListener('focusout',e=>{if(!table.contains(e.relatedTarget))clear();});
+const gameData=JSON.parse(document.getElementById('game-data').textContent);
+function games(cell){
+ if(!cell||!cell.matches('td[data-row]'))return;
+ const r=Number(cell.dataset.row),c=Number(cell.dataset.col);
+ table.querySelectorAll('.chosen').forEach(e=>e.classList.remove('chosen'));
+ cell.classList.add('chosen');show(cell);
+ const list=document.getElementById('game-list');list.replaceChildren();
+ const heading=document.getElementById('games-heading');
+ heading.textContent=gameData.names[r]+' vs '+gameData.names[c];
+ const records=gameData.games[Math.min(r,c)+':'+Math.max(r,c)]||[];
+ document.getElementById('game-count').textContent=records.length+
+  ' recorded games (both colours, including draws and unfinished games).';
+ function link(href,text){const a=document.createElement('a');a.href=href;
+  a.textContent=text;a.target='_blank';a.rel='noopener';return a;}
+ for(const game of records){
+  const li=document.createElement('li');li.append(link(game.sgf,game.name),' · ');
+  if(game.nn)li.append(link(game.nn,'nn.html'));
+  else{const pending=document.createElement('span');pending.className='pending';
+   pending.textContent='NN report unavailable';li.append(pending);}
+  const path=document.createElement('code');path.className='path';
+  path.textContent=game.path;li.append(path);list.append(li);
+ }
+ heading.focus({preventScroll:true});
+ document.getElementById('games').scrollIntoView({behavior:'smooth',block:'start'});
+}
+table.addEventListener('click',e=>games(e.target.closest('td')));
+table.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){
+ const cell=e.target.closest('td[data-row]');if(cell){e.preventDefault();games(cell);}}});
 """
 
 
@@ -84,6 +118,33 @@ def lineage_separators(root, names):
     ]
 
 
+def game_index(root, names):
+    """Embed paths only, so local-file browsing requires no server or fetch."""
+    indices = {name: i for i, name in enumerate(names)}
+    games = {}
+    paths = [*root.glob("*/sgfs/*/*.sgf"), *root.glob("sgfs/*/*.sgf")]
+    for path in sorted(paths, key=lambda p: (p.name, p.as_posix())):
+        match = GAME_NAME.fullmatch(path.name)
+        if path.is_symlink() or match is None:
+            continue
+        black, white = match["black"], match["white"]
+        if black not in indices or white not in indices or black == white:
+            continue
+        a, b = sorted((indices[black], indices[white]))
+        report = path.with_suffix(".nn.html")
+        games.setdefault(f"{a}:{b}", []).append(
+            {
+                "name": path.name,
+                "path": path.relative_to(root.parent).as_posix(),
+                "sgf": quote(path.relative_to(root).as_posix(), safe="/"),
+                "nn": quote(report.relative_to(root).as_posix(), safe="/")
+                if report.is_file() and not report.is_symlink()
+                else None,
+            }
+        )
+    return {"names": names, "games": games}
+
+
 def generate(csv_path):
     csv_path = Path(csv_path)
     with csv_path.open(newline="") as stream:
@@ -118,7 +179,7 @@ def generate(csv_path):
             "<p>Rows win against columns. Hover or keyboard-focus a cell to highlight its mirror "
             "and see both counts. Percentages are row wins ÷ (row wins + opponent wins), "
             "excluding draws and unfinished games. Black diagonal = self; dash = no decisive games. "
-            "Results pool both colours and all komi settings.</p>"
+            "Results pool both colours and all komi settings. Click a cell for game links below.</p>"
         ),
         (
             '<div class="legend"><span>0% · losses</span><span class="scale" aria-hidden="true"></span>'
@@ -157,7 +218,19 @@ def generate(csv_path):
                 f"{display}</td>"
             )
         parts.append("</tr>")
-    parts.extend(["</tbody></table></div><script>", SCRIPT, "</script></html>"])
+    data = json.dumps(game_index(csv_path.parent, names)).replace("<", "\\u003c")
+    parts.extend(
+        [
+            '</tbody></table></div><section id="games" aria-labelledby="games-heading">',
+            '<h2 id="games-heading" tabindex="-1">Click a matchup to list its games</h2>',
+            '<p id="game-count"></p><ol id="game-list"></ol></section>',
+            '<script id="game-data" type="application/json">',
+            data,
+            "</script><script>",
+            SCRIPT,
+            "</script></html>",
+        ]
+    )
     output = csv_path.with_suffix(".html")
     atomic_bytes(output, "".join(parts).encode())
     return output
