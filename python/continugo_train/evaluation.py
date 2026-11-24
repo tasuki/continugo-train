@@ -11,7 +11,7 @@ class EvaluationConfig(LoopConfig):
     arena_binary: str = str(ROOT / "target/release/arena")
     rating_binary: str = str(ROOT / "target/release/rating")
     reference_games: int = 10
-    reference_max_moves: int = 2048
+    reference_max_moves: int = 512
     gate_games: int = 20
     gate_simulations: int = 128
     gate_max_moves: int = 512

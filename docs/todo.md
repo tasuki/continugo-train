@@ -9,6 +9,11 @@ Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 - [ ] Trial friendly/enemy **Benson pass-alive planes**; measure integrated cost
   and benefit before including them.
 
+## Game length
+
+- [ ] Increase the current 512-ply caps for self-play and all evaluation games
+  when moving to larger boards; check completion rates before choosing new caps.
+
 ## Move penalties
 
 - [ ] Investigate a penalty (1 point?) for meaningless moves in own or opponent territory.

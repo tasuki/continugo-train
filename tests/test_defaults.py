@@ -3,11 +3,19 @@
 import unittest
 from dataclasses import asdict
 
+from continugo_train.evaluation import EvaluationConfig
 from continugo_train.loop import LoopConfig
 from continugo_train.train import Options
 
 
 class LoopOptionTests(unittest.TestCase):
+    def test_all_new_game_caps_default_to_512_plies(self):
+        config = EvaluationConfig()
+        self.assertEqual(
+            (LoopConfig().max_moves, config.gate_max_moves, config.reference_max_moves),
+            (512, 512, 512),
+        )
+
     def test_loop_options_override_parent_io_and_caps_but_preserve_optimizer_and_losses(self):
         parent = Options(
             batch_size=2,
