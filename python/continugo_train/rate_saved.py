@@ -191,7 +191,7 @@ def initialize(store, args):
     return state
 
 
-def play_match(runner, registry, candidate, opponent, kind, games):
+def play_match(runner, registry, candidate, opponent, kind, games, *, visualize=True):
     state = runner.state
     key = f"{candidate}:{kind}:{opponent}"
     neural = opponent != "random"
@@ -239,7 +239,7 @@ def play_match(runner, registry, candidate, opponent, kind, games):
         match = job[match_key]
         if not match.get("rated"):
             state["rating_cache"], _summary = rating_store.refresh(
-                runner.root, runner.config, state.get("rating_cache")
+                runner.root, runner.config, state.get("rating_cache"), visualize=visualize
             )
             match["rated"] = True
             runner.save()

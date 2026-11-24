@@ -101,6 +101,26 @@ class ChampionTests(helpers.LoopHarness):
     def saved_state(self):
         return torch.load(self.store / "ratings/evaluator.pt", weights_only=True)
 
+    def test_extra_match_can_skip_neural_reports(self):
+        self.evaluate()
+        state = self.saved_state()
+        registry = rate_saved.load_champions(self.store)
+        history = copy.deepcopy(registry["history"])
+        with rate_saved.champion_lock(self.store) as lock_fd:
+            runner = rate_saved.ArtifactRunner(self.store, state, lock_fd)
+            with patch.object(rating_store.viewer_jobs, "generate") as generate:
+                report = rate_saved.play_match(
+                    runner, registry, self.ids[0], "random", "extra-test", 2,
+                    visualize=False,
+                )
+            generate.assert_not_called()
+        self.assertEqual(report["games"], 2)
+        self.assertEqual(registry["history"], history)
+        job = state["matches"][f"{self.ids[0]}:extra-test:random"]["reference"]
+        self.assertTrue(job["rated"])
+        self.assertTrue(all(not runner.path(g["path"]).with_suffix(".nn.html").exists()
+                            for g in job["games"]))
+
     def test_runtime_upgrade_preserves_champion_history_and_settings(self):
         self.evaluate()
         state = self.saved_state()
