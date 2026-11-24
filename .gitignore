@@ -3,17 +3,11 @@
 /runs/
 /scratch/
 /models/
-# Track portable models and rating summaries in every lineage; ignore everything else.
+# Track registries and rating summaries; force-add portable champion models.
 /artifacts/**
 !/artifacts/*/
-!/artifacts/*/models/
-!/artifacts/*/models/*/
-!/artifacts/*/models/*/*/
-!/artifacts/*/models/*/*/encoder.onnx
-!/artifacts/*/models/*/*/policy.onnx
-!/artifacts/*/models/*/*/metadata.json
 !/artifacts/*/champions.json
-!/artifacts/*/networks.csv
+!/artifacts/**/*.csv
 /models_*/
 __pycache__/
 *.egg-info/

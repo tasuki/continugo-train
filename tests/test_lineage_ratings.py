@@ -121,7 +121,27 @@ class LineageRatingsTests(unittest.TestCase):
             result = lineage_ratings.refresh(self.root, self.binary)
         return result, inspect.call_count
 
+    def test_network_order_is_numeric_by_lineage_generation_and_revision(self):
+        expected = [
+            ("9", "cg9-r9"),
+            ("9", "cg9-r10"),
+            ("9", "cg9-r99"),
+            ("9", "cg9-r100"),
+            ("9", "cg10-r1"),
+            ("9", "cg99-r1"),
+            ("9", "cg100-r1"),
+            ("10", "cg1-r1"),
+            ("99", "cg1-r2"),
+            ("100", "cg1-r3"),
+        ]
+        catalog = {name: {"lineage": lineage} for lineage, name in reversed(expected)}
+        self.assertEqual(
+            lineage_ratings.network_order(catalog),
+            [ratings.REFERENCE_ID, *(name for _, name in expected)],
+        )
+
     def test_joint_fit_updates_both_lineages_and_is_cached_and_order_independent(self):
+        self.catalog = dict(reversed(list(self.catalog.items())))
         self.game(self.shared / "a-vs-b-seed100.sgf", "a", "b", 100, "B+1")
         self.game(self.shared / "b-vs-a-seed100.sgf", "b", "a", 100, "W+1")
         states, calls = self.refresh()
@@ -132,6 +152,7 @@ class LineageRatingsTests(unittest.TestCase):
         self.assertEqual(states[ratings.REFERENCE_ID]["rating"], 100)
         self.assertEqual(self.refresh(), (states, 0))
         rows = lineage_ratings.overlay(self.root)
+        self.assertEqual(list(rows), [("", "random"), ("11", "a"), ("22", "b")])
         self.assertEqual(float(rows["11", "a"]["rating"]), states["a"]["rating"])
         champion_wins.update(self.root)
         self.assertIn("a,1,,2", (self.root / "champion-wins.csv").read_text())

@@ -8,6 +8,7 @@ The joint fit pools komi settings: it estimates one strength per checkpoint.
 import csv
 import fcntl
 import json
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -78,6 +79,17 @@ def sources(root):
                     "pruned": True,
                 }
     return result
+
+
+def network_order(catalog):
+    """Reference first, then lineage and checkpoint in natural numeric order."""
+    def natural(value):
+        return tuple(int(part) if part.isdigit() else part for part in re.split(r"(\d+)", value))
+
+    return [
+        ratings.REFERENCE_ID,
+        *sorted(catalog, key=lambda name: (natural(catalog[name]["lineage"]), natural(name), name)),
+    ]
 
 
 def shared_jobs(root):
@@ -242,7 +254,7 @@ def _refresh(root, feature_binary):
             files[key] = {"signature": signature, "sha256": digest, "record": record}
             records.append(record)
     states = joint_ratings.fit(records)
-    order = [ratings.REFERENCE_ID, *catalog]
+    order = network_order(catalog)
     rows = [
         {
             "lineage": "" if name == ratings.REFERENCE_ID else catalog[name]["lineage"],
