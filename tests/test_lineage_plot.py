@@ -49,6 +49,13 @@ class LineagePlotTests(unittest.TestCase):
                 self.assertEqual(plot_ratings.main(["--artifacts-root", str(root)]), 0)
             self.assertEqual(render.call_args.args[1], root / "ratings.png")
             self.assertTrue(render.call_args.kwargs["champions_only"])
+            matrix = root / "champion-wins.csv"
+            self.assertTrue(matrix.is_file())
+            matrix.unlink()
+            with patch.object(plot_ratings, "collect_points", return_value=points), \
+                    patch.object(plot_ratings, "plot"):
+                plot_ratings.update(root / "first")
+            self.assertTrue(matrix.is_file())
 
 
 if __name__ == "__main__":

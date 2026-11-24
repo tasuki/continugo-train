@@ -354,6 +354,9 @@ def update(model_store):
         plot(points, Path(model_store) / "ratings.png")
         artifacts_root = Path(model_store).parent
         if (Path(model_store) / "champions.json").is_file():
+            from .champion_wins import update as update_wins
+
+            update_wins(artifacts_root)
             plot(
                 collect_lineage_champions(artifacts_root),
                 artifacts_root / "ratings.png",
@@ -388,6 +391,10 @@ def main(argv=None):
             points = collect_lineage_champions(args.artifacts_root)
             output = args.output or args.artifacts_root / "ratings.png"
         plot(points, output, args.title, args.labels, champions_only=args.model_store is None)
+        from .champion_wins import update as update_wins
+
+        root = args.model_store.parent if args.model_store is not None else args.artifacts_root
+        update_wins(root)
     except (OSError, ValueError, ImportError) as error:
         print(f"plot error: {error}", file=sys.stderr)
         return 1

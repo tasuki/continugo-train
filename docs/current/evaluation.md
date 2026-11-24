@@ -161,6 +161,17 @@ they are not rated or treated as draws. Neural reports use each mover's own mode
 random turns have no neural model. Native game/model identities remain checked by
 the engine internally; public model metadata and filenames contain no content hashes.
 
+## Champion head-to-head table
+
+`artifacts/champion-wins.csv` is rebuilt alongside `ratings.png`, both after rated
+batches and by `plot-ratings`. Rows and columns start with `random`, followed by
+neural champions ordered by lineage name and then promotion order. Labels show
+only the model name (e.g. `cg11-r0055`), without the lineage. Cell `(A, B)` counts A's recorded wins against B across both colours;
+cell `(B, A)` counts the reverse. Draws and truncations add no wins. Blank means
+no recorded pairing (or the diagonal); zero means games exist but no wins.
+These are raw SGF counts, not fitted ratings or win percentages. Different komi
+or runtime settings are not separated in this table.
+
 ## Ratings, not another game ledger
 
 **SGFs are authoritative.** `networks.csv` is a derived summary:
