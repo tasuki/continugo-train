@@ -91,6 +91,10 @@ Each page is a **pre-move position**, relative to the player about to move:
   Navigation uses original SGF plies, including passes and skipped analysis turns;
   recorded policy overlays are disabled so they do not obscure diagnostic maps.
   Rust replay remains authoritative for all diagnostic features and labels.
+- Global scalar inputs share the first tile of the coarse-input gallery; each
+  scalar's name and value appear together, without a separate full-width section.
+  Scalar values and coarse/exact input ranges use two decimal places. Input tile
+  explanations appear only on image hover, not beneath the tiles.
 - Every coarse input plane, named and scaled: schema 7 has seventeen, ordered
   as friendly/enemy occupancy (0–1), three recent-move locations (2–4, newest
   first: enemy/friendly/enemy), group size (5–6), per-group total liberty area
