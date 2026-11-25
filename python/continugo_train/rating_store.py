@@ -1,13 +1,12 @@
 """Rebuildable ratings from the date-grouped SGFs, without a second game ledger."""
 
 import argparse
-import csv
 import json
 import re
 from collections import defaultdict
 from pathlib import Path
 
-from . import joint_ratings, ratings, viewer_jobs
+from . import ratings, viewer_jobs
 from .evaluation import EvaluationConfig
 from .saved_models import saved_sources
 
@@ -20,7 +19,7 @@ GAME_NAME = re.compile(
 def refresh(store, config, cache=None, *, visualize=True):
     """The checkpoint cache is disposable: delete it to replay the SGFs exactly.
 
-    All games are fitted jointly on every refresh. File paths/stat signatures
+    All lineages and shared games are fitted once on every refresh. File paths/stat signatures
     cache validated SGF parsing, never sequential rating states. The cache is
     disposable and is not a second authoritative game ledger.
     """
@@ -127,31 +126,17 @@ def refresh(store, config, cache=None, *, visualize=True):
                 raise ValueError(f"SGF filename disagrees with its contents: {path}")
             infos[relative] = record["info"]
             records.append({"black": black, "white": white, "result": record["result"]})
-    states = joint_ratings.fit(records)
-    summary = {}
-    for name, state in states.items():
-        public_name = "random" if name == ratings.REFERENCE_ID else name
-        summary[public_name] = {key: state[key] for key in COLUMNS if key != "network"}
-    directory = store
-    directory.mkdir(parents=True, exist_ok=True)
-    # Updating old ratings must not reshuffle their rows. New networks follow
-    # first evidence order (paired seed order), not lexical family-name order.
-    order = ["random"]
-    csv_path = directory / "networks.csv"
-    if csv_path.exists():
-        with csv_path.open(newline="") as stream:
-            order.extend(row["network"] for row in csv.DictReader(stream))
-    order.extend(
-        "random" if record[color] == ratings.REFERENCE_ID else record[color]
-        for record in records
-        for color in ("black", "white")
-    )
-    rows = [{"network": name, **summary[name]} for name in dict.fromkeys(order) if name in summary]
-    ratings._atomic_csv(directory / "networks.csv", COLUMNS, rows)
     from . import lineage_ratings
     from .plot_ratings import update
 
-    lineage_ratings.refresh(store.parent, config.feature_binary)
+    states = lineage_ratings.refresh(store.parent, config.feature_binary)
+    summary = {
+        "random" if name == ratings.REFERENCE_ID else name: {
+            key: state[key] for key in COLUMNS if key != "network"
+        }
+        for name, state in states.items()
+        if name == ratings.REFERENCE_ID or name in by_name
+    }
     update(store)  # Publish the chart before potentially slow neural reports.
     if visualize:
         skipped = set(registry.get("skipped", {}))
@@ -211,15 +196,22 @@ def main(argv=None):
 
         root = args.artifacts_root.resolve()
         manifests = sorted((root / "ratings/comparisons").glob("*.pt"))
-        if not manifests:
-            parser.error("prepare a lineage comparison first")
-        state = torch.load(manifests[-1], map_location="cpu", weights_only=True)
         with comparison_lock(root) as lock_fd:
-            runner = ComparisonRunner(root, state, lock_fd, manifests[-1])
-            runner.verify_runtime()
-            summary = lineage_ratings.refresh(root, runner.config.feature_binary)
-            if summary is not None:
-                plot_ratings.update(root / state["lineages"][0])
+            if manifests:
+                state = torch.load(manifests[-1], map_location="cpu", weights_only=True)
+                runner = ComparisonRunner(root, state, lock_fd, manifests[-1])
+                runner.verify_runtime()
+                feature_binary = runner.config.feature_binary
+                store = root / state["lineages"][0]
+            else:
+                evaluators = sorted(root.glob("*/ratings/evaluator.pt"))
+                if not evaluators:
+                    parser.error("start rate-saved first to freeze the evaluation protocol")
+                state = torch.load(evaluators[-1], map_location="cpu", weights_only=True)
+                feature_binary = EvaluationConfig.from_config(state["config"]).feature_binary
+                store = evaluators[-1].parent.parent
+            summary = lineage_ratings.refresh(root, feature_binary)
+            plot_ratings.update(store)
         print(json.dumps(summary, indent=2))
         return
     store = args.model_store.resolve()

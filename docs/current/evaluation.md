@@ -218,11 +218,21 @@ Pruned historical players are identified from archived
 SGFs and the existing network registry, without resurrecting model artifacts.
 The disposable parsing cache is `artifacts/ratings/joint-cache.pt`.
 
-The joint summary is **`artifacts/networks.csv`**, with an additional `lineage`
-column. Once present, both combined and per-lineage plots prefer those joint
-ratings over the independent lineage summaries. Later ordinary rated batches
-also refresh the joint fit. Per-lineage `networks.csv` files remain independent
-baseline fits; they must not be added to the joint summary as extra evidence.
+The canonical summary is **`artifacts/networks.csv`**, with an additional `lineage`
+column. There is one all-games fit per refresh, even before any cross-lineage
+matches exist. Ordinary rated batches also refresh this same fit. Per-lineage
+`networks.csv` files are filtered views of it, with identical ratings, deviations
+and game counts—not independent baseline fits or extra evidence. The evaluator's
+rating cache also uses this fit for rating-proximity opponent selection.
+
+Plot membership is unchanged: `artifacts/ratings.png` shows promoted champions;
+each lineage's `ratings.png` shows all its evaluated iterations. Every lineage's
+plot is refreshed because new evidence can change old opponents' ratings.
+
+Frozen campaigns retain their copied Python implementation. Working-tree changes
+do not hot-update an active evaluator. Migrate only at a checkpointed campaign
+boundary, preserving evaluator state, champion decisions, frozen match jobs and
+SGFs; do not edit runtime fingerprints underneath a running campaign.
 To rebuild explicitly:
 
 ```sh

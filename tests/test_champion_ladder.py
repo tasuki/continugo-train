@@ -175,7 +175,11 @@ class ChampionTests(helpers.LoopHarness):
     def test_joint_fit_cache_and_legacy_cache_match_full_rebuild(self):
         self.evaluate()
         config = EvaluationConfig.from_config(self.saved_state()["config"])
-        cache, expected = rating_store.refresh(self.store, config, visualize=False)
+        from continugo_train import joint_ratings
+
+        with patch.object(joint_ratings, "fit", wraps=joint_ratings.fit) as fit:
+            cache, expected = rating_store.refresh(self.store, config, visualize=False)
+        self.assertEqual(fit.call_count, 1)
         # Cached states are presentation only, never the input to the joint fit.
         cache["states"][self.ids[0]]["rating"] = -99999
         _, cached = rating_store.refresh(self.store, config, cache, visualize=False)

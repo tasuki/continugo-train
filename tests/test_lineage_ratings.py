@@ -1,4 +1,5 @@
 import argparse
+import csv
 import hashlib
 import json
 import tempfile
@@ -165,11 +166,32 @@ class LineageRatingsTests(unittest.TestCase):
         reversed_fit = joint_ratings.fit(list(reversed(records)))
         self.assertEqual(states, reversed_fit)
 
-    def test_prepare_without_games_does_not_change_ratings(self):
+    def test_lineage_games_are_fitted_without_any_shared_games(self):
         states, calls = self.refresh()
-        self.assertIsNone(states)
-        self.assertEqual(calls, 0)
-        self.assertFalse((self.root / "networks.csv").exists())
+        self.assertEqual(calls, 2)
+        self.assertEqual(states["a"]["games"], 1)
+        self.assertEqual(states["b"]["games"], 1)
+        self.assertTrue((self.root / "networks.csv").exists())
+
+    def test_local_tables_are_views_of_the_single_fit(self):
+        self.game(self.shared / "a-vs-b-seed100.sgf", "a", "b", 100, "B+1")
+        with patch.object(joint_ratings, "fit", wraps=joint_ratings.fit) as fit:
+            states, _ = self.refresh()
+        self.assertEqual(fit.call_count, 1)
+        for lineage, name in [("11", "a"), ("22", "b")]:
+            with (self.root / lineage / "networks.csv").open(newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual([row["network"] for row in rows], ["random", name])
+            self.assertEqual(float(rows[1]["rating"]), states[name]["rating"])
+            self.assertEqual(int(rows[1]["games"]), 2)
+        # Publishing another game's evidence changes both views, not only its caller.
+        before = states["b"]["rating"]
+        self.game(self.shared / "b-vs-a-seed100.sgf", "b", "a", 100, "W+1")
+        states, _ = self.refresh()
+        self.assertNotEqual(states["b"]["rating"], before)
+        with (self.root / "22/networks.csv").open(newline="") as stream:
+            row = list(csv.DictReader(stream))[1]
+        self.assertEqual(float(row["rating"]), states["b"]["rating"])
 
     def test_wrong_komi_or_runtime_or_seed_is_rejected(self):
         path = self.shared / "a-vs-b-seed100.sgf"

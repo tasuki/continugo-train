@@ -46,8 +46,10 @@ def sources(root):
 
     for registry in sorted(Path(root).glob("*/champions.json")):
         store = registry.parent
-        with (store / "networks.csv").open(newline="") as stream:
-            registered = {row["network"] for row in csv.DictReader(stream)}
+        registered = set()
+        if (store / "networks.csv").exists():
+            with (store / "networks.csv").open(newline="") as stream:
+                registered = {row["network"] for row in csv.DictReader(stream)}
         for path in sorted((store / "sgfs").glob("*/*.sgf")):
             match = GAME_NAME.fullmatch(path.name)
             if match is None:
@@ -114,9 +116,6 @@ def shared_jobs(root):
 
 def refresh(root, feature_binary):
     root = Path(root).resolve()
-    # Preparation alone must not change ratings or launch expensive historical replay.
-    if not any(GAME_NAME.fullmatch(p.name) for p in (root / "sgfs").glob("*/*.sgf")):
-        return None
     with joint_lock(root):
         return _refresh(root, feature_binary)
 
@@ -265,6 +264,23 @@ def _refresh(root, feature_binary):
         if name in states
     ]
     ratings._atomic_csv(root / "networks.csv", ["lineage", *COLUMNS], rows)
+    # Lineage tables are views of this same fit, never independent estimates.
+    # Preserve their existing display order and include only local participants.
+    reference = next((row for row in rows if row["network"] == "random"), None)
+    for registry in sorted(root.glob("*/champions.json")):
+        path = registry.parent / "networks.csv"
+        local = {row["network"]: row for row in rows if row["lineage"] == registry.parent.name}
+        if reference is not None:
+            local["random"] = reference
+        order = ["random"]
+        if path.exists():
+            with path.open(newline="") as stream:
+                order.extend(row["network"] for row in csv.DictReader(stream))
+        order.extend(local)
+        ratings._atomic_csv(path, COLUMNS, [
+            {key: local[name][key] for key in COLUMNS}
+            for name in dict.fromkeys(order) if name in local
+        ])
     atomic_checkpoint(cache_path, {"context": context, "files": files})
     return states
 

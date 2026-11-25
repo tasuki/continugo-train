@@ -365,6 +365,10 @@ def update(model_store):
             from .champion_wins import update as update_wins
 
             update_wins(artifacts_root)
+            # A single joint fit can move historical opponents in every lineage.
+            for registry in sorted(artifacts_root.glob("*/champions.json")):
+                if registry.parent != Path(model_store):
+                    plot(collect_points(registry.parent), registry.parent / "ratings.png")
             plot(
                 collect_lineage_champions(artifacts_root),
                 artifacts_root / "ratings.png",
