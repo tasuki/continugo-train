@@ -77,7 +77,7 @@ class NetworkConfig:
     value_channels: int = 16
     chunk_size: int = 65536
     top_cells: int = 32
-    exploration_cells: int = 8
+    exploration_cells: int = 16
     value_activation: str = "leaky_relu"
     score_distribution: str = "linear-softplus"
 

@@ -71,13 +71,13 @@ struct Args {
     chosen_move_temperature_halflife: f64,
     #[arg(long, default_value_t = 1.5)]
     cpuct: f64,
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(long, default_value_t = 3.0)]
     widening: f64,
     #[arg(long, default_value_t = 0.5)]
     widening_exponent: f64,
     #[arg(long, default_value_t = 128)]
     proposal_attempts: usize,
-    #[arg(long, default_value_t = 0.25)]
+    #[arg(long, default_value_t = 0.5)]
     independent_exploration: f64,
     /// Score fraction: 1 maximizes expected final score; 0 uses outcome only.
     #[arg(long, default_value_t = 0.5)]

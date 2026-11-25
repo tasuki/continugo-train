@@ -53,10 +53,10 @@ class LoopConfig:
     komi: float = 7.0
     komi_stddev: float = 2.0
     cpuct: float = 1.5
-    widening: float = 2.0
+    widening: float = 3.0
     widening_exponent: float = 0.5
     proposal_attempts: int = 128
-    independent_exploration: float = 0.25
+    independent_exploration: float = 0.5
     score_weight: float = 0.5
     concurrent_games: int = 32
     inference_batch_size: int = 32
