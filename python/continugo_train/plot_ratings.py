@@ -84,8 +84,8 @@ def collect_artifact_points(model_store):
             key = ("" if row["network"] == "random" else Path(model_store).name, row["network"])
             row = joint.get(key, row)
             reference = row["network"] == "random"
-            source = {} if reference else sources[row["network"]]
-            positions = 0 if reference else source["progress"]["data_positions"]
+            source = {} if reference else sources.get(row["network"], {})
+            positions = 0 if reference else source.get("progress", {}).get("data_positions")
             if positions is None:
                 print(f"WARNING: omitting {row['network']}: unknown lineage d", file=sys.stderr)
                 continue

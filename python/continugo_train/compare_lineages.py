@@ -116,7 +116,18 @@ def prepare(root, args, state_path):
     if args.games <= 0 or args.games % 2 or not math.isfinite(args.komi):
         raise ValueError("games must be positive and even; komi must be finite")
     stores = [root / name for name in (args.lineage_a, args.lineage_b)]
-    selected = [latest_champions(store, args.latest) for store in stores]
+    selected = []
+    for side, store in zip(("a", "b"), stores, strict=True):
+        explicit = getattr(args, f"models_{side}", None)
+        if explicit:
+            champions = {entry["model"] for entry in json.loads(
+                (store / "champions.json").read_text()
+            )["history"]} - {"random"}
+            if len(set(explicit)) != len(explicit) or any(name not in champions for name in explicit):
+                raise ValueError(f"choose distinct promoted neural champions from {store}")
+            selected.append(explicit)
+        else:
+            selected.append(latest_champions(store, args.latest))
     catalog = lineage_ratings.sources(root)
     for names, store in zip(selected, stores, strict=True):
         if any(name not in catalog or catalog[name].get("pruned") for name in names):
@@ -319,6 +330,8 @@ def main(argv=None):
     parser.add_argument("--lineage-a")
     parser.add_argument("--lineage-b")
     parser.add_argument("--latest", type=int)
+    parser.add_argument("--models-a", nargs="+", help="explicit promoted champions in lineage A")
+    parser.add_argument("--models-b", nargs="+", help="explicit promoted champions in lineage B")
     parser.add_argument("--games", type=int)
     parser.add_argument("--komi", type=float)
     parser.add_argument("--runtime", type=Path)
@@ -336,7 +349,7 @@ def main(argv=None):
     if args.action == "run":
         if args.historical_inspector or any(
             getattr(args, key) is not None
-            for key in ("lineage_a", "lineage_b", "latest", "games", "komi", "runtime", "device")
+            for key in ("lineage_a", "lineage_b", "latest", "models_a", "models_b", "games", "komi", "runtime", "device")
         ):
             parser.error("run restores frozen settings; supply only --name and --artifacts-root")
     else:

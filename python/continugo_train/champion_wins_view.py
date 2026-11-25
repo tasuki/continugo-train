@@ -176,12 +176,6 @@ def generate(csv_path):
         "</style>",
         "<h1>Champion head-to-head wins</h1>",
         (
-            "<p>Rows win against columns. Hover or keyboard-focus a cell to highlight its mirror "
-            "and see both counts. Percentages are row wins ÷ (row wins + opponent wins), "
-            "excluding draws and unfinished games. Black diagonal = self; dash = no decisive games. "
-            "Results pool both colours and all komi settings. Click a cell for game links below.</p>"
-        ),
-        (
             '<div class="legend"><span>0% · losses</span><span class="scale" aria-hidden="true"></span>'
             "<span>100% · wins (50% neutral)</span></div>"
         ),
