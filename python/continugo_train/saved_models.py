@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 from . import archive
-from .paths import DEFAULT_MODEL_STORE, ROOT
+from .paths import ROOT
 from .progress import checkpoint_progress, network_name
 from .train import checkpoint_splits
 
@@ -206,7 +206,7 @@ def main(argv=None):
     source.add_argument("--runs", type=Path)
     parser.add_argument("--every", type=int, default=1)
     parser.add_argument("--iteration", type=int)
-    parser.add_argument("--model-store", type=Path, default=DEFAULT_MODEL_STORE)
+    parser.add_argument("--model-store", type=Path, help="override the store saved in each loop")
     args = parser.parse_args(argv)
     if args.iteration is not None and args.loop is None:
         parser.error("--iteration requires --loop")

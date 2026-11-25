@@ -9,7 +9,6 @@ from pathlib import Path
 
 from . import joint_ratings, ratings, viewer_jobs
 from .evaluation import EvaluationConfig
-from .paths import DEFAULT_MODEL_STORE
 from .saved_models import saved_sources
 
 COLUMNS = ["network", "rating", "deviation", "games", "wins", "losses", "draws", "truncated"]
@@ -201,8 +200,8 @@ def main(argv=None):
     from .train import atomic_checkpoint
 
     parser = argparse.ArgumentParser(description=__doc__)
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--model-store", type=Path, default=DEFAULT_MODEL_STORE)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--model-store", type=Path)
     selection.add_argument("--artifacts-root", type=Path,
                            help="rebuild the joint cross-lineage ratings")
     args = parser.parse_args(argv)

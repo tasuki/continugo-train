@@ -13,8 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .paths import DEFAULT_MODEL_STORE
-
 BINARIES = ("continugo-train", "features", "arena", "rating")
 
 
@@ -274,7 +272,7 @@ def prepare(root, run, recipe, lock_fd=None):
         model_store=str(
             root / "artifacts" / recipe["lineage"]
             if "lineage" in recipe
-            else state["config"].get("model_store", str(DEFAULT_MODEL_STORE))
+            else state["config"]["model_store"]
         ),
         warm_start_optimizer="keep",
     )

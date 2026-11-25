@@ -489,7 +489,9 @@ Sources: [wire encoder](../../src/feature_io.rs),
 
 Caches additionally pin feature names, target version, density, extractor SHA-256
 and SGF SHA-256. Matching a schema number alone is not enough. SHA-256 identities
-are 64 lowercase hexadecimal characters. `artifacts/` is the default model store;
+are 64 lowercase hexadecimal characters. There is no default model store: new
+standalone loops and rating commands require `--model-store PATH`; campaigns and
+resumed loops use their recorded lineage store;
 training/loop outputs default under `runs/`, experiments under `scratch/` (see
 [artifact paths](artifacts.md)). Native standalone self-play defaults to stdout
 (`--output -`). Saved model snapshots default to every round, including later

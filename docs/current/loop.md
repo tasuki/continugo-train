@@ -32,7 +32,7 @@ Requires a full training checkpoint and the CPU/CUDA setup in [inference](infere
 The supervisor requires POSIX process groups and `flock`.
 
 ```sh
-mise run loop -- --checkpoint PATH/TO/checkpoint.pt --bootstrap-data PATH/TO/window-games --iterations 2 --games-per-iteration 10 --train-epochs 1 --steps-per-epoch 20
+mise run loop -- --checkpoint PATH/TO/checkpoint.pt --model-store artifacts/LINEAGE --bootstrap-data PATH/TO/window-games --iterations 2 --games-per-iteration 10 --train-epochs 1 --steps-per-epoch 20
 # Use the dated path printed by the first command:
 mise run loop -- --output runs/YYYYMMDD-HHMMSS-loop --resume
 # Increase the TOTAL iteration target, not an additional count:
@@ -88,8 +88,8 @@ Training creates no `gate/`, `reference/`, `initial-reference/` or
 Evaluate saved models separately:
 
 ```sh
-mise run rate-saved -- --family cg5
-mise run rate-saved -- --resume
+mise run rate-saved -- --model-store artifacts/LINEAGE --family cg5
+mise run rate-saved -- --model-store artifacts/LINEAGE --resume
 ```
 
 The standalone evaluator owns its protocol, 10+30-game champion challenges and

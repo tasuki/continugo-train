@@ -2,9 +2,10 @@
 
 Training owns its checkpoints, training/validation windows and intermediate exports under `runs/`.
 Each lineage owns a durable store under **`artifacts/<lineage>/`**.
-The existing lineage is `20261111`; its store is the default, defined once as
-`DEFAULT_MODEL_STORE` in `python/continugo_train/paths.py`. Use `--model-store PATH`
-to select another lineage, with independent champions, ratings and SGFs.
+There is no default lineage store. New standalone loops and rating commands require
+`--model-store PATH`, selecting independent champions, ratings and SGFs.
+Resumed loops retain their recorded store. Model backfills inherit each loop's store
+unless explicitly overridden.
 Campaign recipes may select a `lineage`; otherwise they inherit the parent's store.
 Training runs and their checkpoints remain untouched by artifact-store migration.
 

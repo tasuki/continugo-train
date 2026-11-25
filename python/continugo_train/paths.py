@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MODEL_STORE = ROOT / "artifacts/20261111"
 
 
 def plot_directory(run):

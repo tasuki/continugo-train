@@ -30,7 +30,7 @@ import torch
 
 from . import archive
 from .features import inspect_game
-from .paths import DEFAULT_MODEL_STORE, utc_now
+from .paths import utc_now
 from .progress import checkpoint_progress, network_name
 from .sampling import weighted_sizes
 from .train import atomic_checkpoint, checkpoint_splits
@@ -887,7 +887,7 @@ def refresh(store):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-store", type=Path, default=DEFAULT_MODEL_STORE)
+    parser.add_argument("--model-store", type=Path, required=True)
     parser.add_argument("--ingest", nargs="+", type=Path, help="manual arena SGFs/directories")
     parser.add_argument(
         "--protocol-from",

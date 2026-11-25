@@ -141,12 +141,12 @@ mise run rate-saved -- --family cg5 --simulations 128
 mise run rate-saved -- --resume
 
 # Rebuild the rating summary from the SGFs:
-mise run ratings
+mise run ratings -- --model-store artifacts/20261122
 mise run plot-ratings
 ```
 
-`--model-store PATH` selects a lineage artifact root; the default is
-`artifacts/20261111/` (centralized in `paths.DEFAULT_MODEL_STORE`). There is
+`--model-store PATH` is required to select a lineage artifact root; there is no
+default lineage. There is
 no per-study `--output` directory. One inherited OS lock serializes the evaluator
 and its arena children. The queue, frozen runtime/protocol, seed reservations,
 partial-match progress and disposable rating cache live in `ratings/evaluator.pt`.

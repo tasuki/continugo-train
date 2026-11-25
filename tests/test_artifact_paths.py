@@ -165,7 +165,7 @@ class ArtifactPathsTests(helpers.LoopHarness):
         self.assertEqual(archive.find_bundle(parent, "accepted", second_hash), directories[1])
 
     def test_new_loop_defaults_inside_repo_and_auto_dated_output(self):
-        self.assertEqual(Path(loop.LoopConfig().model_store), loop.ROOT / "artifacts")
+        self.assertIsNone(loop.LoopConfig().model_store)
         args = self.args(self.root / "unused")
         args.output = None
 

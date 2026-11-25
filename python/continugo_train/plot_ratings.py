@@ -17,7 +17,7 @@ from pathlib import Path
 import torch
 
 from . import archive
-from .paths import DEFAULT_MODEL_STORE
+from .paths import ROOT
 from .plot_metrics import pyplot, save_figure
 from .progress import checkpoint_progress
 from .ratings import REFERENCE_ID, transaction
@@ -382,7 +382,7 @@ def main(argv=None):
     source.add_argument(
         "--artifacts-root",
         type=Path,
-        default=DEFAULT_MODEL_STORE.parent,
+        default=ROOT / "artifacts",
         help="plot champions across lineages (default %(default)s)",
     )
     parser.add_argument(

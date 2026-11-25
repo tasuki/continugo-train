@@ -26,7 +26,7 @@ from . import archive, plot_metrics, plot_timing, promote, timing
 from .data import inspect_corpus, merge_split_assignments, scan_corpus
 from .features import feature_binary, inspect_game
 from .model import NetworkConfig, PolicyValueNet
-from .paths import DEFAULT_MODEL_STORE, new_run_directory
+from .paths import new_run_directory
 from .progress import checkpoint_progress, data_history, network_name
 from .progress import initialize as initialize_progress
 from .runtime import inference_environment
@@ -82,7 +82,7 @@ class LoopConfig:
     feature_binary: str = str(ROOT / "target/release/features")
     ort_library: str | None = None
     save_model_every: int = 1
-    model_store: str = str(DEFAULT_MODEL_STORE)
+    model_store: str | None = None
 
     def validate(self):
         from .feature_cache import MODES
@@ -1191,6 +1191,8 @@ def parse_args(argv=None):
 
 
 def run_loop(args):
+    if not args.resume and not args.model_store:
+        raise ValueError("--model-store is required for a new loop")
     if args.migrate_storage and not args.resume:
         raise ValueError("--migrate-storage requires --resume")
     if args.output is None:

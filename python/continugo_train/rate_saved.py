@@ -13,7 +13,7 @@ import torch
 from . import archive, gate, plot_ratings, rating_store, ratings, timing
 from .evaluation import EvaluationConfig, EvaluationRunner
 from .loop import atomic_bytes
-from .paths import DEFAULT_MODEL_STORE, utc_now
+from .paths import utc_now
 from .saved_models import saved_sources
 from .train import atomic_checkpoint, feature_spec
 
@@ -516,7 +516,9 @@ def include_family(runner, registry, family, cadence=None):
 
 
 def run(args):
-    store = (args.model_store or DEFAULT_MODEL_STORE).resolve()
+    if args.model_store is None:
+        raise ValueError("--model-store is required")
+    store = args.model_store.resolve()
     archive.initialize_store(store)
     with champion_lock(store) as lock:
         path = store / "ratings/evaluator.pt"
@@ -555,7 +557,7 @@ def run(args):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--model-store", type=Path, help=f"lineage artifact root (default {DEFAULT_MODEL_STORE})"
+        "--model-store", type=Path, required=True, help="lineage artifact root"
     )
     parser.add_argument("--family", help="model family to evaluate (default cg5)")
     parser.add_argument(

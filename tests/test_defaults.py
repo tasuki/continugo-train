@@ -1,14 +1,31 @@
 """Loop option forwarding and inheritance, without pinning tunable defaults."""
 
 import unittest
+import io
+from contextlib import redirect_stderr
 from dataclasses import asdict
 
 from continugo_train.evaluation import EvaluationConfig
+from continugo_train import loop, rate_saved, rating_store, ratings
 from continugo_train.loop import LoopConfig
 from continugo_train.train import Options
 
 
 class LoopOptionTests(unittest.TestCase):
+    def test_model_store_has_no_implicit_lineage(self):
+        self.assertIsNone(LoopConfig().model_store)
+        with self.assertRaisesRegex(ValueError, "--model-store is required"):
+            loop.run_loop(loop.parse_args([]))
+
+    def test_rating_commands_require_explicit_store_selection(self):
+        for command in (rate_saved.parse_args, ratings.main, rating_store.main):
+            with self.subTest(command=command.__module__):
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                    command([])
+                self.assertEqual(error.exception.code, 2)
+        args = rate_saved.parse_args(["--model-store", "artifacts/20261122"])
+        self.assertEqual(str(args.model_store), "artifacts/20261122")
+
     def test_all_new_game_caps_default_to_512_plies(self):
         config = EvaluationConfig()
         self.assertEqual(
