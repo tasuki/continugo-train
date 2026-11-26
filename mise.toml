@@ -131,6 +131,10 @@ description = "Restartable rated head-to-head tournament using frozen standalone
 depends = ["build-ratings"]
 run = ".venv/bin/python -m continugo_train.round_robin"
 
+[tasks.play]
+description = "Play a saved model in the local browser (CPU by default)"
+run = ".venv/bin/python -m continugo_train.play"
+
 [tasks.infer]
 description = "Native ONNX diagnostics (CUDA by default; --device cpu for CPU)"
 run = ".venv/bin/python -m continugo_train.runtime infer"

@@ -207,6 +207,21 @@ impl MoveEvaluation {
     }
 }
 
+/// The same post-move evaluation and pre-move visits used by self-play SGFs.
+pub fn neural_move_comment(
+    game: &Game,
+    evaluator: &mut dyn Evaluator,
+    policy: &[Visit],
+) -> Result<String, String> {
+    let comment = MoveComment {
+        evaluation: MoveEvaluation::after_move(game, Some(evaluator))?,
+        policy: Some(policy),
+        train_policy: None,
+        profile: None,
+    };
+    serde_json::to_string(&comment).map_err(|error| error.to_string())
+}
+
 #[derive(Serialize)]
 struct MoveComment<'a> {
     #[serde(flatten)]
@@ -704,6 +719,33 @@ mod tests {
                 score_stdev: 0.0,
             })
         }
+    }
+
+    #[test]
+    fn browser_comments_use_the_selfplay_format() {
+        use crate::action::Action;
+        let game = Game::new(Board::new(9).unwrap()).pass().unwrap();
+        let mut evaluator = FixedEstimate {
+            value: -0.268,
+            score: -0.1,
+            seen: Vec::new(),
+        };
+        let policy = [
+            Visit {
+                action: Action::from_index(200_200).unwrap(),
+                visits: 3,
+            },
+            Visit {
+                action: Action::PASS,
+                visits: 5,
+            },
+        ];
+        let comment = neural_move_comment(&game, &mut evaluator, &policy).unwrap();
+        assert_eq!(
+            comment,
+            r#"{"win_pct":63.4,"score":8.1,"policy":[["",5],["dSdS",3]]}"#
+        );
+        assert_eq!(evaluator.seen, vec![game]);
     }
 
     #[test]

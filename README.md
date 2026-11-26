@@ -91,6 +91,23 @@ mise run arena -- --help
 mise run rate-models -- --help
 ```
 
+## Play locally
+
+```sh
+mise run play -- --model artifacts/20261122/models/cg11/r0055
+```
+
+Open the printed URL (no query flags needed). Under **Play**, choose **Human**
+(both moves) or **Bot**, your colour, board size (presets or custom), and komi,
+then click **Start**. Komi defaults to 7. Bot setup also has a simulations-per-move
+slider (1–1024); the selected budget applies to the new game.
+**Replay** opens/drops or pastes SGF records.
+CPU inference and 128 simulations are the defaults;
+use `--device cuda` or `--simulations N` to change them. Browsing pauses the bot;
+**Back to game** returns to the live position and resumes play.
+The launcher builds the sibling `../continugo/frontend/` and serves it on localhost
+(port 9072). The model stays loaded until Ctrl-C; no training or migration is needed.
+
 Self-play saves self-contained SGF records; nonstandard training data goes in comments. Existing files are not overwritten.
 Completed MCTS/neural games also get compressed `features/*.cfeat` sidecars by default.
 Training requires sidecars by default; explicitly build imported corpora's caches
