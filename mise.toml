@@ -160,9 +160,9 @@ run = [
 ]
 
 [tasks.selfplay]
-description = "Generate baseline MCTS games (arguments are forwarded)"
-run = "cargo run --locked --release --"
+description = "Generate self-play data with the training search settings (arguments are forwarded)"
+run = ".venv/bin/python -m continugo_train.runtime generate"
 
 [tasks.smoke]
 description = "Short pipeline check; output games may be truncated"
-run = "cargo run --locked --release -- --games 2 --sizes 9,19 --max-moves 12 --simulations 16"
+run = ".venv/bin/python -m continugo_train.runtime generate --games 2 --sizes 9,19 --max-moves 12 --simulations 16 --policy-search-probability 0"

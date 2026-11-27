@@ -8,23 +8,24 @@ use continugo_train::{
     action::Action,
     inference::{Evaluator, InferenceDevice, OnnxEvaluator},
     replay::load_position,
-    search::{SearchConfig, search_neural},
+    search::{SearchParameters, search_neural},
 };
 use rand::{SeedableRng, rngs::StdRng};
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, time::Instant};
 
 #[derive(Parser)]
+#[command(args_override_self = true)]
 struct Args {
     #[arg(long)]
     model: PathBuf,
     #[arg(long)]
     ort_library: Option<PathBuf>,
-    #[arg(long, default_value_t = 1)]
+    #[arg(long)]
     threads: usize,
-    #[arg(long, default_value_t = 6)]
+    #[arg(long)]
     feature_threads: usize,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long)]
     cache_positions: usize,
     #[arg(long, value_enum, default_value = "cuda")]
     device: InferenceDevice,
@@ -56,8 +57,8 @@ struct Args {
     /// Run a seeded root search and label its visits after search (diagnostic only).
     #[arg(long, conflicts_with = "value_only")]
     simulations: Option<u32>,
-    #[arg(long, default_value_t = 0.5)]
-    score_weight: f64,
+    #[command(flatten)]
+    search: SearchParameters,
     #[arg(long, default_value_t = 0)]
     seed: u64,
 }
@@ -104,11 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(&args.sgf)?;
     let position = load_position(&text, args.ply)?;
     if let Some(simulations) = args.simulations {
-        let config = SearchConfig {
-            simulations,
-            score_weight: args.score_weight,
-            ..Default::default()
-        };
+        let config = args.search.config(simulations);
         let started = Instant::now();
         let estimate = evaluator.estimate(&position.game)?;
         let mut rng = StdRng::seed_from_u64(args.seed);

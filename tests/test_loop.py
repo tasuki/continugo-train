@@ -77,7 +77,8 @@ class FakeJobs:
             text = text.replace('["",3', '["",8')
             text = text.replace(";B[]", r';B[]C[{"policy":[["",8\]\]}]')
             root = {"seed": seed + index, "model": model, "search": search}
-            if "--policy-search-probability" in command:
+            if ("--policy-search-probability" in command
+                    and float(value("policy_search_probability")) > 0):
                 probability = float(value("policy_search_probability"))
                 full = int(value("policy_simulations"))
                 root["policy_search"] = {"simulations": full, "probability": probability}

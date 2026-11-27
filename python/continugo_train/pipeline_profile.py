@@ -22,9 +22,11 @@ from .memory import GpuMemorySampler
 from .model import NetworkConfig, PolicyValueNet
 from .paths import ROOT, new_run_directory
 from .runtime import inference_environment
+from .sampling import DEFAULT_SIZES
+from .selfplay import SelfplayConfig
 from .train import Options, feature_spec, run_phase
 
-SIZES = (9, 13, 19)
+SIZES = DEFAULT_SIZES
 
 
 def sha256(path):
@@ -161,11 +163,11 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--iterations", type=int, default=3)
-    parser.add_argument("--feature-threads", type=int, default=6)
+    parser.add_argument("--feature-threads", type=int, default=SelfplayConfig.feature_threads)
     parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--concurrent-games", type=int, default=32)
-    parser.add_argument("--inference-batch-size", type=int, default=32)
-    parser.add_argument("--inference-batch-wait-ms", type=int, default=2)
+    parser.add_argument("--concurrent-games", type=int, default=SelfplayConfig.concurrent_games)
+    parser.add_argument("--inference-batch-size", type=int, default=SelfplayConfig.inference_batch_size)
+    parser.add_argument("--inference-batch-wait-ms", type=int, default=SelfplayConfig.inference_batch_wait_ms)
     parser.add_argument("--workers", type=int, default=Options().workers)
     parser.add_argument("--batch-size", type=int, default=Options().batch_size)
     parser.add_argument("--steps", type=int, default=12)
@@ -174,7 +176,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--simulations", type=int, default=8)
-    parser.add_argument("--max-moves", type=int, default=512)
+    parser.add_argument("--max-moves", type=int, default=SelfplayConfig.max_moves)
     parser.add_argument("--seed", type=int, default=800)
     args = parser.parse_args(argv)
     if (
@@ -272,12 +274,15 @@ def main(argv=None):
 
     print(f"Output: {output}", flush=True)
     save()
+    from .selfplay import arguments, diagnostic_settings
+
     for position in positions:
         for value_only in (False, True):
             label = f"{position['size']}-{position['phase']}-{'value' if value_only else 'policy'}"
             print(label, flush=True)
             command = [
                 str(ROOT / "target/release/infer"),
+                *arguments(diagnostic_settings()),
                 "--model",
                 str(args.model.resolve()),
                 "--ort-library",
@@ -315,6 +320,7 @@ def main(argv=None):
     _, process = measured_command(
         [
             str(ROOT / "target/release/continugo-train"),
+            *arguments(SelfplayConfig(policy_search_probability=0.0).native_settings()),
             "--engine",
             "neural",
             "--model",

@@ -4,6 +4,7 @@ from dataclasses import dataclass, fields
 
 from . import ratings
 from .loop import ROOT, LoopConfig, LoopRunner
+from .selfplay import SelfplayConfig
 
 
 @dataclass(frozen=True)
@@ -11,15 +12,23 @@ class EvaluationConfig(LoopConfig):
     arena_binary: str = str(ROOT / "target/release/arena")
     rating_binary: str = str(ROOT / "target/release/rating")
     reference_games: int = 10
-    reference_max_moves: int = 512
+    reference_max_moves: int = SelfplayConfig.max_moves
     gate_games: int = 20
     gate_simulations: int = 128
-    gate_max_moves: int = 512
+    gate_max_moves: int = SelfplayConfig.max_moves
 
     def search(self):
-        # Evaluation always selects maximum visits; self-play temperatures are
-        # neither arena CLI settings nor part of the frozen rating protocol.
-        return {name: value for name, value in super().search().items() if name in ratings.SEARCH_TYPES}
+        # The arena and evaluator use the same fixed budget and search settings.
+        return self.evaluation_search() | {"simulations": self.gate_simulations}
+
+    def arena_settings(self):
+        return self.search() | self.inference() | {
+            "simulations": self.gate_simulations,
+            "games": self.gate_games,
+            "max_moves": self.gate_max_moves,
+            "sizes": ",".join(map(str, self.sizes)),
+            "size_weights": self.size_weights,
+        }
 
     @classmethod
     def from_config(cls, config):

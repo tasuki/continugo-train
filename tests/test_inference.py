@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import unittest
 from dataclasses import asdict, replace
@@ -12,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from native_settings import run as run_native
 from test_features import SGF
 
 from continugo_train.export import export_checkpoint, runtime_path
@@ -72,7 +72,7 @@ class NativeInferenceTests(unittest.TestCase):
         environment=None,
         extra=(),
     ):
-        return subprocess.run(
+        return run_native(
             [
                 str(INFER_BINARY),
                 "--model",
@@ -121,14 +121,14 @@ class NativeInferenceTests(unittest.TestCase):
             "1",
         ]
         binary = str(ROOT / "target/release/continugo-train")
-        baseline = subprocess.run(
+        baseline = run_native(
             [binary, *common, "--output", str(directory / "plain")],
             check=False,
             capture_output=True,
             text=True,
         )
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
-        viewed = subprocess.run(
+        viewed = run_native(
             [
                 binary,
                 *common,
@@ -148,7 +148,7 @@ class NativeInferenceTests(unittest.TestCase):
             next((directory / "viewed").glob("*.sgf")).read_bytes(),
         )
         self.assertEqual(len(list((directory / "viewed").glob("*.nn.html"))), 1)
-        arena = subprocess.run(
+        arena = run_native(
             [
                 str(ROOT / "target/release/arena"),
                 "--candidate",
@@ -539,7 +539,7 @@ class NativeInferenceTests(unittest.TestCase):
 
     def check_search(self, device="cpu", library=None, environment=None):
         output = self.root / f"games-{device}"
-        result = subprocess.run(
+        result = run_native(
             [
                 str(ROOT / "target/release/continugo-train"),
                 "--engine",
@@ -587,7 +587,7 @@ class NativeInferenceTests(unittest.TestCase):
         for ply, comment in enumerate(comments, 1):
             annotation = json.loads(comment.replace("\\]", "]").replace("\\\\", "\\"))
             self.assertEqual(list(annotation)[:3], ["win_pct", "score", "policy"])
-            estimate = subprocess.run(
+            estimate = run_native(
                 [
                     str(INFER_BINARY),
                     "--model",
@@ -628,7 +628,7 @@ class NativeInferenceTests(unittest.TestCase):
             CONTINUGO_TEST_DEVICE=device,
             ORT_DYLIB_PATH=str(library or self.library),
         )
-        result = subprocess.run(
+        result = run_native(
             [
                 "cargo",
                 "test",
@@ -660,7 +660,7 @@ class NativeInferenceTests(unittest.TestCase):
     def test_concurrent_games_keep_stable_seeds_and_replayable_records(self):
         def run(name, concurrency, batch):
             output = self.root / name
-            result = subprocess.run(
+            result = run_native(
                 [
                     str(ROOT / "target/release/continugo-train"),
                     "--engine",
@@ -714,7 +714,7 @@ class NativeInferenceTests(unittest.TestCase):
                 sample = load_position(folder / name, 0)
                 self.assertEqual(sample.visits.sum().item(), 4)
         # Output failure cancels new games but drains in-flight queries and joins.
-        failure = subprocess.run(
+        failure = run_native(
             [
                 str(ROOT / "target/release/continugo-train"),
                 "--engine",

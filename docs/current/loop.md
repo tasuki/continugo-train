@@ -93,7 +93,9 @@ mise run rate-saved -- --model-store artifacts/LINEAGE --resume
 ```
 
 The standalone evaluator owns its protocol, 10+30-game champion challenges and
-post-promotion ten-game random calibration (not for rejected challengers).
+post-promotion history calibration: 50 games each against up to three opponents
+(the defeated champion plus other available historical opponents, including random).
+There is no separate mandatory random calibration batch.
 Seven wins in ten permit continuation; 28 wins
 in forty **automatically replace the evaluation champion**, initially the random
 bot. Rated neural moves use 128 simulations by default. Publication is still a

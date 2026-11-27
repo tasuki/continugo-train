@@ -9,8 +9,8 @@ use continugo_train::{
     feature_cache::FeatureCacheArgs,
     inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
     nn_html::NnHtmlArgs,
-    sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
-    search::{SearchConfig, rollout::RolloutArgs},
+    sampling::weighted_sizes,
+    search::{SearchParameters, rollout::RolloutArgs},
     selfplay::{
         Engine, GameRecord, PolicySearchConfig, SelfplayConfig, generate, generate_neural,
         generate_profiled,
@@ -28,6 +28,7 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
+    args_override_self = true,
     about = "ContinuGo random, unguided MCTS and native ONNX neural MCTS self-play"
 )]
 struct Args {
@@ -36,52 +37,41 @@ struct Args {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     games: u32,
     /// Supported board equivalents; allocation follows --size-weights.
-    #[arg(long, value_delimiter = ',', default_value = "9,13,19", num_args = 1..)]
+    #[arg(long, value_delimiter = ',', required = true, num_args = 1.., action = clap::ArgAction::Set)]
     sizes: Vec<i32>,
-    /// Board mix: default size 9 only (100%/0%/0%); 'uniform' cycles literal sizes.
-    #[arg(long, default_value = DEFAULT_SIZE_WEIGHTS)]
+    /// Board mix supplied by the caller; 'uniform' cycles literal sizes.
+    #[arg(long)]
     size_weights: String,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     /// Mean komi, in White's point-equivalents.
-    #[arg(long, default_value_t = 7.0, allow_negative_numbers = true)]
+    #[arg(long, allow_negative_numbers = true)]
     komi: f64,
     /// Game-level Gaussian variation, rounded to half points and capped at 0..14.
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(long)]
     komi_stddev: f64,
-    #[arg(long, default_value_t = 512)]
+    #[arg(long)]
     max_moves: usize,
-    #[arg(long, default_value_t = 32)]
+    #[arg(long)]
     simulations: u32,
     /// Total search budget on policy-training positions (with --policy-search-probability).
-    #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     policy_simulations: u32,
     /// Chance of an expensive policy-training search; 0 keeps fixed-budget training.
     /// Randomization requires --simulations >= 32. Cheap moves keep value labels.
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long)]
     policy_search_probability: f64,
     /// Initial self-play move-selection temperature (both search budgets).
-    #[arg(long, default_value_t = 0.75)]
+    #[arg(long)]
     chosen_move_temperature_early: f64,
     /// Asymptotic late-game self-play temperature; 0 selects maximum visits.
-    #[arg(long, default_value_t = 0.15)]
+    #[arg(long)]
     chosen_move_temperature: f64,
     /// Temperature decay half-life in moves on 19x19, scaled by board width.
-    #[arg(long, default_value_t = 19.0)]
+    #[arg(long)]
     chosen_move_temperature_halflife: f64,
-    #[arg(long, default_value_t = 1.5)]
-    cpuct: f64,
-    #[arg(long, default_value_t = 3.0)]
-    widening: f64,
-    #[arg(long, default_value_t = 0.5)]
-    widening_exponent: f64,
-    #[arg(long, default_value_t = 128)]
-    proposal_attempts: usize,
-    #[arg(long, default_value_t = 0.5)]
-    independent_exploration: f64,
-    /// Score fraction: 1 maximizes expected final score; 0 uses outcome only.
-    #[arg(long, default_value_t = 0.5)]
-    score_weight: f64,
+    #[command(flatten)]
+    search: SearchParameters,
     /// Avoid noncapturing own-eye fills in bootstrap MCTS only (not neural play).
     #[arg(long)]
     bootstrap_avoid_eyes: bool,
@@ -93,22 +83,22 @@ struct Args {
     /// Native ONNX Runtime >=1.20 shared library; otherwise use ORT_DYLIB_PATH.
     #[arg(long)]
     ort_library: Option<PathBuf>,
-    #[arg(long, default_value_t = 1)]
+    #[arg(long)]
     inference_threads: usize,
-    /// Active independent games (1..=64; default 32 for neural, 1 otherwise).
+    /// Active independent games (1..=64).
     #[arg(long)]
-    concurrent_games: Option<usize>,
-    /// Maximum neural inference batch, bucketed by resolution (1..=32; default 32).
+    concurrent_games: usize,
+    /// Maximum neural inference batch, bucketed by resolution (1..=32).
     #[arg(long)]
-    inference_batch_size: Option<usize>,
+    inference_batch_size: usize,
     /// Maximum collection delay; partial batches always run (0..=1000 ms).
-    #[arg(long, default_value_t = 2)]
+    #[arg(long)]
     inference_batch_wait_ms: u64,
     /// Bounded CPU pool for exact coordinate features (1 = serial).
-    #[arg(long, default_value_t = 6)]
+    #[arg(long)]
     feature_threads: usize,
     /// Maximum cached coarse-network contexts; 0 disables, payload capped at 32 MiB.
-    #[arg(long, default_value_t = 64)]
+    #[arg(long)]
     cache_positions: usize,
     #[arg(long, value_enum, default_value = "cuda")]
     device: InferenceDevice,
@@ -133,20 +123,14 @@ impl Args {
         let parallel = ParallelConfig {
             games: self.games,
             seed: self.seed,
-            concurrent_games: self.concurrent_games.unwrap_or(if neural { 32 } else { 1 }),
+            concurrent_games: self.concurrent_games,
             batching: BatchingConfig {
-                max_batch: self
-                    .inference_batch_size
-                    .unwrap_or(if neural { 32 } else { 8 }),
+                max_batch: self.inference_batch_size,
                 max_wait: Duration::from_millis(self.inference_batch_wait_ms),
             },
         };
         parallel.validate()?;
-        if !neural
-            && (parallel.concurrent_games != 1
-                || parallel.batching.max_batch != 8
-                || self.inference_batch_wait_ms != 2)
-        {
+        if !neural && parallel.concurrent_games != 1 {
             return Err("concurrent games/inference batching require --engine neural".into());
         }
         Ok(parallel)
@@ -179,19 +163,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             simulations: args.policy_simulations,
             probability: args.policy_search_probability,
         }),
-        search: SearchConfig {
-            simulations: args.simulations,
+        search: continugo_train::search::SearchConfig {
             chosen_move_temperature_early: args.chosen_move_temperature_early,
             chosen_move_temperature: args.chosen_move_temperature,
             chosen_move_temperature_halflife: args.chosen_move_temperature_halflife,
-            cpuct: args.cpuct,
-            widening: args.widening,
-            widening_exponent: args.widening_exponent,
-            proposal_attempts: args.proposal_attempts,
-            independent_exploration: args.independent_exploration,
-            score_weight: args.score_weight,
             bootstrap_avoid_eyes: args.bootstrap_avoid_eyes,
             rollout: args.rollout.config(),
+            ..args.search.config(args.simulations)
         },
     };
     config.validate()?;
@@ -388,37 +366,43 @@ fn save_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
-    fn neural_batching_defaults_do_not_change_baseline_engines() {
-        for engine in ["random", "mcts", "neural"] {
-            let args = Args::parse_from(["selfplay", "--engine", engine]);
-            let config = args.parallel_config().unwrap();
-            let neural = engine == "neural";
-            assert_eq!(config.concurrent_games, if neural { 32 } else { 1 });
-            assert_eq!(config.batching.max_batch, if neural { 32 } else { 8 });
-            assert_eq!(config.batching.max_wait, Duration::from_millis(2));
+    fn caller_owned_settings_are_required_without_native_defaults() {
+        let command = Args::command();
+        for name in [
+            "simulations",
+            "cpuct",
+            "widening",
+            "widening_exponent",
+            "proposal_attempts",
+            "independent_exploration",
+            "score_weight",
+            "komi",
+            "komi_stddev",
+            "max_moves",
+            "policy_simulations",
+            "policy_search_probability",
+            "chosen_move_temperature",
+            "chosen_move_temperature_early",
+            "chosen_move_temperature_halflife",
+            "sizes",
+            "size_weights",
+            "concurrent_games",
+            "inference_batch_size",
+            "inference_batch_wait_ms",
+            "inference_threads",
+            "feature_threads",
+            "cache_positions",
+        ] {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == name)
+                .unwrap();
+            assert!(arg.is_required_set(), "{name}");
+            assert!(arg.get_default_values().is_empty(), "{name}");
         }
-    }
-
-    #[test]
-    fn explicit_neural_batching_settings_override_defaults() {
-        let args = Args::parse_from([
-            "selfplay",
-            "--engine",
-            "neural",
-            "--concurrent-games",
-            "1",
-            "--inference-batch-size",
-            "4",
-            "--inference-batch-wait-ms",
-            "0",
-        ]);
-        let config = args.parallel_config().unwrap();
-        assert_eq!(config.concurrent_games, 1);
-        assert_eq!(config.batching.max_batch, 4);
-        assert_eq!(config.batching.max_wait, Duration::ZERO);
-        let baseline = Args::parse_from(["selfplay", "--concurrent-games", "2"]);
-        assert!(baseline.parallel_config().unwrap_err().contains("neural"));
+        assert!(Args::try_parse_from(["selfplay"]).is_err());
     }
 }

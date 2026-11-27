@@ -16,6 +16,20 @@ otherwise preserve the old value; editing a recipe alone is not a replacement fo
 changing the shared default. Frozen runtimes do not silently pick up source edits.
 See [campaigns](campaigns.md) and [loop](loop.md).
 
+Defaults belong to the layer that owns the choice, not to a cross-language config
+file. Python's [`selfplay.py`](../../python/continugo_train/selfplay.py) owns base
+search, self-play and inference settings; `LoopConfig` inherits those unchanged, and
+`EvaluationConfig` owns match budgets. Direct self-play/arena commands use the
+same settings as their training/evaluation workflows. The native workers
+**require** these values: they have no competing gameplay/search defaults.
+Use `mise run selfplay`, `neural-selfplay`, `arena`, `infer` or `play` for the Python
+callers; direct native invocations must supply the required flags. Ordinary rated
+komi is Rust-owned: Python omits it unless a comparison explicitly chooses another
+value. Callers either omit a Rust-owned option or provide a Python-owned value;
+do not duplicate a fallback in both layers. Frozen Python/binary snapshots and
+recorded settings retain their existing behavior. See [game contexts](game-contexts.md).
+Hard limits, model/optimizer defaults and rules constants remain in their modules.
+
 The tables distinguish **choices** (hyperparameters and heuristics), **contracts**
 (feature/label/format semantics), and **limits** (resource or validity bounds).
 A choice is not a claim of optimality. Contract changes need compatibility handling,
@@ -42,7 +56,7 @@ Sources: [`LoopConfig`](../../python/continugo_train/loop.py),
 |---|---|---|
 | Supported training board equivalents | Integers 9–19 inclusive | Limit |
 | Default sizes | `9,13,19` | Choice |
-| `size_weights` / `DEFAULT_SIZE_WEIGHTS` | `9:1,13:0,19:0`: 100% / 0% / 0%, size 9 only; former `9:2,13:2,19:1` mix remains commented out in source | Choice |
+| `size_weights` / `DEFAULT_SIZE_WEIGHTS` | `9:1,13:0,19:0`: 100% / 0% / 0%, size 9 only | Choice |
 | Weight bounds | Integer 0–1000; zero excludes a size; unspecified sizes have weight 1 | Limit / rule |
 | Weighted cycle | Smooth weighted round-robin after GCD reduction; default `[9]`; maximum 4096 entries | Rule / limit |
 | `uniform` | Literal supplied size cycle; disables position-quota downsampling | Choice |
@@ -63,23 +77,23 @@ not filename, comments, seed or player name.
 
 ### Search effort and action selection
 
-Sources: [search](../../src/search.rs), [self-play](../../src/selfplay.rs),
+Sources: [Python playing profiles](../../python/continugo_train/selfplay.py),
+[search](../../src/search.rs), [self-play](../../src/selfplay.rs),
 [optional rollouts](../../src/search/rollout.rs). See [inference](inference.md).
 
-| Setting | Loop default | Standalone self-play / `SearchConfig` default |
-|---|---:|---:|
-| Cheap / fixed simulations | 100 | 32 |
-| Expensive `policy_simulations` | 500 | 256 (CLI; inactive by default) |
-| `policy_search_probability` | 0.25 | 0 (fixed-budget, all-policy) |
-| PUCT coefficient `cpuct` | 1.5 | 1.5 |
-| Progressive-widening coefficient | 2.0 | 2.0 |
-| Widening exponent | 0.5 | 0.5 |
-| `proposal_attempts` | 128 | 128 |
-| Independent placement exploration fraction | 0.25 | 0.25 |
-| Score fraction `score_weight` | 0.5 | 0.5 |
-| Bootstrap eye avoidance | Not enabled by the loop | Off; unguided MCTS opt-in only |
-| Optional rollout count | Not exposed by the loop | 0 (disabled) |
-| Rollout move cap / pass probability | — | 512 / `1/32` |
+| Setting | Default |
+|---|---:|
+| Self-play cheap / expensive simulations | 100 / 500, inside or outside the loop |
+| `policy_search_probability` | 0.25 |
+| Evaluation simulations | 128, evaluator or arena command |
+| Bootstrap simulations | 32, fixed; explicitly supplied by bootstrap preparation |
+| PUCT coefficient `cpuct` | 1.5 |
+| Progressive-widening coefficient / exponent | 3.0 / 0.5 |
+| `proposal_attempts` | 128 |
+| Independent placement exploration fraction | 0.5 |
+| Score fraction `score_weight` | 0.5 |
+| Bootstrap eye avoidance | Off; unguided MCTS opt-in only |
+| Rollout move cap / pass probability | 512 / `1/32` |
 
 These are choices, with the following formulas and constraints:
 
@@ -90,12 +104,12 @@ These are choices, with the following formulas and constraints:
   with `p=1`, all use the expensive budget. Enabled randomization requires
   `cheap >= 32` and `expensive >= cheap`; `p` is in `[0,1]`.
 - Allowed placement children at node visit count `N`:
-  `ceil(widening * N**widening_exponent)`, default `ceil(2*sqrt(N))`.
+  `ceil(widening * N**widening_exponent)`, default `ceil(3*sqrt(N))`.
   Pass is a separate child, outside this placement quota. The exponent is strictly
   between 0 and 1; at most one placement child is added per simulation.
 - Neural PUCT selection: `Q + cpuct * sqrt(N) * prior / (1 + child_visits)`.
   Placement proposals use `q = epsilon*uniform + (1-epsilon)*policy`, with
-  `epsilon=0.25`, and importance weights `policy/q`. Their stratum retains the
+  `epsilon=0.5`, and importance weights `policy/q`. Their stratum retains the
   full placement probability; pass retains its own mass. `epsilon` must be in `(0,1]`.
 - Search utility: `(1-score_weight)*outcome + score_weight*E[f(score)]`, where
   `f(s)=(2/pi)*atan(s/(2/SZ))` and final score is approximated by the predicted
@@ -408,10 +422,10 @@ user approval**, with no numerical auto-publication threshold.
 | Challenge extension | 30 more games; at least 28 wins across all 40 to replace champion |
 | Random calibration | No separate batch; random is eligible within the history-opponent budget |
 | History-opponent policy | Up to 3 opponents: defeated champion plus up to 2 nearest-rated available historical opponents (including random); 50 fresh games each, after promotion only |
-| Neural rating simulations | 128; standalone native arena defaults to 32 |
-| Shared evaluator neural / random move cap | 1024 / 2048 |
-| Generic `EvaluationConfig` match / random defaults | 20 / 10 games; move caps 512 / 2048 |
-| Native arena defaults | 20 games, move cap 512, seed 0, start index 0 |
+| Evaluation simulations | 128, shared by the evaluator and arena launcher; native arena requires a budget |
+| Shared evaluator neural / random move cap | 512 / 512 for new evaluators; existing evaluators retain frozen values |
+| Generic `EvaluationConfig` match / random defaults | 20 / 10 games; both move caps 512 |
+| Native arena | Requires game/search/inference settings; seed 0 and start index 0 remain native defaults |
 | Shared evaluator initial seed / family | 97,000,000 / `cg5` |
 
 Draws/truncations are not wins for champion thresholds. Match scores count a draw

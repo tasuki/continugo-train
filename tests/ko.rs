@@ -1,3 +1,4 @@
+mod support;
 use continugo_rules::{Action, Game, Play, Spot, Stone, sgf};
 use continugo_train::{
     features::FeatureExtractor,
@@ -39,7 +40,7 @@ fn live_masks_and_search_forbid_exact_and_shifted_recaptures() {
         &game,
         &SearchConfig {
             simulations: 32,
-            ..Default::default()
+            ..support::search_config()
         },
         &mut rng,
     )

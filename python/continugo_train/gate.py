@@ -230,17 +230,7 @@ def evaluate(runner, iteration, *, reference=False, adopt_only=False):
             if reference
             else ["--incumbent", str(runner.check_model(incumbent))]
         )
-        settings = {
-            **search,
-            **{
-                name: getattr(config, name)
-                for name in [
-                    "inference_threads",
-                    "feature_threads",
-                    "cache_positions",
-                ]
-            },
-        }
+        settings = {**search, **config.inference()}
         for name, value in settings.items():
             command += ["--" + name.replace("_", "-"), str(value)]
         runner.log(

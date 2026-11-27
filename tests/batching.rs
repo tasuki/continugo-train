@@ -1,4 +1,5 @@
 //! Native integration exercised by tests/test_inference.py with its exported model.
+mod support;
 use continugo_rules::{Board, Game, Spot};
 use continugo_train::inference::{
     Evaluator, InferenceDevice, InferenceOutput, OnnxEvaluator,
@@ -28,7 +29,7 @@ fn arena_shares_models_and_drains_both_pipelines() {
         max_moves: 2,
         komi: 7.0,
         komi_stddev: 0.0,
-        search: Default::default(),
+        search: support::search_config(),
         policy_search: None,
     };
     config.search.simulations = 2;

@@ -134,8 +134,15 @@ def prepare_fresh(root, run, recipe, hashes, lock_fd):
         settings = recipe["bootstrap"]
         if settings["games"] < 2 or settings["rollouts"] < 1:
             raise ValueError("Fresh bootstrap needs multiple games and completed-rollout evaluation")
+        from .selfplay import SelfplayConfig, arguments
+
+        # Bootstrap has no learned policy; use a cheap fixed search with rollout leaves.
         execute([
-            str(run / "bin/continugo-train"), "--engine", "mcts",
+            str(run / "bin/continugo-train"),
+            *arguments(SelfplayConfig(
+                simulations=32, policy_search_probability=0.0,
+            ).native_settings(neural=False)),
+            "--engine", "mcts",
             "--games", str(settings["games"]), "--rollouts", str(settings["rollouts"]),
             "--output", str(bootstrap), "--stats-json", str(run / "bootstrap-stats.json"),
         ], "bootstrap")

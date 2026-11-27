@@ -17,6 +17,8 @@ from .paths import utc_now
 from .saved_models import saved_sources
 from .train import atomic_checkpoint, feature_spec
 
+INITIAL_SEED = 97000000
+
 POLICY = {
     "evaluation_every": 5,
     "win_rate_required": 0.7,
@@ -99,7 +101,7 @@ def load_champions(store):
         "history": [{"model": "random"}],
         "evaluated": {},
         "pending": None,
-        "next_seed": 97000000,
+        "next_seed": INITIAL_SEED,
     }
 
 
@@ -187,11 +189,13 @@ def initialize(store, args):
         model_store=str(store),
         gate_games=POLICY["screen_games"],
         reference_games=POLICY["history_games"],
-        gate_simulations=args.simulations if args.simulations is not None else 128,
-        gate_max_moves=512,
-        reference_max_moves=512,
+        gate_simulations=(
+            args.simulations if args.simulations is not None else EvaluationConfig.gate_simulations
+        ),
+        gate_max_moves=EvaluationConfig.gate_max_moves,
+        reference_max_moves=EvaluationConfig.reference_max_moves,
         device=args.device or "cuda",
-        seed=args.seed if args.seed is not None else 97000000,
+        seed=args.seed if args.seed is not None else INITIAL_SEED,
         arena_binary=source["config"].get("arena_binary", str(native / "arena")),
         rating_binary=source["config"].get("rating_binary", str(native / "rating")),
     )
@@ -561,7 +565,8 @@ def parse_args(argv=None):
     )
     parser.add_argument("--family", help="model family to evaluate (default cg5)")
     parser.add_argument(
-        "--simulations", type=int, help="fixed simulations per neural move (default 128)"
+        "--simulations", type=int,
+        help=f"fixed simulations per neural move (default {EvaluationConfig.gate_simulations})"
     )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", choices=["cpu", "cuda"])

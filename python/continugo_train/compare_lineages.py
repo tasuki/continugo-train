@@ -190,6 +190,7 @@ def prepare(root, args, state_path):
         models.update(m)
         checkpoints.update(c)
     from .nn_view import load_checkpoint
+    from .selfplay import arguments
 
     for name in models:
         # Load-only preflight: --check-models exits before creating output or
@@ -197,6 +198,7 @@ def prepare(root, args, state_path):
         subprocess.run(
             [
                 config.arena_binary,
+                *arguments(config.arena_settings()),
                 "--candidate",
                 str(root / models[name]["directory"]),
                 "--reference-random",

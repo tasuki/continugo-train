@@ -212,7 +212,7 @@ using stratified importance sampling ([Sampled MuZero](https://arxiv.org/abs/210
 
 1. Let `P` be placement mass and `r(a) = p(a)/P` its conditional policy.
 2. Draw a bounded reservoir from `q(a) = epsilon/L + (1-epsilon)*r(a)`, where `L`
-   is the selected legal-coordinate count. `--independent-exploration` defaults to 0.25,
+   is the selected legal-coordinate count. `--independent-exploration` defaults to 0.5,
    configurable in `(0,1]`.
 3. Sample with replacement; merge duplicates but retain multiplicity. Candidate
    weight is `multiplicity * r(a)/q(a)`. Deduplicating without counts changes the law.

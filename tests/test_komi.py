@@ -2,13 +2,13 @@
 
 import importlib.util
 import json
-import subprocess
 import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
 
 import torch
+from native_settings import run as run_native
 
 from continugo_train.augmentation import augment_sample
 from continugo_train.data import TrainingSample, collate
@@ -159,7 +159,7 @@ class KomiTests(unittest.TestCase):
                     _, _, value, score, stdev = model.encode_search(
                         sample.coarse[None], torch.tensor([sample.komi])
                     )
-                result = subprocess.run(
+                result = run_native(
                     [
                         str(ROOT / "target/release/infer"),
                         "--model",
@@ -185,7 +185,7 @@ class KomiTests(unittest.TestCase):
     def test_arena_uses_fixed_seven_for_both_colours(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "games"
-            subprocess.run(
+            run_native(
                 [
                     str(ROOT / "target/release/arena"),
                     "--unguided",
@@ -229,7 +229,7 @@ class KomiTests(unittest.TestCase):
         ]
 
         def values(extra):
-            result = subprocess.run(command + extra, capture_output=True, text=True, check=True)
+            result = run_native(command + extra, capture_output=True, text=True, check=True)
             import re
 
             return [float(k) for k in re.findall(r"KM\[([^\]]+)\]", result.stdout)]

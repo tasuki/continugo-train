@@ -30,7 +30,8 @@ from .paths import new_run_directory
 from .progress import checkpoint_progress, data_history, network_name
 from .progress import initialize as initialize_progress
 from .runtime import inference_environment
-from .sampling import DEFAULT_SIZE_WEIGHTS, weighted_sizes
+from .sampling import DEFAULT_SIZE_WEIGHTS, DEFAULT_SIZES, weighted_sizes
+from .selfplay import SelfplayConfig
 from .train import Options, atomic_checkpoint, checkpoint_splits, feature_spec
 
 VERSION = 6
@@ -38,32 +39,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
-class LoopConfig:
-    sizes: tuple[int, ...] = (9, 13, 19)
+class LoopConfig(SelfplayConfig):
+    sizes: tuple[int, ...] = DEFAULT_SIZES
     size_weights: str = DEFAULT_SIZE_WEIGHTS
     games_per_iteration: int = 150
     seed: int = 0
-    simulations: int = 100
-    policy_simulations: int = 500
-    policy_search_probability: float = 0.25
-    chosen_move_temperature_early: float = 0.75
-    chosen_move_temperature: float = 0.15
-    chosen_move_temperature_halflife: float = 19.0
-    max_moves: int = 512
-    komi: float = 7.0
-    komi_stddev: float = 2.0
-    cpuct: float = 1.5
-    widening: float = 3.0
-    widening_exponent: float = 0.5
-    proposal_attempts: int = 128
-    independent_exploration: float = 0.5
-    score_weight: float = 0.5
-    concurrent_games: int = 32
-    inference_batch_size: int = 32
-    inference_batch_wait_ms: int = 2
-    inference_threads: int = 1
-    feature_threads: int = 6
-    cache_positions: int = 64
     train_epochs: int = 1
     steps_per_epoch: int = 0
     positions_per_game: int = 0
@@ -163,23 +143,6 @@ class LoopConfig:
             raise ValueError("invalid search, validation fraction or learning rate")
         if self.device not in {"cpu", "cuda"} or self.warm_start_optimizer not in {"keep", "reset"}:
             raise ValueError("invalid device or warm-start optimizer policy")
-
-    def search(self):
-        return {
-            name: getattr(self, name)
-            for name in [
-                "simulations",
-                "cpuct",
-                "widening",
-                "widening_exponent",
-                "proposal_attempts",
-                "independent_exploration",
-                "score_weight",
-                "chosen_move_temperature_early",
-                "chosen_move_temperature",
-                "chosen_move_temperature_halflife",
-            ]
-        }
 
     def policy_search(self):
         if not self.policy_search_probability:
@@ -730,14 +693,8 @@ class LoopRunner:
                 **self.config.search(),
                 "komi": self.config.komi,
                 "komi_stddev": self.config.komi_stddev,
-                **(
-                    {
-                        "policy_simulations": self.config.policy_simulations,
-                        "policy_search_probability": self.config.policy_search_probability,
-                    }
-                    if self.config.policy_search_probability
-                    else {}
-                ),
+                "policy_simulations": self.config.policy_simulations,
+                "policy_search_probability": self.config.policy_search_probability,
                 **{
                     name: getattr(self.config, name)
                     for name in [

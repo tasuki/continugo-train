@@ -35,6 +35,46 @@ pub struct SearchConfig {
     pub rollout: Option<RolloutConfig>,
 }
 
+/// The caller owns tuning defaults. Native workers require these parameters.
+#[derive(clap::Args, Clone, Debug)]
+pub struct SearchParameters {
+    #[arg(long)]
+    pub cpuct: f64,
+    #[arg(long)]
+    pub widening: f64,
+    #[arg(long)]
+    pub widening_exponent: f64,
+    #[arg(long)]
+    pub proposal_attempts: usize,
+    #[arg(long)]
+    pub independent_exploration: f64,
+    #[arg(long)]
+    pub score_weight: f64,
+}
+
+impl SearchParameters {
+    /// Evaluation/diagnostic workers select maximum visits, so temperatures here
+    /// are neutral placeholders, not playing defaults. Self-play supplies its schedule.
+    pub fn config(&self, simulations: u32) -> SearchConfig {
+        SearchConfig {
+            simulations,
+            chosen_move_temperature_early: 0.0,
+            chosen_move_temperature: 0.0,
+            chosen_move_temperature_halflife: 1.0,
+            cpuct: self.cpuct,
+            widening: self.widening,
+            widening_exponent: self.widening_exponent,
+            proposal_attempts: self.proposal_attempts,
+            independent_exploration: self.independent_exploration,
+            score_weight: self.score_weight,
+            bootstrap_avoid_eyes: false,
+            rollout: None,
+        }
+    }
+}
+
+// Test fixture only: production configurations must be supplied by a caller.
+#[cfg(test)]
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {

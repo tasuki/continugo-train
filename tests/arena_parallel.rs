@@ -1,3 +1,4 @@
+mod support;
 use continugo_rules::Board;
 use continugo_train::{
     inference::batching::BatchingConfig,
@@ -13,7 +14,7 @@ fn config() -> SelfplayConfig {
         max_moves: 2,
         search: continugo_train::search::SearchConfig {
             simulations: 2,
-            ..Default::default()
+            ..support::search_config()
         },
         policy_search: None,
     }

@@ -3,12 +3,14 @@
 import argparse
 import functools
 import json
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 import subprocess
 import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
+from .evaluation import EvaluationConfig
 from .runtime import inference_environment
+from .selfplay import SelfplayConfig, arguments
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,7 +19,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/api/bot":
             return super().do_GET()
-        body = json.dumps({"available": True, "simulations": getattr(self.server, "simulations", 128)}).encode()
+        body = json.dumps({"available": True, "simulations": self.server.simulations}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -61,7 +63,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
-    parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument("--simulations", type=int, default=EvaluationConfig.gate_simulations)
     parser.add_argument("--port", type=int, default=9072)
     args = parser.parse_args()
     library, environment = inference_environment(args.device)
@@ -69,8 +71,12 @@ def main():
     frontend = ROOT.parent / "continugo/frontend"
     subprocess.run(["mise", "run", "build"], cwd=frontend, check=True)
     command = [str(ROOT / "target/release/play"), "--model", str(args.model.resolve()),
-               "--device", args.device, "--ort-library", str(library),
-               "--simulations", str(args.simulations)]
+               "--device", args.device, "--ort-library", str(library)]
+    config = SelfplayConfig(simulations=args.simulations)
+    command += arguments(config.evaluation_search() | {
+        name: getattr(config, name)
+        for name in ("inference_threads", "feature_threads", "cache_positions")
+    })
     with subprocess.Popen(command, env=environment, stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, text=True, bufsize=1) as worker:
         try:

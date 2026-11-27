@@ -7,8 +7,8 @@ use continugo_rules::{Board, Color, territory};
 use continugo_train::{
     inference::{Evaluator, InferenceDevice, OnnxEvaluator, batching::BatchingConfig},
     nn_html::NnHtmlArgs,
-    sampling::{DEFAULT_SIZE_WEIGHTS, weighted_sizes},
-    search::{SearchConfig, rollout::RolloutArgs},
+    sampling::weighted_sizes,
+    search::{SearchParameters, rollout::RolloutArgs},
     selfplay::{
         Engine, REFERENCE_ID, SelfplayConfig, arena::generate_arena, parallel::ParallelConfig,
     },
@@ -22,7 +22,10 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(about = "Fixed-budget paired-color neural matches; no forced scores at move caps")]
+#[command(
+    args_override_self = true,
+    about = "Fixed-budget paired-color neural matches; no forced scores at move caps"
+)]
 struct Args {
     #[arg(
         long,
@@ -47,57 +50,46 @@ struct Args {
     check_models: bool,
     #[arg(long)]
     output: PathBuf,
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     games: u32,
     /// Global game ordinal for restartable partial pairs; even ordinals use candidate black.
     #[arg(long, default_value_t = 0)]
     game_offset: usize,
     #[arg(long, default_value_t = 0)]
     seed: u64,
-    #[arg(long, value_delimiter = ',', default_value = "9,13,19")]
+    #[arg(long, value_delimiter = ',', required = true, action = clap::ArgAction::Set)]
     sizes: Vec<i32>,
-    #[arg(long, default_value = DEFAULT_SIZE_WEIGHTS)]
+    #[arg(long)]
     size_weights: String,
-    #[arg(long, default_value_t = 512)]
+    #[arg(long)]
     max_moves: usize,
     /// Fixed compensation awarded to White in every game of the pair.
     #[arg(long, default_value_t = 7.0, allow_hyphen_values = true)]
     komi: f64,
-    #[arg(long, default_value_t = 32)]
+    #[arg(long)]
     simulations: u32,
-    #[arg(long, default_value_t = 1.5)]
-    cpuct: f64,
-    #[arg(long, default_value_t = 2.0)]
-    widening: f64,
-    #[arg(long, default_value_t = 0.5)]
-    widening_exponent: f64,
-    #[arg(long, default_value_t = 128)]
-    proposal_attempts: usize,
-    #[arg(long, default_value_t = 0.25)]
-    independent_exploration: f64,
-    /// Score fraction: 1 maximizes expected final score; 0 uses outcome only.
-    #[arg(long, default_value_t = 0.5)]
-    score_weight: f64,
+    #[command(flatten)]
+    search: SearchParameters,
     #[command(flatten)]
     rollout: RolloutArgs,
     #[arg(long)]
     ort_library: Option<PathBuf>,
     #[arg(long, value_enum, default_value = "cuda")]
     device: InferenceDevice,
-    #[arg(long, default_value_t = 1)]
+    #[arg(long)]
     inference_threads: usize,
     /// Independent games sharing one inference pipeline per model (1..=64).
-    #[arg(long, default_value_t = 32)]
+    #[arg(long)]
     concurrent_games: usize,
     /// Maximum inference batch per model (1..=32), bucketed by resolution.
-    #[arg(long, default_value_t = 32)]
+    #[arg(long)]
     inference_batch_size: usize,
     /// Maximum collection delay; partial batches always run (0..=1000 ms).
-    #[arg(long, default_value_t = 2)]
+    #[arg(long)]
     inference_batch_wait_ms: u64,
-    #[arg(long, default_value_t = 6)]
+    #[arg(long)]
     feature_threads: usize,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long)]
     cache_positions: usize,
     #[command(flatten)]
     nn_view: NnHtmlArgs,
@@ -138,17 +130,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         max_moves: args.max_moves,
         policy_search: None,
-        search: SearchConfig {
-            simulations: args.simulations,
-            cpuct: args.cpuct,
-            widening: args.widening,
-            widening_exponent: args.widening_exponent,
-            proposal_attempts: args.proposal_attempts,
-            independent_exploration: args.independent_exploration,
-            score_weight: args.score_weight,
-            bootstrap_avoid_eyes: false,
+        search: continugo_train::search::SearchConfig {
             rollout: args.rollout.config(),
-            ..Default::default()
+            ..args.search.config(args.simulations)
         },
     };
     config.validate()?;
@@ -290,12 +274,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/mod.rs"]
+mod support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn arena_fixed_komi_defaults_to_seven_and_accepts_zero() {
-        let base = [
+        let mut base = vec![
             "arena",
             "--candidate",
             "model",
@@ -303,9 +291,10 @@ mod tests {
             "--output",
             "games",
         ];
-        assert_eq!(Args::parse_from(base).komi, 7.0);
+        base.extend(support::arguments(true));
+        assert_eq!(Args::parse_from(&base).komi, 7.0);
         assert_eq!(
-            Args::parse_from(base.into_iter().chain(["--komi", "0"])).komi,
+            Args::parse_from(base.iter().copied().chain(["--komi", "0"])).komi,
             0.0
         );
         assert_eq!(

@@ -1,9 +1,12 @@
 use continugo_rules::{Board, Game, sgf};
 use serde_json::Value;
 use std::{fs, path::PathBuf, process::Command};
+mod support;
 
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_continugo-train"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_continugo-train"));
+    command.args(support::arguments(false));
+    command
 }
 
 fn board_from_sgf(record: &sgf::Record) -> Board {
@@ -512,6 +515,7 @@ fn rollout_diagnostics_never_turn_an_unfinished_actual_game_into_a_label() {
 fn unguided_reference_diagnostics_need_no_neural_runtime_and_keep_random_turns_unlabeled() {
     let directory = TestDir::new("unguided-reference");
     let output = Command::new(env!("CARGO_BIN_EXE_arena"))
+        .args(support::arguments(true))
         .args([
             "--unguided",
             "--reference-random",

@@ -3,7 +3,7 @@ use clap::Parser;
 use continugo_train::{
     inference::{InferenceDevice, OnnxEvaluator},
     replay::load_position,
-    search::{SearchConfig, search_neural},
+    search::{SearchConfig, SearchParameters, search_neural},
     selfplay::neural_move_comment,
 };
 use rand::{SeedableRng, rngs::StdRng};
@@ -15,6 +15,7 @@ use std::{
 };
 
 #[derive(Parser)]
+#[command(args_override_self = true)]
 struct Args {
     #[arg(long)]
     model: PathBuf,
@@ -22,8 +23,16 @@ struct Args {
     ort_library: Option<PathBuf>,
     #[arg(long, value_enum, default_value = "cpu")]
     device: InferenceDevice,
-    #[arg(long, default_value_t = 128)]
+    #[arg(long)]
     simulations: u32,
+    #[command(flatten)]
+    search: SearchParameters,
+    #[arg(long)]
+    inference_threads: usize,
+    #[arg(long)]
+    feature_threads: usize,
+    #[arg(long)]
+    cache_positions: usize,
 }
 
 #[derive(Deserialize)]
@@ -35,13 +44,15 @@ struct Request {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let config = SearchConfig {
-        simulations: args.simulations,
-        ..Default::default()
-    };
+    let config = args.search.config(args.simulations);
     config.validate()?;
-    let mut evaluator =
-        OnnxEvaluator::load(&args.model, args.ort_library.as_deref(), 1, args.device)?;
+    let mut evaluator = OnnxEvaluator::load(
+        &args.model,
+        args.ort_library.as_deref(),
+        args.inference_threads,
+        args.device,
+    )?;
+    evaluator.configure_features(args.feature_threads, args.cache_positions)?;
     let mut rng = StdRng::from_os_rng();
     eprintln!("Model ready");
     for line in io::stdin().lock().lines() {

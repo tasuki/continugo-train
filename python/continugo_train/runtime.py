@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import sysconfig
+from itertools import pairwise
 from pathlib import Path
 
 from .export import runtime_path
@@ -114,7 +115,7 @@ def setup_gpu():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
-    parser.add_argument("command", choices=["setup", "selfplay", "infer", "arena"])
+    parser.add_argument("command", choices=["setup", "selfplay", "generate", "infer", "arena"])
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--ort-library", type=Path)
     args, remaining = parser.parse_known_args(argv)
@@ -127,11 +128,27 @@ def main(argv=None):
         command += ["--"] + (["--engine", "neural"] if args.command == "selfplay" else [])
         if "--help" in remaining or "-h" in remaining:
             os.execvpe(command[0], [*command, *remaining], os.environ.copy())
-        if args.command == "arena" and "--unguided" in remaining:
+        from .selfplay import SelfplayConfig, arguments, diagnostic_settings
+
+        if args.command in {"selfplay", "generate"}:
+            neural = args.command == "selfplay" or "--engine=neural" in remaining or any(
+                flag == "--engine" and value == "neural"
+                for flag, value in pairwise(remaining)
+            )
+            remaining = arguments(SelfplayConfig().native_settings(neural=neural)) + remaining
+        elif args.command == "infer":
+            remaining = arguments(diagnostic_settings()) + remaining
+        elif args.command == "arena":
+            from .evaluation import EvaluationConfig
+
+            remaining = arguments(EvaluationConfig().arena_settings()) + remaining
+        if (args.command == "arena" and "--unguided" in remaining) or (
+            args.command == "generate" and not neural
+        ):
             library, environment = None, os.environ.copy()
         else:
             library, environment = inference_environment(args.device, args.ort_library)
-        if args.command in {"selfplay", "arena"} and not any(
+        if args.command in {"selfplay", "generate", "arena"} and not any(
             value == "--output" or value.startswith("--output=") for value in remaining
         ):
             output = new_run_directory(args.command)

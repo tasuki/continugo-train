@@ -2,13 +2,13 @@ import copy
 import hashlib
 import importlib.util
 import json
-import subprocess
 import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
 
 import torch
+from native_settings import run as run_native
 
 from continugo_train.export import export_checkpoint, runtime_path
 from continugo_train.features import load_position
@@ -161,7 +161,7 @@ class SchemaCompatibilityTests(unittest.TestCase):
                 export_checkpoint(checkpoint, root / f"schema{schema}")
             for legacy_schema in (5, 6):
                 output = root / f"games-vs-{legacy_schema}"
-                result = subprocess.run(
+                result = run_native(
                     [
                         str(Path(__file__).resolve().parents[1] / "target/release/arena"),
                         "--candidate",

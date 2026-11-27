@@ -1,3 +1,4 @@
+mod support;
 use continugo_rules::{Action, Board, Color, Game, Play, Spot, sgf, territory};
 use continugo_train::{
     features::{COARSE_PLANES, FeatureExtractor, MOVE_FEATURES, count_feature},
@@ -623,7 +624,7 @@ fn replay_loads_generated_mcts_visits_without_inventing_labels() {
         max_moves: 512,
         search: SearchConfig {
             simulations: 8,
-            ..Default::default()
+            ..support::search_config()
         },
     };
     let record = generate(Board::new(9).unwrap(), &config, 41).unwrap();

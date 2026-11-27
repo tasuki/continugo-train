@@ -490,7 +490,10 @@ impl OnnxEvaluator {
             metadata,
             device,
             feature_pool: None,
-            cache: Arc::new(Mutex::new(ContextCache::new(64, 32 * 1024 * 1024))),
+            cache: Arc::new(Mutex::new(ContextCache::new(
+                0, // Cache capacity is configured explicitly by the caller.
+                32 * 1024 * 1024,
+            ))),
             stats: InferenceStats::default(),
             profile_coarse: false,
             geometry_budget,
