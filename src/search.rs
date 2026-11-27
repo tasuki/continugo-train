@@ -496,11 +496,22 @@ impl SampledPolicy {
             || evaluation.legal.len() != count
             || !evaluation.value.is_finite()
             || !(-1.0..=1.0).contains(&evaluation.value)
+            // Score means are linear, unbounded net board-area predictions.
+            // Unlike outcome, neither predictions nor komi-adjusted scores
+            // are restricted to [-1, 1].
             || !evaluation.score.is_finite()
-            || !(-1.0..=1.0).contains(&evaluation.score)
             || !evaluation.logits[count].is_finite()
         {
-            return Err("invalid neural evaluation".into());
+            return Err(format!(
+                "invalid neural evaluation: logits_len={} (expected {}), legal_len={} (expected {}), value={:?}, score={:?}, pass_logit={:?}",
+                evaluation.logits.len(),
+                count + 1,
+                evaluation.legal.len(),
+                count,
+                evaluation.value,
+                evaluation.score,
+                evaluation.logits.get(count),
+            ));
         }
         let mut actions = Vec::new();
         let mut weights = Vec::new();
@@ -969,6 +980,41 @@ mod tests {
         .ceil();
         assert_eq!(policy.candidates.len(), 2);
         assert!((policy.candidates.iter().map(|(_, w)| w).sum::<f64>() - draws).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sampled_priors_accept_unbounded_score_means_but_reject_invalid_outputs() {
+        let config = SearchConfig::default();
+        let mut rng = StdRng::seed_from_u64(0);
+        // cg12 round 33, seed 12104913: a valid linear score mean tripped
+        // the obsolete bounded-head validation.
+        for score in [-3.0, -1.0068011283874512, -1.0001, 1.0001, 3.0] {
+            let mut evaluation = FixedEvaluator { calls: 0 }
+                .evaluate(&Game::default())
+                .unwrap();
+            evaluation.score = score;
+            assert!(
+                SampledPolicy::new(evaluation, &config, &mut rng).is_ok(),
+                "score={score}"
+            );
+        }
+        for score in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut evaluation = FixedEvaluator { calls: 0 }
+                .evaluate(&Game::default())
+                .unwrap();
+            evaluation.score = score;
+            let error = SampledPolicy::new(evaluation, &config, &mut rng)
+                .err()
+                .unwrap();
+            assert!(error.contains("score="), "{error}");
+        }
+        for value in [-1.0001, 1.0001, f64::NAN, f64::INFINITY] {
+            let mut evaluation = FixedEvaluator { calls: 0 }
+                .evaluate(&Game::default())
+                .unwrap();
+            evaluation.value = value;
+            assert!(SampledPolicy::new(evaluation, &config, &mut rng).is_err());
+        }
     }
 
     #[test]

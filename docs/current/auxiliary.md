@@ -60,6 +60,8 @@ Schema-4 inference and schema-5 checkpoint/ONNX feature metadata both require
   with `--value-channels` and `--value-hidden`.
 - Outcome: shared representation → scalar/tanh.
 - Score mean: shared representation → **linear scalar**, in net board-area units.
+  Search accepts any finite score mean, including values outside [-1,1]; only
+  the outcome head is range-checked. Invalid-output errors include actual values.
 - Score standard deviation: shared representation → scalar → **softplus + 0.001**,
   with no upper cap, in the same units as the mean. It models conditional final-score
   variability, not epistemic uncertainty or a full multimodal score distribution.
