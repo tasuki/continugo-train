@@ -703,6 +703,7 @@ mod tests {
                 value: self.value,
                 score: self.score,
                 score_stdev: 0.0,
+                ownership: None,
                 logits,
                 legal,
             })
@@ -954,6 +955,7 @@ mod tests {
                 let mut logits = vec![f32::NEG_INFINITY; 1_000_001];
                 logits[1_000_000] = 0.0;
                 Ok(crate::inference::Evaluation {
+                    ownership: None,
                     value: 0.0,
                     score: 0.0,
                     score_stdev: 0.0,
@@ -1130,6 +1132,7 @@ mod tests {
                 let mut logits = vec![f32::NEG_INFINITY; 1_000_001];
                 logits[1_000_000] = 0.0;
                 Ok(crate::inference::Evaluation {
+                    ownership: None,
                     value: 0.0,
                     score: 0.0,
                     score_stdev: 0.0,

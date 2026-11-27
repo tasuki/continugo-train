@@ -247,6 +247,19 @@ impl OnnxEvaluator {
                 (shape, values)
             };
             let (cell_shape, cells) = encoded["cells"].try_extract_raw_tensor::<f32>()?;
+            let ownership = if self.encoder_has_ownership {
+                let (shape, values) = encoded["ownership"].try_extract_raw_tensor::<f32>()?;
+                if shape != [batch as i64, size as i64, size as i64]
+                    || values
+                        .iter()
+                        .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
+                {
+                    return Err("invalid encoder ownership".into());
+                }
+                Some(values)
+            } else {
+                None
+            };
             let stride = self.metadata.config.policy_hidden * size * size;
             if shape
                 != [
@@ -284,6 +297,8 @@ impl OnnxEvaluator {
                 };
                 let context = Arc::new(Context {
                     resolution: size,
+                    ownership: ownership
+                        .map(|v| Arc::new(v[row * size * size..(row + 1) * size * size].to_vec())),
                     spatial: spatial[row * stride..(row + 1) * stride].to_vec(),
                     cells: cells[row * size * size..(row + 1) * size * size].to_vec(),
                     pass: pass[row],
@@ -393,6 +408,7 @@ impl OnnxEvaluator {
                     value: queries[i].1.value,
                     score: queries[i].1.score,
                     score_stdev: queries[i].1.score_stdev,
+                    ownership: queries[i].1.ownership.clone(),
                     // Dense IDs are only the search interface, not dense rules work.
                     logits: vec![f32::NEG_INFINITY; COORDINATE_ACTIONS as usize + 1],
                     legal: vec![0; COORDINATE_ACTIONS as usize],

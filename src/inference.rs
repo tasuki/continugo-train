@@ -43,6 +43,8 @@ pub struct Evaluation {
     pub value: f64,
     pub score: f64,
     pub score_stdev: f64,
+    /// Row-major, square, side-to-move-relative ownership (new exports only).
+    pub ownership: Option<Arc<Vec<f32>>>,
     /// Inference log probabilities in action-ID order, pass at 1,000,000.
     /// Unselected/illegal coordinates are -inf. Selected nonempty cells share
     /// the full placement mass, preserving the global coarse P(pass).
@@ -233,6 +235,7 @@ pub struct InferenceStats {
 
 pub struct OnnxEvaluator {
     encoder: Session,
+    encoder_has_ownership: bool,
     scorer: Session,
     metadata: Metadata,
     feature_pool: Option<Arc<rayon::ThreadPool>>,
@@ -484,8 +487,10 @@ impl OnnxEvaluator {
         // Schema 4 uses complete cells; schemas 5–7 use geometry proposals.
         let geometry_budget =
             matches!(spec.schema, 5..=7).then_some(crate::geometry_proposals::DEFAULT_BUDGET);
+        let encoder_has_ownership = encoder.outputs.iter().any(|o| o.name == "ownership");
         Ok(Self {
             encoder,
+            encoder_has_ownership,
             scorer,
             metadata,
             device,

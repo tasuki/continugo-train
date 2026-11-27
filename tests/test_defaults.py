@@ -1,12 +1,12 @@
 """Loop option forwarding and inheritance, without pinning tunable defaults."""
 
-import unittest
 import io
+import unittest
 from contextlib import redirect_stderr
 from dataclasses import asdict
 
-from continugo_train.evaluation import EvaluationConfig
 from continugo_train import loop, rate_saved, rating_store, ratings
+from continugo_train.evaluation import EvaluationConfig
 from continugo_train.loop import LoopConfig
 from continugo_train.train import Options
 
@@ -25,6 +25,38 @@ class LoopOptionTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, 2)
         args = rate_saved.parse_args(["--model-store", "artifacts/20261122"])
         self.assertEqual(str(args.model_store), "artifacts/20261122")
+
+    def test_useless_move_penalty_is_forwarded_to_selfplay_evaluation_and_human_diagnostics(self):
+        from continugo_train.selfplay import SelfplayConfig, diagnostic_settings
+
+        config = SelfplayConfig()
+        for settings in (config.search(), config.evaluation_search(), config.native_settings(), diagnostic_settings()):
+            self.assertEqual(settings["useless_move_penalty_points"], 0.5)
+        self.assertEqual(SelfplayConfig(useless_move_penalty_points=0).evaluation_search()["useless_move_penalty_points"], 0)
+        for invalid in (-0.1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                LoopConfig(useless_move_penalty_points=invalid).validate()
+
+    def test_rating_protocol_roundtrips_useless_move_cost_and_preserves_old_protocols(self):
+        from continugo_train.selfplay import SelfplayConfig
+
+        settings = {
+            "version": 3, "algorithm": "static-glicko-v1", "reference": ratings.REFERENCE_ID,
+            "board_mix": {"9": 1}, "search": SelfplayConfig().evaluation_search(),
+            "neural_max_moves": 512, "reference_max_moves": 512,
+            "selection": "maximum-visits-random-ties", "arena_sha256": "a" * 64,
+            "rating_sha256": "b" * 64,
+        }
+        restored = ratings._protocol_from_row(ratings._protocol_columns(settings))
+        self.assertEqual(restored, settings)
+        disabled = {**settings, "search": {**settings["search"], "useless_move_penalty_points": 0}}
+        self.assertNotEqual(ratings.identity(settings), ratings.identity(disabled))
+        for version in (1, 2):
+            search = {k: v for k, v in settings["search"].items() if k != "useless_move_penalty_points"}
+            if version == 1:
+                search.pop("score_weight")
+            old = {**settings, "version": version, "search": search}
+            self.assertEqual(ratings._protocol_from_row(ratings._protocol_columns(old)), old)
 
     def test_all_new_game_caps_default_to_512_plies(self):
         config = EvaluationConfig()

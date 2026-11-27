@@ -33,6 +33,7 @@ fn arena_shares_models_and_drains_both_pipelines() {
         policy_search: None,
     };
     config.search.simulations = 2;
+    config.search.useless_move_penalty_points = 0.5;
     let options = ParallelConfig {
         games: 4,
         seed: 7,
@@ -147,6 +148,16 @@ fn native_batch_parity_and_worker_lifecycle() {
         close(actual.score, expected.score);
         close(value.score_stdev, expected.score_stdev);
         close(actual.score_stdev, expected.score_stdev);
+        let owned = actual
+            .ownership
+            .as_ref()
+            .expect("export includes ownership");
+        let reference = expected.ownership.as_ref().unwrap();
+        assert_eq!(owned.len(), reference.len());
+        assert_eq!(owned.len().isqrt().pow(2), owned.len());
+        for (&a, &b) in owned.iter().zip(reference.iter()) {
+            close(f64::from(a), f64::from(b));
+        }
         assert_eq!(actual.legal, expected.legal);
         assert_eq!(actual.logits.len(), 1_000_001);
         for (&a, &b) in actual.logits.iter().zip(&expected.logits) {

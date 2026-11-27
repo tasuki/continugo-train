@@ -51,8 +51,8 @@ Export atomically publishes two opset-17 graphs as one new directory:
 
 - `encoder.onnx`: coarse inputs plus schema-7 `komi: [batch]` scalar → projected spatial context, cell logits, pass
   logit, outcome value, normalized expected final score and score standard deviation
-  (`score_stdev`, in normalized-area units). Ownership remains
-  training-only; see [auxiliary supervision](auxiliary.md).
+  (`score_stdev`, in normalized-area units), and side-to-move-relative ownership
+  `[B,H,W]` for the useless move penalty; see [auxiliary supervision](auxiliary.md).
 - `policy.onnx`: context + exact candidate features + per-position int64 IDs `[B,N]` →
   raw placement logits. Batch, spatial, and candidate axes are dynamic.
 
@@ -103,7 +103,7 @@ use the [pipeline profiler](profiling.md).
 For a visual per-move dashboard with embedded images, all input planes and heads,
 use the [self-contained neural game microscope](nn-viewer.md): `mise run nn-view`
 for existing SGFs, or `--nn-html --nn-checkpoint FILE` on self-play/arena. This
-opt-in checkpoint replay includes ownership, which production exports omit.
+opt-in checkpoint replay includes ownership and all intermediate feature views.
 
 ## Feature extraction and context caching
 
@@ -113,12 +113,12 @@ opt-in checkpoint replay includes ownership, which production exports omit.
   default is one. Native self-play and `infer` use mimalloc. The standalone feature
   exporter remains serial per process; training uses multiple loader processes.
 - `--cache-positions 64`: host-side LRU of encoded spatial context, cell logits,
-  pass logit, value and exact per-group proposal geometry. A value query populates
+  pass logit, value, ownership and exact per-group proposal geometry. A value query populates
   context reusable for subsequent value/policy work without generating proposals.
   Keys use exact immutable Game equality, including record/turn/pass history,
   within one frozen model/backend/density. Reconfiguration clears it; terminal
   queries are rejected before lookup. There is no approximate or cross-model reuse.
-- Spatial, cell-logit and retained geometry payloads are capped at 32 MiB; game keys/scalars/allocator overhead are
+- Spatial, cell-logit, ownership and retained geometry payloads are capped at 32 MiB; game keys/scalars/allocator overhead are
   separate and bounded by entry count. Oversized contexts are not cached; zero
   positions disables caching. Raw coarse rasters, dense exact rows, and million-
   action logits are not cached. Search retains only small candidate reservoirs.
@@ -147,8 +147,45 @@ Neural and unguided `--engine mcts` share PUCT, progressive widening, side-to-mo
 backup signs, terminal scoring, and visit-count move sampling. Terminal outcomes
 override estimates. Default nonterminal leaves use neural values or neutral
 unguided values. Selective policies are deferred until node expansion; their dense
-vectors are discarded after candidate sampling. By default neither search applies
-the direct random reference's eye filter or a handcrafted positional value bonus.
+vectors are discarded after candidate sampling. Neither search applies the direct
+random reference's eye filter by default.
+
+### Useless move penalty
+
+Neural search defaults to `--useless-move-penalty-points 0.5` (zero disables it).
+Ownership is a heuristic for uselessness, not proof; this applies at any game stage.
+For each placement, the cost in board points is
+`maximum * clamp((abs(root ownership) - 0.95) / 0.05, 0, 1)`.
+Passing costs nothing. In friendly territory only, the cost is waived when the
+placement's four-connected >95%-friendly raster region overlaps any enemy stone's
+physical disc. Opponent-owned placements have no capture/cleanup exemption.
+Stone/pixel overlap uses clipped pixel control volumes, not just stone centres;
+there is no configurable proximity radius, Benson analysis, or liberty calculation.
+Ownership is an expected signed final-ownership prediction, not calibrated confidence.
+
+The mask is built once at the root, with constant-time candidate lookups. Each
+expanded root edge caches its cost. One root-local finite difference of expected
+score utility at `root_score ± 0.5 / board_area`, multiplied by `score_weight`,
+converts board points to blended utility per point. Root PUCT subtracts that
+cost from Q without changing priors or backing costs into value evidence.
+Consequently the preference vanishes at score weight zero and weakens when the
+score curve is saturated or highly uncertain. Deeper nodes are unpenalized.
+
+Self-play, rated evaluation and the human-facing search worker share this setting.
+Policy visit targets reflect the preference; score/value/ownership labels and SGF
+results remain authoritative and unpenalized. Unguided MCTS has no ownership
+prediction and does not apply it. Search settings/ratings protocols record the
+maximum cost, including zero for disabled comparisons.
+
+New exports add a small ownership head to the existing encoder execution (also
+on leaf contexts); no extra trunk pass or inference request is made. Ownership
+rasters share the bounded context cache. Old bundles without ownership output
+keep their original search behavior: the preference is automatically skipped,
+even with a nonzero configured maximum. No existing bundle needs changing.
+New exports apply it by default; `--useless-move-penalty-points 0` disables it there too.
+Optionally re-exporting old weights enables it without retraining or a feature-schema
+change. The recorded maximum is a configured setting; effective application also
+depends on whether each model bundle exports ownership.
 
 For fresh bootstrap data only, `--engine mcts --bootstrap-avoid-eyes` rejects
 noncapturing own-small-eye fills from placement proposals throughout the tree,

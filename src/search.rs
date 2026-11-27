@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::sync::OnceLock;
 
 pub mod rollout;
+mod useless_move;
 use rollout::{RolloutConfig, RolloutStats};
 
 #[derive(Clone, Debug, Serialize)]
@@ -27,6 +28,8 @@ pub struct SearchConfig {
     /// Linear score fraction: 0.5 equally weights outcome and normalized score;
     /// 1 uses only score, 0 only outcome.
     pub score_weight: f64,
+    /// Maximum root-only useless move penalty, in board points; zero disables it.
+    pub useless_move_penalty_points: f64,
     /// Explicit unguided bootstrap guidance; never enabled for neural search.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub bootstrap_avoid_eyes: bool,
@@ -35,7 +38,8 @@ pub struct SearchConfig {
     pub rollout: Option<RolloutConfig>,
 }
 
-/// The caller owns tuning defaults. Native workers require these parameters.
+/// Shared self-play/evaluation/human-play parameters. Historical tuning values
+/// remain caller-supplied; the useless move penalty defaults to 0.5 board points.
 #[derive(clap::Args, Clone, Debug)]
 pub struct SearchParameters {
     #[arg(long)]
@@ -50,6 +54,8 @@ pub struct SearchParameters {
     pub independent_exploration: f64,
     #[arg(long)]
     pub score_weight: f64,
+    #[arg(long, default_value_t = 0.5)]
+    pub useless_move_penalty_points: f64,
 }
 
 impl SearchParameters {
@@ -67,6 +73,7 @@ impl SearchParameters {
             proposal_attempts: self.proposal_attempts,
             independent_exploration: self.independent_exploration,
             score_weight: self.score_weight,
+            useless_move_penalty_points: self.useless_move_penalty_points,
             bootstrap_avoid_eyes: false,
             rollout: None,
         }
@@ -88,6 +95,7 @@ impl Default for SearchConfig {
             proposal_attempts: 128,
             independent_exploration: 0.25,
             score_weight: 0.5,
+            useless_move_penalty_points: 0.0,
             bootstrap_avoid_eyes: false,
             rollout: None,
         }
@@ -115,6 +123,9 @@ impl SearchConfig {
                 "move temperatures must be finite and nonnegative, with positive finite half-life"
                     .into(),
             );
+        }
+        if !self.useless_move_penalty_points.is_finite() || self.useless_move_penalty_points < 0.0 {
+            return Err("useless move penalty must be finite and nonnegative".into());
         }
         if !self.score_weight.is_finite() || !(0.0..=1.0).contains(&self.score_weight) {
             return Err("score weight must be finite and in [0,1]".into());
@@ -262,6 +273,10 @@ struct Node {
     neural: Option<SampledPolicy>,
     // Placement importance p(a)/q(a); pass keeps its separate policy stratum.
     importance: f64,
+    is_root: bool,
+    useless_move_penalty: Option<useless_move::UselessMovePenalty>,
+    // Cached on insertion; never backed up into value evidence.
+    useless_move_cost: f64,
 }
 
 impl Node {
@@ -278,6 +293,9 @@ impl Node {
             children: Vec::new(),
             neural: None,
             importance: 0.0,
+            is_root: false,
+            useless_move_penalty: None,
+            useless_move_cost: 0.0,
         }
     }
 
@@ -294,6 +312,27 @@ impl Node {
             score_stdev: evaluation.score_stdev,
         }
         .utility(config.score_weight, f64::from(self.game.board().size()))?;
+        // Older bundles did not export ownership. Keep their search behavior
+        // unchanged; only ownership-capable exports opt into this preference.
+        if self.is_root
+            && config.useless_move_penalty_points > 0.0
+            && let Some(ownership) = evaluation.ownership.as_ref()
+        {
+            // One root-local finite-difference conversion, not quadrature per move.
+            // The score head predicts margin / board area. Outcome utility is untouched.
+            let size = f64::from(self.game.board().size());
+            let step = 0.5 / size.powi(2);
+            let u =
+                |score| crate::score_utility::score_utility(score, evaluation.score_stdev, size);
+            let utility_per_point =
+                config.score_weight * (u(evaluation.score + step) - u(evaluation.score - step));
+            self.useless_move_penalty = Some(useless_move::UselessMovePenalty::new(
+                &self.game,
+                ownership,
+                config.useless_move_penalty_points,
+                utility_per_point,
+            )?);
+        }
         self.neural = Some(SampledPolicy::new(evaluation, config, rng)?);
         Ok(value)
     }
@@ -348,6 +387,10 @@ impl Node {
                 .play(action.spot().unwrap())?;
             let mut child = Node::new(game, rng);
             child.importance = importance;
+            child.useless_move_cost = self
+                .useless_move_penalty
+                .as_ref()
+                .map_or(0.0, |p| p.utility(action));
             self.children.push(Edge { action, child });
             // A newly proposed action always gets a real evaluation, even if the
             // network undervalues it. This preserves independent exploration.
@@ -381,7 +424,7 @@ impl Node {
                 } else {
                     placement / (self.children.len() - 1) as f64
                 };
-                let score = edge.child.opponent_mean()
+                let score = edge.child.opponent_mean() - edge.child.useless_move_cost
                     + exploration * prior / (1.0 + f64::from(edge.child.visits));
                 (index, score, rng.random::<u64>())
             })
@@ -641,6 +684,7 @@ pub fn search_neural(
         return Err("bootstrap eye guidance is forbidden in neural search".into());
     }
     let mut root = Node::new(game.clone(), rng);
+    root.is_root = true;
     let value = root.evaluate_neural(evaluator, config, rng)?;
     // In rollout mode the network supplies policy only, never leaf values.
     root.update_estimate(config.rollout.is_none().then_some(value.into()));
@@ -912,12 +956,108 @@ mod tests {
                 value: 0.75,
                 score: 0.0,
                 score_stdev: 0.0,
+                ownership: None,
                 logits,
                 legal,
             })
         }
         fn model_id(&self) -> &str {
             "test"
+        }
+    }
+
+    #[test]
+    fn useless_move_cost_is_root_only_cached_and_never_backed_up() {
+        struct Owned(FixedEvaluator);
+        impl Evaluator for Owned {
+            fn evaluate(&mut self, game: &Game) -> Result<Evaluation, String> {
+                let mut e = self.0.evaluate(game)?;
+                e.ownership = Some(std::sync::Arc::new(vec![-1.0; 54 * 54]));
+                Ok(e)
+            }
+            fn model_id(&self) -> &str {
+                "owned-test"
+            }
+        }
+        let mut rng = StdRng::seed_from_u64(41);
+        let config = SearchConfig {
+            useless_move_penalty_points: 0.5,
+            ..SearchConfig::default()
+        };
+        let mut evaluator = Owned(FixedEvaluator { calls: 0 });
+        let mut root = Node::new(Game::default(), &mut rng);
+        root.is_root = true;
+        let initial = root
+            .evaluate_neural(&mut evaluator, &config, &mut rng)
+            .unwrap();
+        root.update_estimate(Some(initial.into()));
+        root.simulate_neural(
+            &mut evaluator,
+            &config,
+            &mut rng,
+            &mut RolloutStats::default(),
+        )
+        .unwrap();
+        assert_eq!(root.children.len(), 2);
+        assert_eq!(root.children[0].child.useless_move_cost, 0.0);
+        let child = &mut root.children[1].child;
+        assert!(child.useless_move_cost > 0.0 && child.useless_move_cost < 0.01);
+        assert!((root.value_sum - (initial - child.mean())).abs() < 1e-12);
+        child
+            .evaluate_neural(&mut evaluator, &config, &mut rng)
+            .unwrap();
+        assert!(child.useless_move_penalty.is_none());
+        // Old bundles retain their policy/value and do not require re-export.
+        let mut missing = Node::new(Game::default(), &mut rng);
+        missing.is_root = true;
+        let value = missing
+            .evaluate_neural(&mut FixedEvaluator { calls: 0 }, &config, &mut rng)
+            .unwrap();
+        assert_eq!(value, initial);
+        assert!(missing.useless_move_penalty.is_none());
+        assert!(missing.neural.is_some());
+    }
+
+    #[test]
+    fn root_selection_subtracts_useless_move_cost_without_changing_priors() {
+        for penalized in [false, true] {
+            let mut rng = StdRng::seed_from_u64(42);
+            let config = SearchConfig {
+                widening: 0.01,
+                ..SearchConfig::default()
+            };
+            let mut root = Node::new(Game::default(), &mut rng);
+            root.expand_pass(&config, &mut rng).unwrap();
+            let action = Action::from_index(500_500).unwrap();
+            let child = Node::new(action.apply(&root.game).unwrap(), &mut rng);
+            root.children.push(Edge { action, child });
+            root.neural = Some(SampledPolicy {
+                pass: 0.5,
+                placement: 0.5,
+                candidates: vec![],
+            });
+            root.visits = 2;
+            for edge in &mut root.children {
+                edge.child.visits = 1;
+                edge.child.value_visits = 1;
+                edge.child.neural = Some(SampledPolicy {
+                    pass: 1.0,
+                    placement: 0.0,
+                    candidates: vec![],
+                });
+            }
+            root.children[1].child.importance = 1.0;
+            root.children[1].child.value_sum = -0.001; // Slightly better than pass.
+            root.children[1].child.useless_move_cost = if penalized { 0.002 } else { 0.0 };
+            root.simulate_neural(
+                &mut FixedEvaluator { calls: 0 },
+                &config,
+                &mut rng,
+                &mut RolloutStats::default(),
+            )
+            .unwrap();
+            assert_eq!(root.children[0].child.visits, if penalized { 2 } else { 1 });
+            assert_eq!(root.children[1].child.visits, if penalized { 1 } else { 2 });
         }
     }
 
@@ -991,6 +1131,7 @@ mod tests {
             value: 0.0,
             score: 0.0,
             score_stdev: 0.0,
+            ownership: None,
             logits: vec![0.0; count + 1],
             legal: vec![1; count],
         };
@@ -1088,6 +1229,7 @@ mod tests {
             }
             logits[count] = self.pass_logit;
             Ok(Evaluation {
+                ownership: None,
                 logits,
                 legal,
                 value: -0.99,

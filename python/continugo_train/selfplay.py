@@ -14,6 +14,7 @@ class SelfplayConfig:
     proposal_attempts: int = 128
     independent_exploration: float = 0.5
     score_weight: float = 0.5
+    useless_move_penalty_points: float = 0.5
     chosen_move_temperature_early: float = 0.75
     chosen_move_temperature: float = 0.15
     chosen_move_temperature_halflife: float = 19.0
@@ -32,7 +33,7 @@ class SelfplayConfig:
     def search(self):
         return {name: getattr(self, name) for name in (
             "simulations", "cpuct", "widening", "widening_exponent", "proposal_attempts",
-            "independent_exploration", "score_weight", "chosen_move_temperature_early",
+            "independent_exploration", "score_weight", "useless_move_penalty_points", "chosen_move_temperature_early",
             "chosen_move_temperature", "chosen_move_temperature_halflife",
         )}
 

@@ -136,6 +136,8 @@ class LoopConfig(SelfplayConfig):
             or not 0 < self.independent_exploration <= 1
             or not math.isfinite(self.score_weight)
             or not 0 <= self.score_weight <= 1
+            or not math.isfinite(self.useless_move_penalty_points)
+            or self.useless_move_penalty_points < 0
             or not 0 < self.validation_fraction < 1
             or self.lr is not None
             and (not math.isfinite(self.lr) or self.lr <= 0)

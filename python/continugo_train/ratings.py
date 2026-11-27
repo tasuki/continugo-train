@@ -60,6 +60,7 @@ SEARCH_TYPES = {
     "proposal_attempts": int,
     "independent_exploration": float,
     "score_weight": float,
+    "useless_move_penalty_points": float,
 }
 PROTOCOL_COLUMNS = [
     "version",
@@ -114,8 +115,9 @@ def protocol(config, *, legacy=False):
     search = {**config.search(), "simulations": config.gate_simulations}
     if legacy:
         search.pop("score_weight", None)
+        search.pop("useless_move_penalty_points", None)
     return {
-        "version": 1 if legacy else 2,
+        "version": 1 if legacy else (3 if "useless_move_penalty_points" in search else 2),
         "algorithm": "static-glicko-v1",
         "reference": REFERENCE_ID,
         "board_mix": {str(size): count // divisor for size, count in sorted(counts.items())},
@@ -132,6 +134,7 @@ def _protocol_columns(settings):
     return {
         **{k: settings[k] for k in PROTOCOL_COLUMNS if k not in SEARCH_TYPES},
         **({"score_weight": ""} if settings["version"] == 1 else {}),
+        **({"useless_move_penalty_points": ""} if settings["version"] < 3 else {}),
         **settings["search"],
         "board_mix": ",".join(f"{k}:{v}" for k, v in settings["board_mix"].items()),
     }
@@ -146,7 +149,8 @@ def _protocol_from_row(row):
     settings["search"] = {
         k: kind(row[k])
         for k, kind in SEARCH_TYPES.items()
-        if k != "score_weight" or settings["version"] != 1
+        if (k != "score_weight" or settings["version"] != 1)
+        and (k != "useless_move_penalty_points" or settings["version"] >= 3)
     }
     return settings
 
@@ -418,13 +422,13 @@ def _load(directory):
         directory / "matches.csv",
         MATCH_COLUMNS,
         legacy_columns=[
-            LEGACY_MATCH_COLUMNS,
-            POOLED_MATCH_COLUMNS,
-            [
-                c
-                for c in POOLED_MATCH_COLUMNS
-                if c not in {"batch_number", "game_number", "sgf_path"}
-            ],
+            header
+            for columns in [
+                MATCH_COLUMNS, LEGACY_MATCH_COLUMNS, POOLED_MATCH_COLUMNS,
+                [c for c in POOLED_MATCH_COLUMNS
+                 if c not in {"batch_number", "game_number", "sgf_path"}],
+            ]
+            for header in [columns, [c for c in columns if c != "useless_move_penalty_points"]]
         ],
     )
     pooled = any("pool" in row for row in tables.matches)
@@ -793,7 +797,7 @@ def ingest(
 ):
     """Validate SGFs, retain store-owned evidence, then commit only unseen games."""
     if (
-        settings.get("version") not in {1, 2}
+        settings.get("version") not in {1, 2, 3}
         or settings.get("algorithm") != "static-glicko-v1"
         or settings.get("reference") != REFERENCE_ID
     ):

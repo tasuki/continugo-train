@@ -100,11 +100,11 @@ MSE is approximately 1 and one-sigma coverage approximately 68%; non-Gaussian
 score distributions can depart from the latter. Best validation loss is not a
 strength rating.
 
-Production ONNX exports include the score scalar but **omit ownership**. Full
-policy and cheap value-only native requests both return outcome and score;
-context caching and cross-game batching retain outcome, score mean and standard
-deviation. Eager training diagnostics
-can inspect ownership without adding a dense output to every MCTS leaf.
+Production ONNX exports include score and ownership. Full policy and cheap
+value-only requests share encoded contexts containing outcome, score mean/standard
+deviation and the ownership raster. Only the root uses ownership to build the
+[useless move penalty](inference.md#useless-move-penalty); there is no ownership
+loss or geometry calculation inside search. Existing weights only need re-exporting.
 
 ## Search utility
 

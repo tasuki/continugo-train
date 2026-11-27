@@ -71,7 +71,8 @@ original behavior.
 
 Generation needs the normal Python environment and an up-to-date Rust feature
 binary: `mise run setup` / `mise run build-features`. The checkpoint is necessary
-because production ONNX exports omit ownership. Standalone native binaries find
+for eager replay of all heads and intermediate feature views (including older
+bundles that omit ownership). Standalone native binaries find
 `.venv/bin/python` and `target/release/features` under this checkout; override with
 `CONTINUGO_PYTHON` / `CONTINUGO_FEATURE_BIN` if needed. The offline command also has
 `--feature-binary` and `--threads` (CPU, default one).

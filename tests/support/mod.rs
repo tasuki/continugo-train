@@ -7,6 +7,7 @@ pub fn search_config() -> SearchConfig {
     SearchConfig {
         simulations: 32, cpuct: 1.5, widening: 2.0, widening_exponent: 0.5,
         proposal_attempts: 128, independent_exploration: 0.25, score_weight: 0.5,
+        useless_move_penalty_points: 0.0,
         chosen_move_temperature_early: 0.75, chosen_move_temperature: 0.15,
         chosen_move_temperature_halflife: 19.0, bootstrap_avoid_eyes: false, rollout: None,
     }

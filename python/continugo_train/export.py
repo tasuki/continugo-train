@@ -30,8 +30,8 @@ class Encoder(nn.Module):
         self.model = model
 
     def forward(self, coarse, komi=None):
-        spatial, pass_logit, value, score, stdev = self.model.encode_search(coarse, komi)
-        return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1), score, stdev
+        spatial, pass_logit, value, score, ownership, stdev = self.model.encode_training(coarse, komi)
+        return spatial, pass_logit, value, self.model.cell_head(spatial).flatten(1), score, stdev, ownership
 
 
 class Scorer(nn.Module):
@@ -103,7 +103,7 @@ def verify(model, directory):
             actions = torch.randint(1000000, (batch, count), generator=rng)
             actions[:, :6] = torch.tensor([0, 999, 1000, 999999, 500500, 500501])
             komi = torch.linspace(-14 / 81, 14 / 81, batch)
-            spatial, pass_logit, value, score, stdev = model.encode_search(coarse, komi)
+            spatial, pass_logit, value, score, ownership, stdev = model.encode_training(coarse, komi)
             expected = [
                 spatial,
                 pass_logit,
@@ -111,6 +111,7 @@ def verify(model, directory):
                 model.cell_head(spatial).flatten(1),
                 score,
                 stdev,
+                ownership,
                 model.score_chunk(spatial, exact, actions),
             ]
             inputs = {"coarse": coarse.numpy()}
@@ -122,7 +123,7 @@ def verify(model, directory):
             )
             for index, (reference, output) in enumerate(zip(expected, actual, strict=True)):
                 _assert_parity(
-                    output, reference.numpy(), spatial=index == 0, logits=index in (1, 3, 6)
+                    output, reference.numpy(), spatial=index == 0, logits=index in (1, 3, 7)
                 )
                 maximum = max(maximum, float(np.max(np.abs(output - reference.numpy()))))
     return maximum
@@ -169,7 +170,7 @@ def export_checkpoint(checkpoint, output):
                 (coarse, torch.zeros(1)) if config.global_inputs else (coarse,),
                 str(directory / "encoder.onnx"),
                 input_names=["coarse", "komi"] if config.global_inputs else ["coarse"],
-                output_names=["spatial", "pass_logit", "value", "cells", "score", "score_stdev"],
+                output_names=["spatial", "pass_logit", "value", "cells", "score", "score_stdev", "ownership"],
                 dynamic_axes={
                     "coarse": {0: "batch", 2: "height", 3: "width"},
                     **({"komi": {0: "batch"}} if config.global_inputs else {}),
@@ -178,6 +179,7 @@ def export_checkpoint(checkpoint, output):
                     "value": {0: "batch"},
                     "score": {0: "batch"},
                     "score_stdev": {0: "batch"},
+                    "ownership": {0: "batch", 1: "height", 2: "width"},
                     "cells": {0: "batch", 1: "cells"},
                 },
                 opset_version=17,

@@ -9,6 +9,7 @@ pub(super) struct Context {
     pub resolution: usize,
     pub spatial: Vec<f32>,
     pub cells: Vec<f32>,
+    pub ownership: Option<Arc<Vec<f32>>>,
     pub pass: f32,
     pub value: f64,
     pub score: f64,
@@ -18,6 +19,10 @@ pub(super) struct Context {
 impl Context {
     fn bytes(&self) -> usize {
         (self.spatial.capacity() + self.cells.capacity()) * size_of::<f32>()
+            + self
+                .ownership
+                .as_ref()
+                .map_or(0, |o| o.capacity() * size_of::<f32>())
             + self.geometry.as_ref().map_or(0, |g| g.bytes())
     }
 }
@@ -89,6 +94,7 @@ mod tests {
             resolution: 2,
             spatial: vec![0.0; 4],
             cells: Vec::new(),
+            ownership: None,
             pass: 0.0,
             value: 0.25,
             score: -0.1,
