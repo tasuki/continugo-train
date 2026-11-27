@@ -1,0 +1,14 @@
+{
+  "family": "cg12",
+  "round": 45,
+  "network_name": "cg12-b8c64-s6854823-d1100165",
+  "progress": {
+    "training_games": 15604,
+    "samples_seen": 6854823,
+    "data_positions": 1100165
+  },
+  "source": {
+    "run": "20261124-164042-cg12",
+    "iteration": 45
+  }
+}

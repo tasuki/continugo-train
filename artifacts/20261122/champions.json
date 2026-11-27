@@ -7,7 +7,7 @@
     "history_opponents": 3,
     "history_games": 50
   },
-  "champion": "cg11-r0055",
+  "champion": "cg12-r0060",
   "history": [
     {
       "model": "random"
@@ -36,6 +36,21 @@
       "model": "cg11-r0055",
       "opponent": "cg11-r0035",
       "recorded_at": "2026-11-23T23:03:47.803981+00:00"
+    },
+    {
+      "model": "cg12-r0010",
+      "opponent": "cg11-r0055",
+      "recorded_at": "2026-11-25T13:50:00.392230+00:00"
+    },
+    {
+      "model": "cg12-r0045",
+      "opponent": "cg12-r0010",
+      "recorded_at": "2026-11-26T23:40:12.960322+00:00"
+    },
+    {
+      "model": "cg12-r0060",
+      "opponent": "cg12-r0045",
+      "recorded_at": "2026-11-27T12:26:47.491346+00:00"
     }
   ],
   "evaluated": {
@@ -134,8 +149,107 @@
       "total_wins": 22,
       "complete": true,
       "recorded_at": "2026-11-24T06:23:43.221938+00:00"
+    },
+    "cg12-r0005": {
+      "decision": "screen-failed",
+      "opponent": "cg11-r0055",
+      "screen_wins": 6,
+      "total_wins": 6,
+      "complete": true,
+      "recorded_at": "2026-11-25T10:00:43.857436+00:00"
+    },
+    "cg12-r0010": {
+      "decision": "promoted",
+      "opponent": "cg11-r0055",
+      "screen_wins": 8,
+      "total_wins": 35,
+      "complete": true,
+      "recorded_at": "2026-11-25T13:50:00.392230+00:00"
+    },
+    "cg12-r0015": {
+      "decision": "screen-failed",
+      "opponent": "cg12-r0010",
+      "screen_wins": 2,
+      "total_wins": 2,
+      "complete": true,
+      "recorded_at": "2026-11-25T18:59:48.332843+00:00"
+    },
+    "cg12-r0020": {
+      "decision": "promotion-revoked",
+      "original_decision": "promoted",
+      "reason": "User requested removal from champion history after historical calibration; retain all model and game evidence.",
+      "opponent": "cg12-r0010",
+      "screen_wins": 7,
+      "total_wins": 28,
+      "complete": true,
+      "recorded_at": "2026-11-25T22:48:49.864339+00:00",
+      "revoked_at": "2026-11-25T23:12:02.341576+00:00"
+    },
+    "cg12-r0025": {
+      "decision": "screen-failed",
+      "opponent": "cg12-r0010",
+      "screen_wins": 6,
+      "total_wins": 6,
+      "complete": true,
+      "recorded_at": "2026-11-26T06:48:04.661377+00:00"
+    },
+    "cg12-r0030": {
+      "decision": "screen-failed",
+      "opponent": "cg12-r0010",
+      "screen_wins": 5,
+      "total_wins": 5,
+      "complete": true,
+      "recorded_at": "2026-11-26T10:32:35.610249+00:00"
+    },
+    "cg12-r0035": {
+      "decision": "challenge-failed",
+      "opponent": "cg12-r0010",
+      "screen_wins": 7,
+      "total_wins": 20,
+      "complete": true,
+      "recorded_at": "2026-11-26T15:47:38.140402+00:00"
+    },
+    "cg12-r0040": {
+      "decision": "screen-failed",
+      "opponent": "cg12-r0010",
+      "screen_wins": 6,
+      "total_wins": 6,
+      "complete": true,
+      "recorded_at": "2026-11-26T19:42:35.345501+00:00"
+    },
+    "cg12-r0045": {
+      "decision": "promoted",
+      "opponent": "cg12-r0010",
+      "screen_wins": 8,
+      "total_wins": 29,
+      "complete": true,
+      "recorded_at": "2026-11-26T23:40:12.960322+00:00"
+    },
+    "cg12-r0050": {
+      "decision": "challenge-failed",
+      "opponent": "cg12-r0045",
+      "screen_wins": 7,
+      "total_wins": 18,
+      "complete": true,
+      "recorded_at": "2026-11-27T04:05:59.554008+00:00"
+    },
+    "cg12-r0055": {
+      "decision": "screen-failed",
+      "opponent": "cg12-r0045",
+      "screen_wins": 6,
+      "total_wins": 6,
+      "complete": true,
+      "recorded_at": "2026-11-27T08:05:19.751558+00:00"
+    },
+    "cg12-r0060": {
+      "decision": "promoted",
+      "opponent": "cg12-r0045",
+      "screen_wins": 7,
+      "total_wins": 29,
+      "complete": true,
+      "recorded_at": "2026-11-27T12:26:47.491346+00:00"
     }
   },
   "pending": null,
-  "next_seed": 97001000
+  "next_seed": 97001425
 }
