@@ -176,6 +176,21 @@ commented-out default in source. `samples_by_size` reports actual counts.
 `uniform` restores literal cycling; zero weights exclude a size. Explicitly
 selecting a different size also requires a positive weight for it.
 
+## One board size per generation iteration
+
+`--size-schedule iteration` cycles through `--sizes` in the supplied order, one
+size per self-play iteration. It does **not** change the replay/training mix.
+`--games-by-size 9:150,11:123,13:104,15:90,17:79,19:71` supplies positive game
+counts for every size; if omitted, `--games-per-iteration` applies to each size.
+Sizes must be unique and have positive training weights. The default `mixed`
+schedule preserves the original weighted within-iteration generation behavior.
+
+Seed ranges follow cumulative **planned game counts**, not iteration count times
+a fixed count. Partial attempts keep their original size/seed/index on recovery;
+the cycle and counts are frozen on resume. Replay continues to include all
+positive-weight sizes, and `--size-sampling available` can ramp up training shares
+as new sizes become available. See [cg13 mixed boards](mixed-boards.md).
+
 ## Operating safeguards and interruption
 
 Preserve weights/optimizer progress; resets and architecture changes are explicit.

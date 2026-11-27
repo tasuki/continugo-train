@@ -121,6 +121,14 @@ part of the campaign launcher. Newly frozen campaigns use the normal measured
 stage hooks and automatically update both images after each iteration, including
 interrupted/failed iterations.
 
+## cg13
+
+See the [mixed-board recipe](mixed-boards.md): cg12 round 60 continuation, one
+board size per iteration in order 9/13/17/11/15/19, size-dependent game counts,
+availability-capped equal-position training shares and area-limited GPU
+microbatches with logical optimizer batches of 64. Legacy campaign defaults are
+unchanged. The recipe has not been launched by implementing this feature.
+
 ## cg9
 
 `cg9.json` forks cg8 round 5 (the latest completed round) with current code/binaries,

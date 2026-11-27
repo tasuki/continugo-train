@@ -30,7 +30,7 @@ from .paths import new_run_directory
 from .progress import checkpoint_progress, data_history, network_name
 from .progress import initialize as initialize_progress
 from .runtime import inference_environment
-from .sampling import DEFAULT_SIZE_WEIGHTS, DEFAULT_SIZES, weighted_sizes
+from .sampling import DEFAULT_SIZE_WEIGHTS, DEFAULT_SIZES, parse_weights, weighted_sizes
 from .selfplay import SelfplayConfig
 from .train import Options, atomic_checkpoint, checkpoint_splits, feature_spec
 
@@ -43,6 +43,10 @@ class LoopConfig(SelfplayConfig):
     sizes: tuple[int, ...] = DEFAULT_SIZES
     size_weights: str = DEFAULT_SIZE_WEIGHTS
     games_per_iteration: int = 150
+    size_schedule: str = "mixed"
+    games_by_size: str = ""
+    size_sampling: str = "downsample"
+    microbatch_size_9: int = 0
     seed: int = 0
     train_epochs: int = 1
     steps_per_epoch: int = 0
@@ -73,6 +77,21 @@ class LoopConfig(SelfplayConfig):
                 or not math.isfinite(self.komi_stddev) or self.komi_stddev < 0):
             raise ValueError("komi must be finite; stddev must be finite and nonnegative")
         weighted_sizes(self.sizes, self.size_weights)
+        if self.size_schedule not in ("mixed", "iteration"):
+            raise ValueError("size_schedule must be mixed or iteration")
+        if self.size_sampling not in ("downsample", "available"):
+            raise ValueError("size_sampling must be downsample or available")
+        if self.games_by_size:
+            counts = parse_weights(self.games_by_size)
+            if (self.size_schedule != "iteration" or counts is None
+                    or set(counts) != set(self.sizes) or any(n <= 0 for n in counts.values())):
+                raise ValueError("games_by_size needs a positive count for every iteration size")
+        if self.size_schedule == "iteration":
+            weights = parse_weights(self.size_weights)
+            if len(set(self.sizes)) != len(self.sizes) or (
+                weights is not None and any(weights.get(size, 1) <= 0 for size in self.sizes)
+            ):
+                raise ValueError("iteration sizes must be unique and have positive training weights")
         if not self.sizes or any(size not in range(9, 20) for size in self.sizes):
             raise ValueError("sizes must be nonempty and in 9..19")
         if not 1 <= self.games_per_iteration < 2**32 or not 1 <= self.simulations < 2**32:
@@ -120,6 +139,7 @@ class LoopConfig(SelfplayConfig):
             "shuffle_buffer",
             "cache_positions",
             "save_model_every",
+            "microbatch_size_9",
         ]
         if any(getattr(self, name) < 0 for name in nonnegative):
             raise ValueError("seed, training caps, workers, buffer and cache must be nonnegative")
@@ -175,6 +195,22 @@ class LoopConfig(SelfplayConfig):
         ]
         return info.get("policy_visit_totals") == expected
 
+    def iteration_size(self, number):
+        return self.sizes[(number - 1) % len(self.sizes)]
+
+    def game_count(self, number):
+        if self.size_schedule == "mixed" or not self.games_by_size:
+            return self.games_per_iteration
+        return parse_weights(self.games_by_size)[self.iteration_size(number)]
+
+    def seed_offset(self, number):
+        """Number of planned games before this round, including incomplete jobs."""
+        if self.size_schedule == "mixed":
+            return (number - 1) * self.games_per_iteration
+        cycles, remainder = divmod(number - 1, len(self.sizes))
+        counts = [self.game_count(i + 1) for i in range(len(self.sizes))]
+        return cycles * sum(counts) + sum(counts[:remainder])
+
     def training_options(self, parent, iteration):
         options = dict(parent["options"])
         for name in [
@@ -187,6 +223,8 @@ class LoopConfig(SelfplayConfig):
             "steps_per_epoch",
             "validation_fraction",
             "size_weights",
+            "size_sampling",
+            "microbatch_size_9",
             "feature_cache",
         ]:
             options[name] = getattr(self, name)
@@ -515,7 +553,7 @@ class LoopRunner:
                 "iteration": iteration["number"] if iteration else 0,
                 "config": asdict(self.config),
                 "next_seed": self.config.seed
-                + (iteration["number"] if iteration else 0) * self.config.games_per_iteration,
+                + self.config.seed_offset(iteration["number"] + 1 if iteration else 1),
             },
         )
         self.log(f"RECOVERY {kind}: {reference['directory']}")
@@ -552,12 +590,12 @@ class LoopRunner:
 
     def plan(self, iteration, index):
         cycle = weighted_sizes(self.config.sizes, self.config.size_weights)
-        size = cycle[
-            ((iteration["number"] - 1) * self.config.games_per_iteration + index) % len(cycle)
-        ]
-        seed = (
-            self.config.seed + (iteration["number"] - 1) * self.config.games_per_iteration + index
+        size = (
+            self.config.iteration_size(iteration["number"])
+            if self.config.size_schedule == "iteration"
+            else cycle[(self.config.seed_offset(iteration["number"]) + index) % len(cycle)]
         )
+        seed = self.config.seed + self.config.seed_offset(iteration["number"]) + index
         return size, seed
 
     def adopt_games(self, iteration):
@@ -649,10 +687,12 @@ class LoopRunner:
             iteration["selfplay_attempts"].append(attempt)
             self.save()
             cycle = weighted_sizes(self.config.sizes, self.config.size_weights)
-            rotation = (
-                (iteration["number"] - 1) * self.config.games_per_iteration + indices[0]
-            ) % len(cycle)
-            sizes = cycle[rotation:] + cycle[:rotation]
+            rotation = (self.config.seed_offset(iteration["number"]) + indices[0]) % len(cycle)
+            sizes = (
+                [self.config.iteration_size(iteration["number"])]
+                if self.config.size_schedule == "iteration"
+                else cycle[rotation:] + cycle[:rotation]
+            )
             _, seed = self.plan(iteration, indices[0])
             library, environment = inference_environment(
                 self.config.device, self.config.ort_library
@@ -869,7 +909,7 @@ class LoopRunner:
                 or path.name != f"epoch-{number:04d}.pt"
                 or saved["epoch"] != number
                 or number > self.config.train_epochs
-                or saved["options"] != asdict(options)
+                or asdict(Options(**saved["options"])) != asdict(options)
                 or NetworkConfig.from_checkpoint(saved["config"]) != NetworkConfig.from_checkpoint(parent["config"])
                 or saved["feature_spec"] != parent["feature_spec"]
                 or saved["corpus_fingerprint"] != iteration["corpus_fingerprint"]
@@ -1042,7 +1082,7 @@ class LoopRunner:
                         "parent_checkpoint": self.state["training"]["checkpoint"],
                         "parent_actor_checkpoint": self.state["actor"]["checkpoint"],
                         "parent_model": self.state["actor"]["model"],
-                        "games": [None] * self.config.games_per_iteration,
+                        "games": [None] * self.config.game_count(number),
                         "selfplay_attempts": [],
                         "replay": None,
                         "corpus_fingerprint": None,
@@ -1188,6 +1228,8 @@ def run_loop(args):
                 evaluation_backup = (root / "loop.pt").read_bytes()
                 detach_evaluation(state)
             for field in fields(LoopConfig):
+                if field.name in {"size_schedule", "games_by_size", "size_sampling", "microbatch_size_9"}:
+                    state["config"].setdefault(field.name, field.default)
                 # Preserve frozen generation settings of older campaigns.
                 if field.name in {"chosen_move_temperature_early", "chosen_move_temperature"}:
                     state["config"].setdefault(field.name, 1.0)
@@ -1321,7 +1363,7 @@ def run_loop(args):
                 "model-store must be separate from the loop output and outside disposable runs/ and scratch/"
             )
         target = state["target_iterations"]
-        if target <= 0 or config.seed + target * config.games_per_iteration > 2**64:
+        if target <= 0 or config.seed + config.seed_offset(target + 1) > 2**64:
             raise ValueError("positive iteration target and nonoverflowing u64 game seeds required")
         if args.stop_after_iteration is not None and (
             args.stop_after_iteration <= 0

@@ -26,7 +26,7 @@ from torch import Tensor
 from .augmentation import augment_sample
 from .feature_cache import SampleReader
 from .features import inspect_game
-from .sampling import position_quotas, weighted_sizes
+from .sampling import available_position_quotas, position_quotas, weighted_sizes
 
 
 @dataclass(frozen=True)
@@ -249,6 +249,10 @@ class Batch:
     def to(self, device) -> "Batch":
         return Batch(*(value.to(device) for value in vars(self).values()))
 
+    def slice(self, start, stop) -> "Batch":
+        """Slice rows without changing ragged padding or the pass column."""
+        return Batch(*(value[start:stop] for value in vars(self).values()))
+
 
 def collate(samples: list[TrainingSample]) -> Batch:
     if not samples:
@@ -287,7 +291,10 @@ def collate(samples: list[TrainingSample]) -> Batch:
     )
 
 
-def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_size=1):
+def _plans(
+    games, seed, epoch, training, limit, size_weights="uniform", batch_size=1,
+    size_sampling="downsample", position_budget=0,
+):
     rng = random.Random(seed + (epoch * 1000003 if training else 0))
     games = list(games)
     if training:
@@ -302,14 +309,19 @@ def _plans(games, seed, epoch, training, limit, size_weights="uniform", batch_si
         if limit:
             plies = plies[:limit]
         plans.append((game, plies))
-    if size_weights == "uniform":
+    if size_weights == "uniform" and size_sampling == "downsample":
         return plans
     # Sample references before extracting cell features. No exact features
     # are computed for surplus long-board positions.
     references = defaultdict(list)
     for game, plies in plans:
         references[game.board_size].extend((game, ply) for ply in plies)
-    quotas = position_quotas({size: len(items) for size, items in references.items()}, size_weights)
+    available = {size: len(items) for size, items in references.items()}
+    quotas = (
+        available_position_quotas(available, size_weights, position_budget if training else 0)
+        if size_sampling == "available"
+        else position_quotas(available, size_weights)
+    )
     pools = {}
     for size, count in sorted(quotas.items()):
         items = references[size]
@@ -511,6 +523,7 @@ def batches(
     feature_cache="require",
     augmentation="d4",
     position_budget=0,
+    size_sampling="downsample",
 ):
     """Bounded, deterministic shuffling and homogeneous-resolution batches.
 
@@ -518,14 +531,19 @@ def batches(
     """
     if augmentation not in ("none", "d4"):
         raise ValueError("augmentation must be none or d4")
-    plans = _plans(games, seed, epoch, training, limit, size_weights, batch_size)
-    if training:
+    if size_sampling not in ("downsample", "available"):
+        raise ValueError("size_sampling must be downsample or available")
+    plans = _plans(
+        games, seed, epoch, training, limit, size_weights, batch_size,
+        size_sampling, position_budget,
+    )
+    if training and size_sampling == "downsample":
         plans = _subsample_plans(
             plans, position_budget, seed, epoch, preserve_order=size_weights != "uniform"
         )
     # Weighted plans already shuffle references within each size. A global
     # shuffle would undo the early-step budget mix and waste extraction work.
-    if size_weights != "uniform":
+    if size_weights != "uniform" or size_sampling == "available":
         shuffle_buffer = 0
     rng = random.Random(seed + epoch * 1000033)
     # Separate RNG: augmentation must not change sample ordering or model RNG.

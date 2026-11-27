@@ -85,6 +85,41 @@ unchanged; transforms happen after decoding. Use `--augmentation none` to disabl
 Resuming an older checkpoint without this option preserves its unaugmented recipe;
 resuming a newer one restores its saved setting.
 
+### Availability-capped mixtures and GPU microbatches
+
+The defaults below remain unchanged for historical/new size-9 recipes. Mixed-board
+campaigns can opt into `--size-sampling available` with explicit `--size-weights`.
+This allocates `--positions-per-epoch` across positive-weight sizes, caps each share
+by its available positions, and redistributes shortfalls to sizes with spare data.
+For equal weights, the target is equal positions, not equal games. Selection is
+seeded, refreshed each epoch and without replacement **within** the epoch. Scarce
+sizes do not shrink the entire epoch or cause synthetic repetition. A zero budget
+uses all eligible positive-weight positions. Validation uses all such held-out
+positions, not a balanced downsample. Actual counts remain `samples_by_size`.
+
+This does not prohibit reuse across rounds. `available_positions_by_size` and
+`replay_exposures_by_size` (sampled rows / available replay rows for this phase)
+are saved in phase metrics and logged for training. These are per-phase exposure
+fractions, not lifetime per-game reuse counters. Sampling policy is frozen on
+strict resume; warm-start can change it.
+
+`--batch-size` remains the logical optimizer batch size. Optional
+`--microbatch-size-9 N` limits physical GPU batches to approximately
+`max(1, floor(N * 38² / (H * W)))` positions, never exceeding the logical batch.
+Zero disables splitting (the legacy default). Each logical batch remains one
+optimizer update; gradients are accumulated with separate correct denominators
+for enabled policy rows and all other rows, and clipping happens once per update.
+Validation is split too; metrics and step caps count logical batches, while
+`physical_batches` records actual forward batches. CPU prefetch stays bounded to
+logical batches; only a physical batch is transferred to the device at a time.
+
+The area limit is a configurable **heuristic**, not an automatic GPU benchmark or
+OOM recovery mechanism: exact-action padding, architecture and density also matter.
+38 is the default-density 9x9 raster width. BatchNorm sees physical batches, so
+splitting is not numerically equivalent to a single larger forward pass even
+though loss denominators and optimizer cadence are preserved. This setting is
+frozen on strict resume. See [cg13's recipe](mixed-boards.md).
+
 ### Board mixture: size 9 only
 
 New training/warm-start runs default to `--size-weights 9:1,13:0,19:0`: **100% size
@@ -94,6 +129,8 @@ Weights control **actual positions**, not just loss multipliers. Surplus
 positions are downsampled without replacement before extracting selected-cell
 features, and homogeneous batches follow the weighted schedule. There are no
 extra loss multipliers, duplicate synthetic samples or conditional action softmaxes.
+This legacy `--size-sampling downsample` policy is distinct from the optional
+availability-capped policy above.
 
 The default cycle is just `[9]`; the former mixed cycle is `9,13,19,9,13`.
 For explicit mixtures, very small budgets round; unavailable sizes

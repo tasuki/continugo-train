@@ -16,7 +16,7 @@ import tempfile
 import time
 import uuid
 from collections import Counter
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -70,6 +70,8 @@ class Options:
     weight_decay: float = 1e-4
     grad_clip: float = 5.0
     size_weights: str = DEFAULT_SIZE_WEIGHTS
+    size_sampling: str = "downsample"
+    microbatch_size_9: int = 0
     score_loss_weight: float = 0.5
     ownership_loss_weight: float = 0.5
     feature_cache: str = "require"
@@ -83,6 +85,10 @@ class Options:
         if self.augmentation not in ("none", "d4"):
             raise ValueError("augmentation must be none or d4")
         parse_weights(self.size_weights)
+        if self.size_sampling not in ("downsample", "available"):
+            raise ValueError("size_sampling must be downsample or available")
+        if self.microbatch_size_9 < 0:
+            raise ValueError("microbatch_size_9 must be nonnegative")
         if any(
             not math.isfinite(w) or w < 0
             for w in (self.score_loss_weight, self.ownership_loss_weight)
@@ -212,6 +218,24 @@ def sync(device):
         torch.cuda.synchronize(device)
 
 
+def microbatches(source, size_9=0):
+    """Bound device spatial work while retaining logical optimizer batches.
+
+    The reference area is the schema-7 default-density 9x9 raster (38 squared).
+    This is a conservative spatial heuristic, not an automatic VRAM measurement;
+    exact-action padding and model architecture also affect memory.
+    """
+    with closing(source) if hasattr(source, "close") else nullcontext(source):
+        for batch in source:
+            count = len(batch.outcomes)
+            policy_count = int(batch.policy_weights.sum().item())
+            area = batch.coarse.shape[-2] * batch.coarse.shape[-1]
+            limit = max(1, size_9 * 38 * 38 // area) if size_9 else count
+            for start in range(0, count, limit):
+                stop = min(start + limit, count)
+                yield batch.slice(start, stop), count, policy_count, start == 0, stop == count
+
+
 def run_phase(
     model, optimizer, games, options, epoch, device, binary, training, *, profile_stages=False
 ):
@@ -219,7 +243,7 @@ def run_phase(
     model.zero_grad(set_to_none=True)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    samples = steps = policy_samples = 0
+    samples = steps = policy_samples = physical_batches = 0
     samples_by_size = Counter()
     totals = [0.0] * 5
     score_abs = score_bias = consistency = score_squared = 0.0
@@ -258,14 +282,16 @@ def run_phase(
         feature_cache=options.feature_cache,
         augmentation=options.augmentation,
         position_budget=options.positions_per_epoch if training else 0,
+        size_sampling=options.size_sampling,
     )
     stream = prefetch_batches(stream, limit=options.steps_per_epoch if training else 0)
+    stream = microbatches(stream, options.microbatch_size_9)
     memory = GpuMemorySampler(enabled=profile_stages and device.type == "cuda")
     with memory, closing(stream), torch.set_grad_enabled(training):
         while not (training and options.steps_per_epoch and steps >= options.steps_per_epoch):
             tick = time.perf_counter()
             try:
-                cpu_batch = next(stream)
+                cpu_batch, logical_count, logical_policy_count, first, last = next(stream)
             except StopIteration:
                 break
             wait += time.perf_counter() - tick
@@ -273,7 +299,7 @@ def run_phase(
             samples_by_size.update(cpu_batch.board_sizes.tolist())
             with stage("transfer"):
                 batch = cpu_batch.to(device)
-            if training:
+            if training and first:
                 optimizer.zero_grad(set_to_none=True)
             if profile_stages:
                 # Same operations as PolicyValueNet.forward_all; synchronization is
@@ -310,22 +336,42 @@ def run_phase(
                 if not torch.isfinite(loss.total):
                     raise RuntimeError("nonfinite joint training loss")
                 if training:
-                    loss.total.backward()
-                    norm = torch.nn.utils.clip_grad_norm_(
-                        model.parameters(),
-                        options.grad_clip if options.grad_clip else math.inf,
-                        error_if_nonfinite=True,
+                    # Policy normalizes over enabled rows; other heads over all
+                    # rows. Preserve both logical-batch denominators exactly.
+                    row_fraction = len(batch.outcomes) / logical_count
+                    policy_fraction = (
+                        int(cpu_batch.policy_weights.sum().item()) / logical_policy_count
+                        if logical_policy_count else 0.0
                     )
-                    if not torch.isfinite(norm):
-                        raise RuntimeError("nonfinite gradient norm")
-                    optimizer.step()
+                    objective = loss.total if first and last else (
+                        (loss.total - loss.policy) * row_fraction
+                        + loss.policy * policy_fraction
+                    )
+                    objective.backward()
+                    del objective
+                    if last:
+                        norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(),
+                            options.grad_clip if options.grad_clip else math.inf,
+                            error_if_nonfinite=True,
+                        )
+                        if not torch.isfinite(norm):
+                            raise RuntimeError("nonfinite gradient norm")
+                        optimizer.step()
             sync(device)
             compute += time.perf_counter() - tick
             count = batch.outcomes.numel()
             policy_count = int(cpu_batch.policy_weights.sum().item())
             policy_samples += policy_count
             for index, term in enumerate(loss):
-                totals[index] += term.detach().item() * (policy_count if index == 1 else count)
+                if index == 0 and not (first and last):
+                    # Report the logical objective, independent of how its rows
+                    # were split into physical batches.
+                    totals[0] += (loss.total - loss.policy).detach().item() * count
+                    if logical_policy_count:
+                        totals[0] += loss.policy.detach().item() * policy_count * logical_count / logical_policy_count
+                else:
+                    totals[index] += term.detach().item() * (policy_count if index == 1 else count)
             with torch.no_grad():
                 error = scores - batch.scores
                 score_abs += error.abs().sum().item()
@@ -341,7 +387,8 @@ def run_phase(
                 prediction_sums += predictions.sum(dim=1)
                 prediction_squares += predictions.square().sum(dim=1)
             samples += count
-            steps += 1
+            steps += int(last)
+            physical_batches += 1
             del batch, cpu_batch, logits, values, scores, ownership, score_stdev, loss
     if samples == 0:
         raise ValueError("phase produced no training positions")
@@ -351,6 +398,15 @@ def run_phase(
         "steps": steps,
         "policy_samples": policy_samples,
         "samples_by_size": dict(sorted(samples_by_size.items())),
+        "physical_batches": physical_batches,
+        "available_positions_by_size": {
+            size: sum(len(g.plies) for g in games if g.board_size == size)
+            for size in sorted({g.board_size for g in games})
+        },
+        "replay_exposures_by_size": {
+            size: count / sum(len(g.plies) for g in games if g.board_size == size)
+            for size, count in sorted(samples_by_size.items())
+        },
         "loss": totals[0] / samples,
         "policy_ce": totals[1] / policy_samples if policy_samples else 0.0,
         "value_mse": totals[2] / samples,
@@ -784,6 +840,12 @@ def train(args):
                 atomic_checkpoint(output / "best.pt", state)
             log(
                 f"samples_by_size: train={metrics['train']['samples_by_size']} validation={metrics['validation']['samples_by_size']}"
+            )
+            log(
+                f"replay_exposures_by_size: {metrics['train']['replay_exposures_by_size']}; "
+                f"available_positions_by_size: {metrics['train']['available_positions_by_size']}; "
+                f"physical_batches: train={metrics['train']['physical_batches']} "
+                f"validation={metrics['validation']['physical_batches']}"
             )
             log(
                 f"saved {destination}; network={name}; best_validation={best:.6f}; global_step={step}"

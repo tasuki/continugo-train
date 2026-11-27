@@ -52,6 +52,37 @@ def weighted_sizes(sizes, text=DEFAULT_SIZE_WEIGHTS):
     return result
 
 
+def available_position_quotas(available, text, budget=0):
+    """Weighted, availability-capped allocation; redistribute deficits, never repeat rows.
+
+    Zero budget means all positive-weight positions (also used for validation).
+    Unlike legacy mixture downsampling, a scarce size never shrinks the epoch.
+    """
+    if type(budget) is not int or budget < 0:
+        raise ValueError("position budget must be a nonnegative integer")
+    weights = parse_weights(text)
+    counts = {
+        size: count for size, count in available.items()
+        if count > 0 and (weights is None or weights.get(size, 1) > 0)
+    }
+    if not counts:
+        raise ValueError("no positions with positive board-size weight")
+    if not budget or budget >= sum(counts.values()):
+        return counts
+    cycle = weighted_sizes(sorted(counts), text)
+    selected = Counter()
+    # Rebuild only when a bucket empties, so exhausted sizes cannot stall filling.
+    while budget:
+        active = [size for size in cycle if selected[size] < counts[size]]
+        for size in active:
+            if selected[size] < counts[size]:
+                selected[size] += 1
+                budget -= 1
+                if not budget:
+                    break
+    return dict(selected)
+
+
 def position_quotas(available, text):
     """Downsample surplus positions without replacement, not just loss weighting.
 
