@@ -62,7 +62,7 @@ Sources: [`LoopConfig`](../../python/continugo_train/loop.py),
 | `uniform` | Literal supplied size cycle; disables position-quota downsampling | Choice |
 | Games per loop iteration | 150; standalone self-play defaults to 1 game | Choice |
 | Engine | Standalone `mcts`; loop explicitly uses `neural` | Choice |
-| Game move cap | 512 plies | Choice |
+| Game move cap | 1024 plies | Choice |
 | Initial seed | 0 | Choice |
 | Loop iteration target | 1 for a new loop unless supplied; total target, not additional rounds | Choice |
 
@@ -423,8 +423,8 @@ user approval**, with no numerical auto-publication threshold.
 | Random calibration | No separate batch; random is eligible within the history-opponent budget |
 | History-opponent policy | Up to 3 opponents: defeated champion plus up to 2 nearest-rated available historical opponents (including random); 50 fresh games each, after promotion only |
 | Evaluation simulations | 128, shared by the evaluator and arena launcher; native arena requires a budget |
-| Shared evaluator neural / random move cap | 512 / 512 for new evaluators; existing evaluators retain frozen values |
-| Generic `EvaluationConfig` match / random defaults | 20 / 10 games; both move caps 512 |
+| Shared evaluator neural / random move cap | 1024 / 1024 for new evaluators; existing evaluators retain frozen values |
+| Generic `EvaluationConfig` match / random defaults | 20 / 10 games; both move caps 1024 |
 | Native arena | Requires game/search/inference settings; seed 0 and start index 0 remain native defaults |
 | Shared evaluator initial seed / family | 97,000,000 / `cg5` |
 
@@ -549,7 +549,7 @@ Sources: [synthetic benchmark](../../python/continugo_train/benchmark.py),
 | Tool / purpose | Defaults / limits |
 |---|---|
 | Synthetic model benchmark | Diameters 110/76/52; batches 1/4; density 4; 2 warmups, 5 measured iterations; `auto` device; threads `min(6, cpu_count or 1)` |
-| Real pipeline profiler | Sizes 9/13/19; CPU; 3 iterations; 1 warmup training step, 12 measured steps; 12 positions/game; 8 search simulations; 512 moves; seed 800 |
+| Real pipeline profiler | Sizes 9/13/19; CPU; 3 iterations; 1 warmup training step, 12 measured steps; 12 positions/game; 8 search simulations; 1024 moves; seed 800 |
 | Profiler parallelism | 32 games, inference batch 32, wait 2 ms; 6 feature threads, 6 loader workers; training batch 64; Torch threads 1 |
 | Native `infer` | Ply 0; seed 0; 0 warmups, 1 measured iteration; default probes `0,999,1000,999999,500500,500501,1000000` |
 | Offline `diagnose` | CPU; at most 32 games; threads 1 |

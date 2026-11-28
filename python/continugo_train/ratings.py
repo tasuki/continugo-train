@@ -109,15 +109,19 @@ def identity(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def protocol(config, *, legacy=False):
+def protocol(config, *, legacy=False, version=None):
     counts = Counter(weighted_sizes(config.sizes, config.size_weights))
     divisor = math.gcd(*counts.values())
     search = {**config.search(), "simulations": config.gate_simulations}
-    if legacy:
+    if version not in (None, 1, 2, 3):
+        raise ValueError("unsupported rating protocol version")
+    version = version or (1 if legacy else (3 if "useless_move_penalty_points" in search else 2))
+    if version == 1:
         search.pop("score_weight", None)
+    if version < 3:
         search.pop("useless_move_penalty_points", None)
     return {
-        "version": 1 if legacy else (3 if "useless_move_penalty_points" in search else 2),
+        "version": version,
         "algorithm": "static-glicko-v1",
         "reference": REFERENCE_ID,
         "board_mix": {str(size): count // divisor for size, count in sorted(counts.items())},

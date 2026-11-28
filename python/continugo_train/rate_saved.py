@@ -426,7 +426,7 @@ def upgrade_runtime(runner, registry, directory):
     )
     config.validate()
     previous_protocol = runner.state["rating_protocol"]
-    protocol = ratings.protocol(config, legacy=previous_protocol["version"] == 1)
+    protocol = ratings.protocol(config, version=previous_protocol["version"])
     for key in previous_protocol:
         if key not in ("arena_sha256", "rating_sha256") and protocol[key] != previous_protocol[key]:
             raise ValueError(f"runtime upgrade would change evaluation setting {key}")

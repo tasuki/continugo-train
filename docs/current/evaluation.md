@@ -90,7 +90,7 @@ All neural turns use **128 simulations** by default, including random calibratio
 and historical matches. The random bot is direct random play, not MCTS. This budget
 is half cg5's expensive policy-training budget of 256. Evaluation never randomizes
 its search budget. New shared evaluators cap both neural matches and direct-random
-reference matches at **512 moves**. Existing evaluators retain their frozen caps.
+reference matches at **1024 moves**. Existing evaluators retain their frozen caps.
 A cap is a safety limit, **not** a forced-scoring rule.
 
 Draws and truncations are **non-wins for promotion**. The denominators stay 10 and

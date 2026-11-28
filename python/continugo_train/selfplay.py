@@ -18,7 +18,7 @@ class SelfplayConfig:
     chosen_move_temperature_early: float = 0.75
     chosen_move_temperature: float = 0.15
     chosen_move_temperature_halflife: float = 19.0
-    max_moves: int = 512
+    max_moves: int = 1024
     komi: float = 7.0
     komi_stddev: float = 2.0
     policy_simulations: int = 500

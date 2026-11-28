@@ -38,7 +38,6 @@ def refresh(store, config, cache=None, *, visualize=True):
         for key, source in sources.items()
         if not source.get("pruned")
     }
-    settings = ratings.protocol(config)
     champion_file = store / "champions.json"
     registry = json.loads(champion_file.read_text()) if champion_file.exists() else {}
     evaluator_path = store / "ratings/evaluator.pt"
@@ -47,6 +46,9 @@ def refresh(store, config, cache=None, *, visualize=True):
         import torch
 
         evaluator = torch.load(evaluator_path, map_location="cpu", weights_only=True)
+    settings = ratings.protocol(
+        config, version=evaluator.get("rating_protocol", {}).get("version")
+    )
     protocols = [settings]
     for change in evaluator.get("runtime_changes", []):
         for key in ("previous_protocol", "protocol"):

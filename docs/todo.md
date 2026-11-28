@@ -4,19 +4,38 @@ This is a living document.
 Remove tasks when implemented.
 Prioritize playing strength per wall-clock hour, not profiling for its own sake.
 
-## Future feature planes
+## cg13: return on expensive large-board self-play
 
-- [ ] Trial friendly/enemy **Benson pass-alive planes**; measure integrated cost
-  and benefit before including them.
+- [ ] **Priority 1 — training/data reuse:** Check whether training is too light
+  relative to expensive generation. Measure generated vs optimized positions,
+  replay exposures/reuse and eviction before use **per board size**, including
+  policy-enabled positions and the availability-capped equal-position mixture.
+  Compare increased training budgets/reuse on fixed generated data, monitoring
+  held-out losses, overfitting and separately measured playing strength per
+  wall-clock hour; do not assume more epochs automatically help.
+- [ ] **Priority 2 — self-play batching:** Investigate why larger inference
+  batches do not improve large-board self-play throughput despite spare VRAM.
+  Measure actual batch occupancy, queue waits, active games/tail effects, CPU
+  rules/feature preparation, GPU utilization and inference/transfer time. Sweep
+  concurrent games and inference batch limits separately on fixed models/search
+  settings and board sizes; distinguish capacity limits from poor batch filling
+  or CPU-bound work. Keep only measured end-to-end gains and check trajectories.
 
-## Game length
-
-- [ ] Increase the current 512-ply caps for self-play and all evaluation games
-  when moving to larger boards; check completion rates before choosing new caps.
-
-## Move penalties
-
-- [ ] Investigate a penalty (1 point?) for meaningless moves in own or opponent territory.
+ ┌───────┬───────┬────────────────┬────────────┬────────────────┐
+ │ Board │ Games │ Avg moves/game │ Moves/iter │ Self-play time │
+ ├───────┼───────┼────────────────┼────────────┼────────────────┤
+ │  9×9  │ 150   │  65            │  9,744     │  34 min        │
+ ├───────┼───────┼────────────────┼────────────┼────────────────┤
+ │ 11×11 │ 123   │  86            │ 10,521     │  48 min        │
+ ├───────┼───────┼────────────────┼────────────┼────────────────┤
+ │ 13×13 │ 104   │ 133            │ 13,878     │  85 min        │
+ ├───────┼───────┼────────────────┼────────────┼────────────────┤
+ │ 15×15 │  90   │ 193            │ 17,392     │ 127 min        │
+ ├───────┼───────┼────────────────┼────────────┼────────────────┤
+ │ 17×17 │  79   │ 279            │ 22,047     │ 196 min        │
+ ├───────┼───────┼────────────────┼────────────┼────────────────┤
+ │ 19×19 │  71   │ 350*           │ 24,850*    │ 275 min*       │
+ └───────┴───────┴────────────────┴────────────┴────────────────┘
 
 ## Later, only for a measured bottleneck
 

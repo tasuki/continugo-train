@@ -61,7 +61,7 @@ def source_protocol(source, config):
     """Freeze evaluation settings here; training no longer owns a rating protocol."""
     previous = source.get("rating_protocol")
     legacy = previous["version"] == 1 if previous else source.get("version") == 5
-    settings = ratings.protocol(config, legacy=legacy)
+    settings = ratings.protocol(config, legacy=legacy, version=previous["version"] if previous else None)
     if previous is not None and settings != previous:
         raise ValueError("source evaluation binaries/settings changed")
     return settings
@@ -75,7 +75,7 @@ class EvaluationRunner(LoopRunner):
     def verify_runtime(self):
         super().verify_runtime()
         if (
-            ratings.protocol(self.config, legacy=self.state["rating_protocol"]["version"] == 1)
+            ratings.protocol(self.config, version=self.state["rating_protocol"]["version"])
             != self.state["rating_protocol"]
         ):
             raise ValueError("evaluation/rating executable changed; use the frozen runtime")

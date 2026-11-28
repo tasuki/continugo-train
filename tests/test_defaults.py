@@ -4,6 +4,7 @@ import io
 import unittest
 from contextlib import redirect_stderr
 from dataclasses import asdict
+from unittest.mock import patch
 
 from continugo_train import loop, rate_saved, rating_store, ratings
 from continugo_train.evaluation import EvaluationConfig
@@ -58,11 +59,28 @@ class LoopOptionTests(unittest.TestCase):
             old = {**settings, "version": version, "search": search}
             self.assertEqual(ratings._protocol_from_row(ratings._protocol_columns(old)), old)
 
-    def test_all_new_game_caps_default_to_512_plies(self):
+    def test_frozen_rating_protocol_does_not_adopt_new_search_fields(self):
+        from continugo_train.evaluation import source_protocol
+
+        config = EvaluationConfig()
+        with patch.object(ratings.archive, "digest", return_value="a" * 64):
+            current = ratings.protocol(config)
+            self.assertEqual(current["version"], 3)
+            self.assertIn("useless_move_penalty_points", current["search"])
+            for version in (1, 2):
+                frozen = ratings.protocol(config, version=version)
+                self.assertEqual(frozen["version"], version)
+                self.assertNotIn("useless_move_penalty_points", frozen["search"])
+                self.assertEqual("score_weight" in frozen["search"], version == 2)
+                self.assertEqual(source_protocol({"rating_protocol": frozen}, config), frozen)
+            with self.assertRaises(ValueError):
+                ratings.protocol(config, version=99)
+
+    def test_new_game_caps_match_current_selfplay_and_evaluation_usage(self):
         config = EvaluationConfig()
         self.assertEqual(
             (LoopConfig().max_moves, config.gate_max_moves, config.reference_max_moves),
-            (512, 512, 512),
+            (1024, 1024, 1024),
         )
 
     def test_loop_options_override_parent_io_and_caps_but_preserve_optimizer_and_losses(self):
